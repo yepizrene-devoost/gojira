@@ -1,0 +1,8 @@
+# Local Pi runtime state
+.atl/
+.env
+/gojira
+/bin/
+*.exe
+/dist/
+.DS_Store

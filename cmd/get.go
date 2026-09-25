@@ -1,0 +1,126 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
+)
+
+var keyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
+var labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B"))
+var metaLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Bold(true)
+
+var getCmd = &cobra.Command{
+	Use:   "get <issue-key>",
+	Short: "View a ticket's full details",
+	Long:  "Display complete ticket information including project, labels, components, reporter, comments, and more.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, domain, err := BuildClient()
+		if err != nil {
+			return err
+		}
+
+		issueKey := args[0]
+		iss, err := client.GetIssueFull(issueKey)
+		if err != nil {
+			return err
+		}
+
+		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
+			ticket := jira.IssueToTicketJSON(*iss, domain)
+			b, _ := json.MarshalIndent(ticket, "", "  ")
+			fmt.Println(string(b))
+			return nil
+		}
+
+		// Render readable output
+		fmt.Println(renderIssueFull(iss))
+		return nil
+	},
+}
+
+func renderIssueFull(iss *jira.Issue) string {
+	var b strings.Builder
+
+	b.WriteString(keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key)))
+	b.WriteString("\n\n")
+	b.WriteString(iss.Fields.Summary)
+	b.WriteString("\n\n")
+
+	// Metadata table
+	rows := [][2]string{}
+	if iss.Fields.IssueType != nil {
+		rows = append(rows, [2]string{"Type", iss.Fields.IssueType.Name})
+	}
+	if iss.Fields.Status != nil {
+		rows = append(rows, [2]string{"Status", iss.Fields.Status.Name})
+	}
+	if iss.Fields.Priority != nil {
+		rows = append(rows, [2]string{"Priority", iss.Fields.Priority.Name})
+	}
+	if iss.Fields.Assignee != nil {
+		rows = append(rows, [2]string{"Assignee", iss.Fields.Assignee.DisplayName})
+	} else {
+		rows = append(rows, [2]string{"Assignee", "Unassigned"})
+	}
+	if iss.Fields.Reporter != nil {
+		rows = append(rows, [2]string{"Reporter", iss.Fields.Reporter.DisplayName})
+	}
+	if iss.Fields.Project != nil {
+		rows = append(rows, [2]string{"Project", fmt.Sprintf("%s (%s)", iss.Fields.Project.Key, iss.Fields.Project.Name)})
+	}
+	if len(iss.Fields.Labels) > 0 {
+		rows = append(rows, [2]string{"Labels", strings.Join(iss.Fields.Labels, ", ")})
+	}
+	if len(iss.Fields.Components) > 0 {
+		names := make([]string, len(iss.Fields.Components))
+		for i, c := range iss.Fields.Components {
+			names[i] = c.Name
+		}
+		rows = append(rows, [2]string{"Components", strings.Join(names, ", ")})
+	}
+	rows = append(rows, [2]string{"Created", iss.Fields.Created})
+	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
+
+	for _, row := range rows {
+		b.WriteString(fmt.Sprintf("%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1]))
+	}
+
+	// Description
+	if iss.Fields.Description != nil {
+		b.WriteString("\n── Description ──\n")
+		for _, block := range iss.Fields.Description.Content {
+			for _, c := range block.Content {
+				if c.Text != "" {
+					b.WriteString(c.Text)
+					b.WriteString("\n")
+				}
+			}
+		}
+	}
+
+	// Comments
+	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
+		b.WriteString(fmt.Sprintf("\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments)))
+		for i, c := range iss.Fields.Comment.Comments {
+			body := strings.TrimSpace(c.Body.Flatten())
+			if len(body) > 200 {
+				body = body[:197] + "..."
+			}
+			b.WriteString(fmt.Sprintf("  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body))
+		}
+	}
+
+	return b.String()
+}
+
+func init() {
+	getCmd.Flags().Bool("json", false, "Output as JSON")
+	rootCmd.AddCommand(getCmd)
+}
