@@ -27,30 +27,22 @@ var commentCmd = &cobra.Command{
 		text := args[1]
 		mentions, _ := cmd.Flags().GetStringArray("mention")
 
-		// Build ADF body: text + mention nodes
-		nodes := []jira.ADFNode{
-			{Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: text}}},
-		}
-
+		// Build ADF body: one paragraph with the text followed by inline
+		// mention nodes. A mention notifies only when attrs.id carries the
+		// resolved accountId; attrs.text is the display name.
+		inline := []jira.ADFNode{{Type: "text", Text: text}}
 		for _, email := range mentions {
 			accountID, displayName, err := client.ResolveAccountID(email)
 			if err != nil {
 				return fmt.Errorf("resolving mention %s: %w", email, err)
 			}
-			nodes = append(nodes, jira.ADFNode{
-				Type: "paragraph",
-				Content: []jira.ADFNode{{
-					Type: "mention",
-					Attrs: &struct {
-						Text string `json:"text"`
-					}{Text: "@" + displayName},
-					Content: []jira.ADFNode{{Type: "text", Text: "@" + displayName}},
-				}},
-			})
-			// For now we add the display name as text.
-			// The Jira API needs accountId in attrs.id for actual mentions.
-			// We'll enhance when testing against real instance.
-			_ = accountID
+			inline = append(inline,
+				jira.ADFNode{Type: "text", Text: " "},
+				jira.ADFNode{Type: "mention", Attrs: &jira.ADFAttrs{ID: accountID, Text: displayName}},
+			)
+		}
+		nodes := []jira.ADFNode{
+			{Type: "paragraph", Content: inline},
 		}
 
 		body := jira.ADFDoc{Type: "doc", Version: 1, Content: nodes}

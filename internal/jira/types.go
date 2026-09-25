@@ -36,13 +36,23 @@ type Sprint struct {
 
 // ─── ADF (Atlassian Document Format) ──────────────────────────────────
 
+// ADFAttrs carries node attributes. The shape depends on the node type:
+// headings use Level (required, integer), mentions use ID (accountId) and
+// Text (display name). Fields are omitempty so unused ones never reach the
+// wire — the ADF schema rejects stray properties.
+type ADFAttrs struct {
+	Level int    `json:"level,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
 // ADFNode represents a node in an Atlassian Document Format tree.
+// Text must stay omitempty: serializing "text":"" on container nodes
+// (paragraph, heading, listItem, …) makes the whole document invalid ADF.
 type ADFNode struct {
-	Type  string `json:"type"`
-	Text  string `json:"text"`
-	Attrs *struct {
-		Text string `json:"text"`
-	} `json:"attrs,omitempty"`
+	Type    string    `json:"type"`
+	Text    string    `json:"text,omitempty"`
+	Attrs   *ADFAttrs `json:"attrs,omitempty"`
 	Content []ADFNode `json:"content,omitempty"`
 }
 
@@ -328,10 +338,8 @@ func TextToADF(text string) ADFDoc {
 			})
 		} else if strings.HasPrefix(line, "# ") {
 			nodes = append(nodes, ADFNode{
-				Type: "heading",
-				Attrs: &struct {
-					Text string `json:"text"`
-				}{Text: "2"},
+				Type:    "heading",
+				Attrs:   &ADFAttrs{Level: 2},
 				Content: []ADFNode{{Type: "text", Text: line[2:]}},
 			})
 		} else if line == "" {
