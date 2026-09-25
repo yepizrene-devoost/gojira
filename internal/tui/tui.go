@@ -503,7 +503,6 @@ func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.worklogInput, cmd = m.worklogInput.Update(msg)
 		return m, cmd
 	}
-	return m, nil
 }
 
 // ─── View ──────────────────────────────────────────────────────────────

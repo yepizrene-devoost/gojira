@@ -22,7 +22,7 @@ var tuiCmd = &cobra.Command{
 func runTUI() error {
 	// ── First-run wizard ──────────────────────────────────────────
 	if !config.Exists() {
-		fmt.Fprintln(os.Stderr, "No configuration found. Let's set things up.\n")
+		fmt.Fprintln(os.Stderr, "No configuration found. Let's set things up.")
 		m := tui.NewSetup()
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
