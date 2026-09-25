@@ -6,3 +6,6 @@
 *.exe
 /dist/
 .DS_Store
+
+# Regenerable changelog draft produced by `make changelog`
+CHANGELOG.draft.md
