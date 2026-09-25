@@ -288,6 +288,64 @@ func browseURL(domain, key string) string {
 	return "https://" + domain + "/browse/" + key
 }
 
+// TextToADF converts plain text to an ADF document.
+// Supports: paragraphs (separated by newlines), bullet lists (- prefix),
+// headings (# prefix), and code blocks (``` delimiters).
+func TextToADF(text string) ADFDoc {
+	if text == "" {
+		return ADFDoc{}
+	}
+	lines := strings.Split(text, "\n")
+	var nodes []ADFNode
+	inCodeBlock := false
+	var codeLines []string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			if inCodeBlock {
+				nodes = append(nodes, ADFNode{
+					Type:    "codeBlock",
+					Content: []ADFNode{{Type: "text", Text: strings.Join(codeLines, "\n")}},
+				})
+				codeLines = nil
+				inCodeBlock = false
+			} else {
+				inCodeBlock = true
+			}
+			continue
+		}
+		if inCodeBlock {
+			codeLines = append(codeLines, line)
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			nodes = append(nodes, ADFNode{
+				Type: "bulletList",
+				Content: []ADFNode{{
+					Type:    "listItem",
+					Content: []ADFNode{{Type: "paragraph", Content: []ADFNode{{Type: "text", Text: line[2:]}}}},
+				}},
+			})
+		} else if strings.HasPrefix(line, "# ") {
+			nodes = append(nodes, ADFNode{
+				Type: "heading",
+				Attrs: &struct {
+					Text string `json:"text"`
+				}{Text: "2"},
+				Content: []ADFNode{{Type: "text", Text: line[2:]}},
+			})
+		} else if line == "" {
+			continue // skip empty lines (each non-empty line is its own paragraph)
+		} else {
+			nodes = append(nodes, ADFNode{
+				Type:    "paragraph",
+				Content: []ADFNode{{Type: "text", Text: line}},
+			})
+		}
+	}
+	return ADFDoc{Type: "doc", Version: 1, Content: nodes}
+}
+
 func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
 		Key:      iss.Key,

@@ -217,3 +217,98 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 	_, err := c.post(fmt.Sprintf(pathIssueWorklog, issueKey), payload)
 	return err
 }
+
+// ─── Write (Phase 8) ──────────────────────────────────────────────────
+
+// CreateIssue creates a new issue and returns its key.
+func (c *Client) CreateIssue(projectKey, issueType, summary string, description *ADFDoc) (string, error) {
+	fields := map[string]interface{}{
+		"project":  map[string]string{"key": projectKey},
+		"issuetype": map[string]string{"name": issueType},
+		"summary":  summary,
+	}
+	if description != nil && len(description.Content) > 0 {
+		fields["description"] = description
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
+	b, err := c.post(pathIssueCreate, payload)
+	if err != nil {
+		return "", err
+	}
+	var resp struct{ Key string }
+	json.Unmarshal(b, &resp)
+	return resp.Key, nil
+}
+
+// AddComment adds a comment (ADF body) to an issue.
+func (c *Client) AddComment(issueKey string, body ADFDoc) error {
+	payload, _ := json.Marshal(map[string]interface{}{"body": body})
+	_, err := c.post(fmt.Sprintf(pathIssueComment, issueKey), payload)
+	return err
+}
+
+// AssignIssue assigns an issue by account ID.
+func (c *Client) AssignIssue(issueKey, accountID string) error {
+	payload, _ := json.Marshal(map[string]string{"accountId": accountID})
+	req, err := http.NewRequest("PUT",
+		c.baseURL+fmt.Sprintf(pathIssueAssign, issueKey),
+		strings.NewReader(string(payload)))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.auth, "")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
+	}
+	return nil
+}
+
+// UpdateIssue updates one or more fields on an issue.
+func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) error {
+	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
+	req, err := http.NewRequest("PUT",
+		c.baseURL+fmt.Sprintf(pathIssue, issueKey),
+		strings.NewReader(string(payload)))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.auth, "")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
+	}
+	return nil
+}
+
+// ResolveAccountID looks up a Jira user by email and returns their accountId.
+func (c *Client) ResolveAccountID(email string) (accountID, displayName string, err error) {
+	path := "/rest/api/3/user/username?username=" + email
+	b, err := c.get(path)
+	if err != nil {
+		return "", "", fmt.Errorf("user lookup failed: %w", err)
+	}
+	var user struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+	}
+	json.Unmarshal(b, &user)
+	if user.AccountID == "" {
+		return "", "", fmt.Errorf("no user found for %s", email)
+	}
+	return user.AccountID, user.DisplayName, nil
+}

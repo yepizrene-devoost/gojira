@@ -14,15 +14,19 @@ const (
 	pathServerInfo       = "/rest/api/3/serverInfo"
 	pathProjects         = "/rest/api/3/project?maxResults=100"
 	pathIssue            = "/rest/api/3/issue/%s"
+	pathIssueCreate      = "/rest/api/3/issue"
 	pathIssueTransitions = "/rest/api/3/issue/%s/transitions"
 	pathIssueWorklog     = "/rest/api/3/issue/%s/worklog"
+	pathIssueComment     = "/rest/api/3/issue/%s/comment"
+	pathIssueAssign      = "/rest/api/3/issue/%s/assignee"
 	pathSearchJQL        = "/rest/api/3/search/jql"
+	pathUserByUsername    = "/rest/api/3/user/username?username=%s"
 
 	// ─── Agile API 1.0 ────────────────────────────────────────────
-	pathBoardList   = "/rest/agile/1.0/board?maxResults=50"
-	pathBoardConfig = "/rest/agile/1.0/board/%d/configuration"
-	pathSprintList  = "/rest/agile/1.0/board/%d/sprint"
-	pathBoardIssues = "/rest/agile/1.0/board/%d/issue"
+	pathBoardList    = "/rest/agile/1.0/board?maxResults=50"
+	pathBoardConfig  = "/rest/agile/1.0/board/%d/configuration"
+	pathSprintList   = "/rest/agile/1.0/board/%d/sprint"
+	pathBoardIssues  = "/rest/agile/1.0/board/%d/issue"
 	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
 )
 
