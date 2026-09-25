@@ -1,16 +1,26 @@
-# GoJira
+<p align="center">
+  <img src="assets/gojira-logo.png" alt="GoJira logo" width="220"/>
+</p>
 
-Manage your Jira boards from the terminal. Built with Go, [Bubble Tea](https://github.com/charmbracelet/bubbletea), and [Cobra](https://github.com/spf13/cobra).
+<h1 align="center">GoJira</h1>
 
-![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+<p align="center">
+  <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
+  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
+</p>
 
-A TUI for daily board work and a CLI for scripting and AI agent consumption — every operation available both interactively and programmatically.
+<p align="center">
+  A Bubble Tea TUI for daily board work and a Cobra CLI whose JSON output is
+  built for AI agents — every operation available both interactively and
+  programmatically.
+</p>
 
 ## Features
 
-- **Kanban board view** — columns, active sprint auto-detected, horizontal pagination, cursor-following scroll
-- **Full ticket management** — view, transition status, add worklog, comment, create, assign, update
+- **Kanban board view** — columns, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
+- **Full ticket management** — view, transition status, add worklog, comment, create, assign, update — in CLI *and* TUI
+- **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `s`)
 - **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
 - **Secure auth** — API token in OS keychain (macOS/Linux/Windows) with encrypted-file fallback
 - **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
@@ -72,11 +82,12 @@ Credential resolution: **env vars > config file (keychain → YAML fallback)**.
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (no `--to` lists available transitions) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--comment`, `--show` for history) |
-| `gojira create` | Create an issue (`--project`, `--type`, `--summary`, `--description-file`) |
+| `gojira create` | Create an issue (`--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
 | `gojira comment <KEY> <text>` | Comment with `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (resolves to accountId) |
 | `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
+| `gojira version` | Version marker + build revision (`--json`) |
 
 ### Agent usage examples
 
@@ -92,6 +103,9 @@ gojira get ARA-1892 --json
 
 # Create a ticket from a markdown requirement file
 gojira create --project ARA --type Task --summary "Add export" --description-file req.md
+
+# Create a ticket straight into the active sprint (skip the backlog)
+gojira create --project ARA --type Task --summary "Sprint work" --board 1
 
 # Comment and notify the PM
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
@@ -117,8 +131,14 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
 | `Enter` | Ticket detail |
 | `t` | Transition ticket (status picker) |
+| `n` | New issue in this board's project (type + summary + description) |
+| `s` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
+
+Boards with an active sprint show a trailing **Backlog** column with the
+unsprinted tickets, so nothing silently disappears from the board. New issues
+created with `n` go directly into the active sprint.
 
 ### Ticket detail
 
@@ -146,11 +166,12 @@ gojira/
 │   │   ├── paths.go           # ALL API endpoints — single source of truth
 │   │   └── types.go           # Types + ADF parser + curated TicketJSON
 │   ├── tui/                   # Bubble Tea TUI (single model, no sub-model routing)
-│   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog
+│   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog, create, sprint
 │   │   ├── setup.go           # First-run configuration wizard
 │   │   └── tui_test.go        # Render geometry tests
 │   └── config/                # XDG config + keychain token storage
 │       └── config.go
+├── assets/                    # Logo (PNG + SVG)
 └── .github/ISSUE_TEMPLATE/    # Issue forms (bug, feature, chore)
 ```
 
