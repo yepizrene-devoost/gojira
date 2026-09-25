@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -110,6 +111,61 @@ type IssueFieldData struct {
 type Issue struct {
 	Key    string         `json:"key"`
 	Fields IssueFieldData `json:"fields"`
+}
+
+// ─── Ticket JSON (curated for agent consumption) ───────────────────────
+type TicketJSON struct {
+	Key         string   `json:"key"`
+	Summary     string   `json:"summary"`
+	Status      string   `json:"status"`
+	Priority    string   `json:"priority"`
+	Assignee    string   `json:"assignee"`
+	IssueType   string   `json:"issueType"`
+	Description string   `json:"description"`
+	Created     string   `json:"created"`
+	Updated     string   `json:"updated"`
+	Labels      []string `json:"labels,omitempty"`
+}
+
+func issueToTicketJSON(iss Issue) TicketJSON {
+	t := TicketJSON{
+		Key:      iss.Key,
+		Summary:  iss.Fields.Summary,
+		Created:  iss.Fields.Created,
+		Updated:  iss.Fields.Updated,
+		Assignee: "Unassigned",
+	}
+	if iss.Fields.Status != nil {
+		t.Status = iss.Fields.Status.Name
+	}
+	if iss.Fields.Priority != nil {
+		t.Priority = iss.Fields.Priority.Name
+	}
+	if iss.Fields.IssueType != nil {
+		t.IssueType = iss.Fields.IssueType.Name
+	}
+	if iss.Fields.Assignee != nil {
+		t.Assignee = iss.Fields.Assignee.DisplayName
+	}
+	if iss.Fields.Description != nil {
+		for _, block := range iss.Fields.Description.Content {
+			for _, c := range block.Content {
+				if c.Text != "" {
+					t.Description += c.Text + "\n"
+				}
+			}
+		}
+		t.Description = strings.TrimRight(t.Description, "\n")
+	}
+	return t
+}
+
+func issuesToTicketJSON(issues []Issue) []TicketJSON {
+	out := make([]TicketJSON, len(issues))
+	for i, iss := range issues {
+		out[i] = issueToTicketJSON(iss)
+	}
+	return out
 }
 
 // ─── API Client ────────────────────────────────────────────────────────
@@ -238,6 +294,7 @@ type model struct {
 	height     int
 	err        error
 	detail     *Issue
+	toast      string // brief feedback message
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────
@@ -335,6 +392,8 @@ type kanbanMsg struct {
 	sprintName string
 }
 type detailMsg struct{ issue *Issue }
+type clipboardMsg struct{ text string; err error }
+type toastMsg struct{ text string }
 type errMsg struct{ err error }
 
 // ─── Update ────────────────────────────────────────────────────────────
@@ -361,6 +420,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
+		return m, nil
+
+	case clipboardMsg:
+		if msg.err != nil {
+			m.toast = "Clipboard error: " + msg.err.Error()
+			return m, nil
+		}
+		n := len(msg.text)
+		if n > 200 {
+			n = 200
+		}
+		m.toast = fmt.Sprintf("Copied %d chars to clipboard", n)
+		return m, clearToastAfter(3 * time.Second)
+
+	case toastMsg:
+		m.toast = msg.text
 		return m, nil
 
 	case tea.KeyMsg:
@@ -451,6 +526,13 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, openBrowser(key)
 			}
 		}
+	case "C":
+		if m.colCur < len(m.columns) {
+			col := m.columns[m.colCur]
+			tickets := issuesToTicketJSON(col.issues)
+			b, _ := json.MarshalIndent(tickets, "", "  ")
+			return m, copyToClipboard(string(b))
+		}
 	}
 	return m, nil
 }
@@ -464,6 +546,12 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		if m.detail != nil {
 			return m, openBrowser(m.detail.Key)
+		}
+	case "c":
+		if m.detail != nil {
+			ticket := issueToTicketJSON(*m.detail)
+			b, _ := json.MarshalIndent(ticket, "", "  ")
+			return m, copyToClipboard(string(b))
 		}
 	}
 	return m, nil
@@ -487,6 +575,19 @@ func openBrowser(key string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func copyToClipboard(text string) tea.Cmd {
+	return func() tea.Msg {
+		err := clipboard.WriteAll(text)
+		return clipboardMsg{text: text, err: err}
+	}
+}
+
+func clearToastAfter(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(_ time.Time) tea.Msg {
+		return toastMsg{text: ""}
+	})
 }
 
 // ─── View ──────────────────────────────────────────────────────────────
@@ -572,13 +673,19 @@ func (m model) View() string {
 		totalPages := (len(m.columns) + cpp - 1) / cpp
 		curPage := pageStart/cpp + 1
 		b.WriteString(subStyle.Render(
-			fmt.Sprintf("[←→] Columns  [↑↓] Issues  [Enter] Detail  [o] Browser  [esc] Back    Col %d/%d  Page %d/%d",
+			fmt.Sprintf("[←→] Columns  [↑↓] Issues  [Enter] Detail  [c] Copy JSON  [C] Copy Col  [o] Browser  [esc] Back    Col %d/%d  Page %d/%d",
 				m.colCur+1, len(m.columns), curPage, totalPages)))
 
 	case viewDetail:
 		if m.detail != nil {
 			b.WriteString(m.renderDetail())
 		}
+	}
+
+	// Toast feedback
+	if m.toast != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Bold(true).Render("  ✓ " + m.toast))
 	}
 
 	return b.String()
@@ -740,7 +847,7 @@ func (m model) renderDetail() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(subStyle.Render("[Enter] Close  [o] Browser  [esc] Close"))
+	b.WriteString(subStyle.Render("[c] Copy JSON  [o] Browser  [esc] Close"))
 	return detailBox.Render(b.String())
 }
 
