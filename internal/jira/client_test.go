@@ -17,11 +17,15 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("startAt") {
 		case "0":
-			fmt.Fprint(w, `{"startAt":0,"maxResults":2,"total":3,"isLast":false,
-				"issues":[{"id":"1","key":"A-1"},{"id":"2","key":"A-2"}]}`)
+			if _, err := fmt.Fprint(w, `{"startAt":0,"maxResults":2,"total":3,"isLast":false,
+				"issues":[{"id":"1","key":"A-1"},{"id":"2","key":"A-2"}]}`); err != nil {
+				t.Errorf("write page 1: %v", err)
+			}
 		default:
-			fmt.Fprint(w, `{"startAt":2,"maxResults":2,"total":3,"isLast":true,
-				"issues":[{"id":"3","key":"A-3"}]}`)
+			if _, err := fmt.Fprint(w, `{"startAt":2,"maxResults":2,"total":3,"isLast":true,
+				"issues":[{"id":"3","key":"A-3"}]}`); err != nil {
+				t.Errorf("write page 2: %v", err)
+			}
 		}
 	}))
 	defer srv.Close()
@@ -108,21 +112,27 @@ func TestResolveAccountID(t *testing.T) {
 						w.WriteHeader(404)
 						return
 					}
-					fmt.Fprint(w, tc.picker)
+					if _, err := fmt.Fprint(w, tc.picker); err != nil {
+						t.Errorf("write picker response: %v", err)
+					}
 				case "/rest/api/3/user":
 					e, known := tc.emails[r.URL.Query().Get("accountId")]
 					if !known {
 						w.WriteHeader(404)
 						return
 					}
-					fmt.Fprintf(w, `{"accountId":%q,"displayName":"René","emailAddress":%q}`,
-						r.URL.Query().Get("accountId"), e)
+					if _, err := fmt.Fprintf(w, `{"accountId":%q,"displayName":"René","emailAddress":%q}`,
+						r.URL.Query().Get("accountId"), e); err != nil {
+						t.Errorf("write user response: %v", err)
+					}
 				case "/rest/api/3/search/jql":
 					if tc.jql == "" {
 						w.WriteHeader(404)
 						return
 					}
-					fmt.Fprint(w, tc.jql)
+					if _, err := fmt.Fprint(w, tc.jql); err != nil {
+						t.Errorf("write jql response: %v", err)
+					}
 				default:
 					w.WriteHeader(404)
 				}
