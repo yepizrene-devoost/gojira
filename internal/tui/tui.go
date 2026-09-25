@@ -99,6 +99,7 @@ const (
 	viewDetail
 	viewTransition
 	viewWorklog
+	viewCreate
 )
 
 type column struct {
@@ -128,12 +129,28 @@ type Model struct {
 	transIssue   string
 	worklogInput textinput.Model
 	worklogIssue string
+
+	// Active sprint of the current board (0 = none; used by create + "s")
+	sprintID int
+
+	// Create-issue form (viewCreate)
+	createProject string
+	createTypes   []string
+	createTypeCur int
+	createField   int // 0 = type, 1 = summary, 2 = description
+	createSummary textinput.Model
+	createDesc    textinput.Model
+	createErr     string
+
+	// Issue key to select after the next board reload
+	focusIssue string
 }
 
 type boardsMsg struct{ boards []jira.Board }
 type kanbanMsg struct {
 	columns    []column
 	sprintName string
+	sprintID   int
 }
 type detailMsg struct{ issue *jira.Issue }
 type clipboardMsg struct{ text string; err error }
@@ -141,6 +158,9 @@ type toastMsg struct{ text string }
 type transitionsMsg struct{ transitions []jira.Transition; issueKey string }
 type transitionDoneMsg struct{ issueKey string; err error }
 type worklogDoneMsg struct{ err error }
+type createTypesMsg struct{ types []string; err error }
+type createdMsg struct{ key string; sprintID int; err error }
+type sprintDoneMsg struct{ issueKey string; err error }
 type errMsg struct{ err error }
 
 // New creates a new TUI model ready to be used with bubbletea.NewProgram.
@@ -186,15 +206,40 @@ func (m Model) loadBoardData(board jira.Board) tea.Msg {
 	}
 
 	var issues []jira.Issue
+	var backlog []jira.Issue
 	sprintName := "All issues"
+	sprintID := 0
 	if activeSprint != nil {
 		sprintName = activeSprint.Name
+		sprintID = activeSprint.ID
 		issues, err = m.client.GetBoardIssues(board.ID, activeSprint.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		// Backlog = board issues outside the active sprint. Best-effort:
+		// a board/issue failure must not break the sprint view.
+		if all, berr := m.client.GetBoardIssues(board.ID, 0); berr == nil {
+			inSprint := make(map[string]bool, len(issues))
+			for _, i := range issues {
+				inSprint[i.Key] = true
+			}
+			for _, i := range all {
+				if inSprint[i.Key] {
+					continue
+				}
+				// Done issues sitting in closed sprints are not backlog either.
+				if i.Fields.Status != nil && i.Fields.Status.Category != nil &&
+					i.Fields.Status.Category.Key == "done" {
+					continue
+				}
+				backlog = append(backlog, i)
+			}
+		}
 	} else {
 		issues, err = m.client.GetBoardIssues(board.ID, 0)
-	}
-	if err != nil {
-		return errMsg{err}
+		if err != nil {
+			return errMsg{err}
+		}
 	}
 
 	statusToCol := map[string]string{}
@@ -234,7 +279,13 @@ func (m Model) loadBoardData(board jira.Board) tea.Msg {
 		cols = append(cols, column{name: "To Do", issues: issues})
 	}
 
-	return kanbanMsg{columns: cols, sprintName: sprintName}
+	// Append the backlog as a trailing column so unsprinted tickets stay
+	// reachable: select one and press "s" to move it into the active sprint.
+	if len(backlog) > 0 {
+		cols = append(cols, column{name: "Backlog", issues: backlog})
+	}
+
+	return kanbanMsg{columns: cols, sprintName: sprintName, sprintID: sprintID}
 }
 
 // ─── Update ────────────────────────────────────────────────────────────
@@ -253,6 +304,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case kanbanMsg:
 		m.columns = msg.columns
 		m.sprintName = msg.sprintName
+		m.sprintID = msg.sprintID
+		m.err = nil
+		if m.focusIssue != "" {
+			if c, r, ok := findIssuePos(msg.columns, m.focusIssue); ok {
+				m.colCur, m.rowCur = c, r
+			}
+			m.focusIssue = ""
+		}
 		return m, nil
 
 	case detailMsg:
@@ -312,6 +371,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.view = viewDetail
 		return m, clearToastAfter(3 * time.Second)
 
+	case createTypesMsg:
+		// The form already defaults to "Task"; richer types are a bonus.
+		if msg.err == nil && len(msg.types) > 0 {
+			m.createTypes = msg.types
+			m.createTypeCur = 0
+		}
+		return m, nil
+
+	case createdMsg:
+		if msg.key == "" {
+			// Creation failed: stay in the form, keep what was typed.
+			m.createErr = msg.err.Error()
+			return m, nil
+		}
+		m.createSummary.Blur()
+		m.createDesc.Blur()
+		m.view = viewKanban
+		m.focusIssue = msg.key
+		switch {
+		case msg.err != nil:
+			m.toast = "Created " + msg.key + " but sprint add failed: " + msg.err.Error()
+		case msg.sprintID > 0:
+			m.toast = "Created " + msg.key + " → " + m.sprintName
+		default:
+			m.toast = "Created " + msg.key
+		}
+		board := m.boards[m.boardCur]
+		return m, tea.Batch(
+			func() tea.Msg { return m.loadBoardData(board) },
+			clearToastAfter(4*time.Second),
+		)
+
+	case sprintDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.toast = "Added " + msg.issueKey + " to " + m.sprintName
+		m.focusIssue = msg.issueKey
+		board := m.boards[m.boardCur]
+		return m, tea.Batch(
+			func() tea.Msg { return m.loadBoardData(board) },
+			clearToastAfter(3*time.Second),
+		)
+
 	case tea.KeyMsg:
 		switch m.view {
 		case viewBoards:
@@ -324,6 +428,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTransition(msg)
 		case viewWorklog:
 			return m.updateWorklog(msg)
+		case viewCreate:
+			return m.updateCreate(msg)
 		}
 	}
 	return m, nil
@@ -345,8 +451,10 @@ func (m Model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.boardCur >= 0 && m.boardCur < len(m.boards) {
 			board := m.boards[m.boardCur]
 			m.view = viewKanban
+			m.err = nil
 			m.colCur = 0
 			m.rowCur = 0
+			m.focusIssue = ""
 			return m, func() tea.Msg { return m.loadBoardData(board) }
 		}
 	}
@@ -421,6 +529,27 @@ func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return transitionsMsg{transitions: tr, issueKey: key}
 				}
 			}
+		}
+	case "n":
+		return m.enterCreate()
+	case "s":
+		if m.colCur >= len(m.columns) {
+			return m, nil
+		}
+		issues := m.columns[m.colCur].issues
+		if m.rowCur < 0 || m.rowCur >= len(issues) {
+			return m, nil
+		}
+		if m.sprintID == 0 {
+			m.toast = "No active sprint on this board"
+			return m, clearToastAfter(3 * time.Second)
+		}
+		key := issues[m.rowCur].Key
+		sprintID := m.sprintID
+		client := m.client
+		return m, func() tea.Msg {
+			err := client.AddIssuesToSprint(sprintID, []string{key})
+			return sprintDoneMsg{issueKey: key, err: err}
 		}
 	}
 	return m, nil
@@ -503,6 +632,152 @@ func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.worklogInput, cmd = m.worklogInput.Update(msg)
 		return m, cmd
 	}
+}
+
+// ─── Create issue ──────────────────────────────────────────────────────
+
+// enterCreate opens the new-issue form for the current board's project and
+// fetches the creatable issue types in the background.
+func (m Model) enterCreate() (tea.Model, tea.Cmd) {
+	if m.boardCur >= len(m.boards) {
+		return m, nil
+	}
+	board := m.boards[m.boardCur]
+	project := ""
+	if board.Location != nil {
+		project = board.Location.ProjectKey
+	}
+	if project == "" {
+		m.toast = "Board has no project location — cannot create here"
+		return m, clearToastAfter(3 * time.Second)
+	}
+
+	sum := textinput.New()
+	sum.Placeholder = "required"
+	sum.CharLimit = 255
+	sum.Width = 40
+	desc := textinput.New()
+	desc.Placeholder = "optional, single line"
+	desc.CharLimit = 2000
+	desc.Width = 40
+
+	m.createProject = project
+	m.createTypes = []string{"Task"} // replaced by createmeta when it lands
+	m.createTypeCur = 0
+	m.createField = 0
+	m.createSummary = sum
+	m.createDesc = desc
+	m.createErr = ""
+	m.view = viewCreate
+
+	client := m.client
+	return m, func() tea.Msg {
+		names, err := client.GetIssueTypes(project)
+		return createTypesMsg{types: names, err: err}
+	}
+}
+
+func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
+	m.createSummary.Blur()
+	m.createDesc.Blur()
+	m.createField = (m.createField + step) % 3
+	var cmd tea.Cmd
+	switch m.createField {
+	case 1:
+		m.createSummary.Focus()
+		cmd = textinput.Blink
+	case 2:
+		m.createDesc.Focus()
+		cmd = textinput.Blink
+	}
+	return m, cmd
+}
+
+func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.createSummary.Blur()
+		m.createDesc.Blur()
+		m.view = viewKanban
+		return m, nil
+	case "tab":
+		return m.cycleCreateField(1)
+	case "shift+tab":
+		return m.cycleCreateField(2)
+	case "enter":
+		return m.submitCreate()
+	}
+
+	switch m.createField {
+	case 0:
+		switch msg.String() {
+		case "left", "up", "h", "k":
+			if m.createTypeCur > 0 {
+				m.createTypeCur--
+			}
+		case "right", "down", "l", "j":
+			if m.createTypeCur < len(m.createTypes)-1 {
+				m.createTypeCur++
+			}
+		}
+	case 1:
+		var cmd tea.Cmd
+		m.createSummary, cmd = m.createSummary.Update(msg)
+		return m, cmd
+	case 2:
+		var cmd tea.Cmd
+		m.createDesc, cmd = m.createDesc.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) submitCreate() (tea.Model, tea.Cmd) {
+	summary := strings.TrimSpace(m.createSummary.Value())
+	if summary == "" {
+		m.createErr = "Summary is required"
+		return m, nil
+	}
+	issueType := "Task"
+	if m.createTypeCur < len(m.createTypes) {
+		issueType = m.createTypes[m.createTypeCur]
+	}
+	var doc *jira.ADFDoc
+	if d := strings.TrimSpace(m.createDesc.Value()); d != "" {
+		a := jira.TextToADF(d)
+		doc = &a
+	}
+	client := m.client
+	project := m.createProject
+	sprintID := m.sprintID
+	m.createErr = ""
+	return m, func() tea.Msg {
+		key, err := client.CreateIssue(project, issueType, summary, doc)
+		if err != nil {
+			return createdMsg{err: err}
+		}
+		if sprintID > 0 {
+			if serr := client.AddIssuesToSprint(sprintID, []string{key}); serr != nil {
+				return createdMsg{key: key, sprintID: sprintID, err: serr}
+			}
+		}
+		return createdMsg{key: key, sprintID: sprintID}
+	}
+}
+
+// findIssuePos locates an issue inside the board columns so the cursor can
+// be placed on it after a reload.
+func findIssuePos(cols []column, key string) (int, int, bool) {
+	for c, col := range cols {
+		for r, iss := range col.issues {
+			if iss.Key == key {
+				return c, r, true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 // ─── View ──────────────────────────────────────────────────────────────
@@ -590,7 +865,7 @@ func (m Model) View() string {
 		totalPages := (len(m.columns) + cpp - 1) / cpp
 		curPage := pageStart/cpp + 1
 		b.WriteString(subStyle.Render(
-			fmt.Sprintf("[←→] Cols  [↑↓] Issues  [Enter] Detail  [t] Transition  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
+			fmt.Sprintf("[←→] Cols  [↑↓] Issues  [Enter] Detail  [t] Transition  [n] New  [s] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
 				m.colCur+1, len(m.columns), curPage, totalPages)))
 
 	case viewDetail:
@@ -620,6 +895,50 @@ func (m Model) View() string {
 		b.WriteString(m.worklogInput.View())
 		b.WriteString("\n\n")
 		b.WriteString(subStyle.Render("[Enter] Confirm  [esc] Cancel"))
+
+	case viewCreate:
+		b.WriteString(titleStyle.Render("✚ New Issue · " + m.createProject))
+		b.WriteString("\n\n")
+
+		cur := "Task"
+		if m.createTypeCur < len(m.createTypes) {
+			cur = m.createTypes[m.createTypeCur]
+		}
+		fields := []string{"Type", "Summary", "Description"}
+		for i, label := range fields {
+			marker := "  "
+			if i == m.createField {
+				marker = "→ "
+			}
+			var line string
+			switch i {
+			case 0:
+				hint := ""
+				if len(m.createTypes) > 1 {
+					hint = fmt.Sprintf("  (%d/%d)", m.createTypeCur+1, len(m.createTypes))
+				}
+				line = fmt.Sprintf("◀ %s ▶%s", cur, hint)
+			case 1:
+				line = m.createSummary.View()
+			case 2:
+				line = m.createDesc.View()
+			}
+			b.WriteString(lipgloss.NewStyle().Bold(i == m.createField).Render(marker+padRight(label+":", 14)) + line + "\n")
+		}
+		b.WriteString("\n")
+
+		if m.sprintID > 0 {
+			b.WriteString(subStyle.Render("Enter creates it directly in sprint: " + m.sprintName))
+		} else {
+			b.WriteString(subStyle.Render("No active sprint — the ticket will land in the backlog"))
+		}
+		b.WriteString("\n")
+		if m.createErr != "" {
+			b.WriteString(errStyle.Render("✗ " + m.createErr))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(subStyle.Render("[tab] Field  [←→] Type  [Enter] Create  [esc] Cancel"))
 	}
 
 	// Toast

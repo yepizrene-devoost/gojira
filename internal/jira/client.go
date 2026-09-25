@@ -240,6 +240,45 @@ func (c *Client) CreateIssue(projectKey, issueType, summary string, description 
 	return resp.Key, nil
 }
 
+// AddIssuesToSprint moves issues into a sprint (e.g. backlog → active sprint).
+// POST /rest/agile/1.0/sprint/{id}/issue with {"issues": ["KEY", ...]}.
+func (c *Client) AddIssuesToSprint(sprintID int, keys []string) error {
+	payload, _ := json.Marshal(map[string][]string{"issues": keys})
+	_, err := c.post(fmt.Sprintf(pathSprintAdd, sprintID), payload)
+	return err
+}
+
+// GetIssueTypes returns the creatable issue type names for a project
+// via the Platform v3 createmeta endpoint.
+func (c *Client) GetIssueTypes(projectKey string) ([]string, error) {
+	b, err := c.get(fmt.Sprintf(pathCreateMeta, projectKey))
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Projects []struct {
+			IssueTypes []struct {
+				Name string `json:"name"`
+			} `json:"issuetypes"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, p := range r.Projects {
+		for _, t := range p.IssueTypes {
+			if t.Name != "" {
+				names = append(names, t.Name)
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no creatable issue types for project %s", projectKey)
+	}
+	return names, nil
+}
+
 // AddComment adds a comment (ADF body) to an issue.
 func (c *Client) AddComment(issueKey string, body ADFDoc) error {
 	payload, _ := json.Marshal(map[string]interface{}{"body": body})

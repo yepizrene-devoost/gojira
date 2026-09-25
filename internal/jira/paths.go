@@ -21,6 +21,7 @@ const (
 	pathIssueAssign      = "/rest/api/3/issue/%s/assignee"
 	pathSearchJQL        = "/rest/api/3/search/jql"
 	pathUserByUsername    = "/rest/api/3/user/username?username=%s"
+	pathCreateMeta       = "/rest/api/3/issue/createmeta?projectKeys=%s"
 
 	// ─── Agile API 1.0 ────────────────────────────────────────────
 	pathBoardList    = "/rest/agile/1.0/board?maxResults=50"
@@ -28,6 +29,7 @@ const (
 	pathSprintList   = "/rest/agile/1.0/board/%d/sprint"
 	pathBoardIssues  = "/rest/agile/1.0/board/%d/issue"
 	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
+	pathSprintAdd    = "/rest/agile/1.0/sprint/%d/issue"
 )
 
 // Issue fields for different contexts.
