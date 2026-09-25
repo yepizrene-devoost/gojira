@@ -5,9 +5,12 @@ import "strings"
 // ─── Board / Sprint ────────────────────────────────────────────────────
 
 type Board struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Project *struct {
+		Key string `json:"key"`
+	} `json:"location,omitempty"` // populated when using enriched queries
 }
 
 type BoardConfig struct {
@@ -42,7 +45,20 @@ type AssigneeField struct {
 	DisplayName string `json:"displayName"`
 }
 
+type ReporterField struct {
+	DisplayName string `json:"displayName"`
+}
+
 type IssueTypeField struct {
+	Name string `json:"name"`
+}
+
+type ProjectField struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+type ComponentField struct {
 	Name string `json:"name"`
 }
 
@@ -52,20 +68,44 @@ type DescriptionField struct {
 	} `json:"content"`
 }
 
+type CommentField struct {
+	Comments []Comment `json:"comments"`
+}
+
+type Comment struct {
+	Author struct {
+		DisplayName string `json:"displayName"`
+	} `json:"author"`
+	Body    string `json:"body"`
+	Created string `json:"created"`
+}
+
 type IssueFieldData struct {
 	Summary     string            `json:"summary"`
 	Status      *StatusField      `json:"status,omitempty"`
 	Priority    *PriorityField    `json:"priority,omitempty"`
 	Assignee    *AssigneeField    `json:"assignee,omitempty"`
+	Reporter    *ReporterField    `json:"reporter,omitempty"`
 	IssueType   *IssueTypeField   `json:"issuetype,omitempty"`
+	Project     *ProjectField     `json:"project,omitempty"`
+	Labels      []string          `json:"labels,omitempty"`
+	Components  []ComponentField  `json:"components,omitempty"`
 	Created     string            `json:"created"`
 	Updated     string            `json:"updated"`
 	Description *DescriptionField `json:"description,omitempty"`
+	Comment     *CommentField     `json:"comment,omitempty"`
 }
 
 type Issue struct {
 	Key    string         `json:"key"`
 	Fields IssueFieldData `json:"fields"`
+}
+
+// ─── Project ───────────────────────────────────────────────────────────
+
+type Project struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
 }
 
 // ─── Transitions / Worklog ─────────────────────────────────────────────
@@ -92,11 +132,22 @@ type TicketJSON struct {
 	Status      string   `json:"status"`
 	Priority    string   `json:"priority"`
 	Assignee    string   `json:"assignee"`
+	Reporter    string   `json:"reporter,omitempty"`
 	IssueType   string   `json:"issueType"`
+	Project     string   `json:"project,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
+	Components  []string `json:"components,omitempty"`
 	Description string   `json:"description"`
 	Created     string   `json:"created"`
 	Updated     string   `json:"updated"`
-	Labels      []string `json:"labels,omitempty"`
+	TimeLogged  string   `json:"timeLogged,omitempty"`
+	Comments    []CommentJSON `json:"comments,omitempty"`
+}
+
+type CommentJSON struct {
+	Author  string `json:"author"`
+	Body    string `json:"body"`
+	Created string `json:"created"`
 }
 
 func IssueToTicketJSON(iss Issue) TicketJSON {
@@ -106,6 +157,7 @@ func IssueToTicketJSON(iss Issue) TicketJSON {
 		Created:  iss.Fields.Created,
 		Updated:  iss.Fields.Updated,
 		Assignee: "Unassigned",
+		Labels:   iss.Fields.Labels,
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name
@@ -119,6 +171,18 @@ func IssueToTicketJSON(iss Issue) TicketJSON {
 	if iss.Fields.Assignee != nil {
 		t.Assignee = iss.Fields.Assignee.DisplayName
 	}
+	if iss.Fields.Reporter != nil {
+		t.Reporter = iss.Fields.Reporter.DisplayName
+	}
+	if iss.Fields.Project != nil {
+		t.Project = iss.Fields.Project.Key
+	}
+	if len(iss.Fields.Components) > 0 {
+		t.Components = make([]string, len(iss.Fields.Components))
+		for i, c := range iss.Fields.Components {
+			t.Components[i] = c.Name
+		}
+	}
 	if iss.Fields.Description != nil {
 		for _, block := range iss.Fields.Description.Content {
 			for _, c := range block.Content {
@@ -128,6 +192,16 @@ func IssueToTicketJSON(iss Issue) TicketJSON {
 			}
 		}
 		t.Description = strings.TrimRight(t.Description, "\n")
+	}
+	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
+		t.Comments = make([]CommentJSON, len(iss.Fields.Comment.Comments))
+		for i, c := range iss.Fields.Comment.Comments {
+			t.Comments[i] = CommentJSON{
+				Author:  c.Author.DisplayName,
+				Body:    c.Body,
+				Created: c.Created,
+			}
+		}
 	}
 	return t
 }

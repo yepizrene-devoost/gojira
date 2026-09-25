@@ -126,6 +126,7 @@ func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 	return r.Issues, nil
 }
 
+// GetIssue fetches a single issue with core fields (fast).
 func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,status,priority,assignee,issuetype,created,updated,description", issueKey))
 	if err != nil {
@@ -134,6 +135,49 @@ func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 	var iss Issue
 	json.Unmarshal(b, &iss)
 	return &iss, nil
+}
+
+// GetIssueFull fetches a single issue with all enriched fields (project, labels, components, reporter, comments, time tracking).
+func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
+	fields := "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment"
+	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=%s", issueKey, fields))
+	if err != nil {
+		return nil, err
+	}
+	var iss Issue
+	json.Unmarshal(b, &iss)
+	return &iss, nil
+}
+
+// GetProjects returns all visible projects.
+func (c *Client) GetProjects() ([]Project, error) {
+	b, err := c.get("/rest/api/3/project?maxResults=100")
+	if err != nil {
+		return nil, err
+	}
+	var projects []Project
+	json.Unmarshal(b, &projects)
+	return projects, nil
+}
+
+// SearchJQL runs a JQL query and returns matching issues.
+func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	encoded := strings.ReplaceAll(jql, "'", "\\'")
+	path := fmt.Sprintf("/rest/api/3/search/jql?jql=%s&maxResults=%d&fields=summary,status,priority,assignee,issuetype,project,labels,created,updated", encoded, maxResults)
+	b, err := c.get(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	var r struct {
+		Issues     []Issue `json:"issues"`
+		Total      int     `json:"total"`
+		MaxResults int     `json:"maxResults"`
+	}
+	json.Unmarshal(b, &r)
+	return r.Issues, r.Total, nil
 }
 
 func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
