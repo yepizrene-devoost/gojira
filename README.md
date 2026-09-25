@@ -1,145 +1,183 @@
-# GoJira TUI
+# GoJira
 
-A terminal user interface (TUI) application built with Go and [Bubble Tea](https://github.com/charmbracelet/bubbletea) to interact with Jira Cloud.
+Manage your Jira boards from the terminal. Built with Go, [Bubble Tea](https://github.com/charmbracelet/bubbletea), and [Cobra](https://github.com/spf13/cobra).
 
-![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
+
+A TUI for daily board work and a CLI for scripting and AI agent consumption — every operation available both interactively and programmatically.
 
 ## Features
 
-- 🔐 Secure authentication via API tokens
-- 📋 View all boards (Scrum/Kanban)
-- 🏃 Switch between sprints
-- 📊 Kanban board view with columns
-- 🎫 Browse issues for each board
-- 🔍 Filter issues
-- ⌨️ Keyboard navigation (vim-like)
-- 🎨 Beautiful terminal UI with colors
-- 🌐 Open issues in browser
-
-## Prerequisites
-
-- Go 1.21 or higher
-- A Jira Cloud account
-- Jira API token
-
-## Getting Your Jira API Token
-
-1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Click **Create API token**
-3. Give it a name (e.g., "GoJira TUI")
-4. Copy the token
+- **Kanban board view** — columns, active sprint auto-detected, horizontal pagination, cursor-following scroll
+- **Full ticket management** — view, transition status, add worklog, comment, create, assign, update
+- **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
+- **Secure auth** — API token in OS keychain (macOS/Linux/Windows) with encrypted-file fallback
+- **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
+- **Keyboard-first TUI** — vim-like navigation, copy tickets as JSON (`c`/`C`), open in browser (`o`)
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/rene/gojira.git
-cd gojira
-
-# Build
-go build -o gojira .
-
-# Or run directly
-go run .
+go install github.com/yepizrene-devoost/gojira@latest
 ```
+
+Or build from source:
+
+```bash
+git clone https://github.com/yepizrene-devoost/gojira.git
+cd gojira
+go build -o gojira .
+```
+
+## Getting your Jira API token
+
+1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**
+3. Name it (e.g. "GoJira") and copy it
 
 ## Configuration
 
-Create a `.env` file in the project root:
-
-```env
-JIRA_EMAIL=your-email@example.com
-JIRA_API_TOKEN=your-api-token-here
-JIRA_DOMAIN=your-domain.atlassian.net
-```
-
-Or export environment variables:
+Run the setup wizard once — it stores your domain and email in `~/.config/gojira/config.yaml` and your token in the OS keychain:
 
 ```bash
-export JIRA_EMAIL="your-email@example.com"
-export JIRA_API_TOKEN="your-api-token-here"
+gojira config init
+```
+
+Or non-interactively:
+
+```bash
+gojira config init --domain mycompany.atlassian.net --email me@example.com --token <API_TOKEN>
+```
+
+Environment variables still work and take precedence over the config file (useful for CI):
+
+```bash
+export JIRA_EMAIL="you@example.com"
+export JIRA_API_TOKEN="..."
 export JIRA_DOMAIN="your-domain.atlassian.net"
 ```
 
-## Usage
+Credential resolution: **env vars > config file (keychain → YAML fallback)**.
+
+## CLI commands
+
+| Command | Description |
+|---|---|
+| `gojira` | Launch the interactive TUI |
+| `gojira boards` | List boards with project context (`--json`) |
+| `gojira projects` | List Jira projects (`--json`) |
+| `gojira get <KEY>` | Full ticket details: project, labels, components, comments (`--json`) |
+| `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
+| `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
+| `gojira move <KEY> --to <STATUS>` | Transition a ticket (no `--to` lists available transitions) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--comment`, `--show` for history) |
+| `gojira create` | Create an issue (`--project`, `--type`, `--summary`, `--description-file`) |
+| `gojira comment <KEY> <text>` | Comment with `--mention email` (resolves to @mention) |
+| `gojira assign <KEY> <email>` | Assign by email (resolves to accountId) |
+| `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` |
+| `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
+
+### Agent usage examples
 
 ```bash
-# Run the application
-./gojira
+# Feed a sprint to an AI agent
+gojira export --board 1 | jq '.[] | select(.assignee == "René")'
 
-# Or
-go run .
+# What can this ticket become? (transition picker as JSON)
+gojira move ARA-1892 --json
+
+# Full requirement context as JSON
+gojira get ARA-1892 --json
+
+# Create a ticket from a markdown requirement file
+gojira create --project ARA --type Task --summary "Add export" --description-file req.md
+
+# Comment and notify the PM
+gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
 ```
 
-### Keyboard Shortcuts
+All `--json` output is a stable, machine-readable contract: valid JSON on stdout, diagnostics on stderr.
 
-#### Board List
+## TUI keyboard shortcuts
+
+### Boards list
+
 | Key | Action |
-|-----|--------|
-| `↑/↓` or `j/k` | Navigate boards |
-| `Enter` | Select board |
+|---|---|
+| `↑/↓` or `k/j` | Navigate boards |
+| `Enter` | Open board |
 | `q` | Quit |
 
-#### Board View (Kanban)
-| Key | Action |
-|-----|--------|
-| `←/→` or `h/l` | Navigate columns |
-| `↑/↓` or `j/k` | Navigate issues |
-| `Enter` | View issue details |
-| `s` | Change sprint |
-| `o` | Open in browser |
-| `Esc` | Back to boards |
+### Kanban view
 
-## Project Structure
+| Key | Action |
+|---|---|
+| `←/→` or `h/l` | Move between columns (pages horizontally) |
+| `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
+| `Enter` | Ticket detail |
+| `t` | Transition ticket (status picker) |
+| `C` | Copy column as JSON to clipboard |
+| `Esc` / `q` | Back to boards |
+
+### Ticket detail
+
+| Key | Action |
+|---|---|
+| `c` | Copy ticket as JSON to clipboard |
+| `w` | Add worklog |
+| `o` | Open in browser |
+| `Esc` | Back to board |
+
+## Project structure
 
 ```
 gojira/
-├── config/
-│   └── env.go              # Environment configuration
-├── jira/
-│   ├── client.go           # Jira API client
-│   └── types.go            # Data types
-├── tui/
-│   ├── common/
-│   │   └── styles.go       # Shared styles and utilities
-│   ├── boards/
-│   │   └── model.go        # Board/Kanban view
-│   ├── sprints/
-│   │   └── model.go        # Sprint selector
-│   ├── issues/
-│   │   ├── model.go        # Issue list view
-│   │   └── browser.go      # Open in browser
-│   └── model.go            # Main TUI model
-├── main.go                 # Entry point
-├── .env.example            # Example configuration
-└── README.md
+├── main.go                    # Entry point
+├── cmd/                       # Cobra CLI commands
+│   ├── root.go                # Root command + credential resolution
+│   ├── tui.go                 # TUI launcher + first-run wizard
+│   ├── boards.go projects.go get.go search.go export.go
+│   ├── move.go log.go create.go comment.go assign.go update.go
+│   └── config.go              # config init/set/get/path/test
+├── internal/
+│   ├── jira/                  # Jira domain
+│   │   ├── client.go          # HTTP client (GET/POST/PUT)
+│   │   ├── paths.go           # ALL API endpoints — single source of truth
+│   │   └── types.go           # Types + ADF parser + curated TicketJSON
+│   ├── tui/                   # Bubble Tea TUI (single model, no sub-model routing)
+│   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog
+│   │   ├── setup.go           # First-run configuration wizard
+│   │   └── tui_test.go        # Render geometry tests
+│   └── config/                # XDG config + keychain token storage
+│       └── config.go
+└── .github/ISSUE_TEMPLATE/    # Issue forms (bug, feature, chore)
 ```
 
-## API Endpoints Used
+## API surface
 
-- `GET /rest/api/3/serverInfo` - Test connection
-- `GET /rest/api/3/project` - List projects
-- `GET /rest/agile/1.0/board` - List boards
-- `GET /rest/agile/1.0/board/{id}/configuration` - Board columns
-- `GET /rest/agile/1.0/board/{id}/sprint` - List sprints
-- `GET /rest/agile/1.0/board/{id}/sprint/{id}/issue` - Sprint issues
-- `GET /rest/api/3/issue/{key}` - Issue details
+- **Platform REST API v3** (`/rest/api/3/*`) — issues, transitions, worklogs, comments, users, projects
+- **Agile REST API 1.0** (`/rest/agile/1.0/*`) — boards, board configuration, sprints
+
+All endpoints live in `internal/jira/paths.go`. If Atlassian deprecates a path, that file is the only place to change.
 
 ## Development
 
 ```bash
-# Run tests
+go build -o gojira .
 go test ./...
+```
 
-# Build for production
-go build -ldflags="-s -w" -o gojira .
+Run the TUI in a real terminal (it needs a TTY):
+
+```bash
+./gojira
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome. Use the issue templates (bug / feature / chore) and open a PR.
