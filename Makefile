@@ -28,6 +28,11 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed"; exit 1; }
 	golangci-lint run ./...
 
+.PHONY: changelog
+changelog:
+	@command -v git-cliff >/dev/null 2>&1 || { echo "git-cliff not installed"; exit 1; }
+	git-cliff --config cliff.toml --output CHANGELOG.draft.md
+
 .PHONY: vet
 vet:
 	go vet ./...

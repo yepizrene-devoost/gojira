@@ -12,7 +12,6 @@ import (
 )
 
 var keyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
-var labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B"))
 var metaLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Bold(true)
 
 var getCmd = &cobra.Command{
@@ -89,7 +88,7 @@ func renderIssueFull(iss *jira.Issue) string {
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 
 	for _, row := range rows {
-		b.WriteString(fmt.Sprintf("%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1]))
+		_, _ = fmt.Fprintf(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
 	}
 
 	// Description
@@ -107,13 +106,13 @@ func renderIssueFull(iss *jira.Issue) string {
 
 	// Comments
 	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
-		b.WriteString(fmt.Sprintf("\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments)))
+		_, _ = fmt.Fprintf(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
 		for i, c := range iss.Fields.Comment.Comments {
 			body := strings.TrimSpace(c.Body.Flatten())
 			if len(body) > 200 {
 				body = body[:197] + "..."
 			}
-			b.WriteString(fmt.Sprintf("  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body))
+			_, _ = fmt.Fprintf(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
 		}
 	}
 

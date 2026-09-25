@@ -38,7 +38,7 @@ func (c *Client) get(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
@@ -55,7 +55,7 @@ func (c *Client) post(path string, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
@@ -71,7 +71,9 @@ func (c *Client) TestConnection() (string, error) {
 		return "", err
 	}
 	var info struct{ BaseURL, Version string }
-	json.Unmarshal(b, &info)
+	if err := json.Unmarshal(b, &info); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("%s (Jira %s)", info.BaseURL, info.Version), nil
 }
 
@@ -81,7 +83,9 @@ func (c *Client) GetBoards() ([]Board, error) {
 		return nil, err
 	}
 	var r struct{ Values []Board }
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	return r.Values, nil
 }
 
@@ -91,7 +95,9 @@ func (c *Client) GetBoardConfig(id int) (BoardConfig, error) {
 		return BoardConfig{}, err
 	}
 	var cfg BoardConfig
-	json.Unmarshal(b, &cfg)
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return BoardConfig{}, err
+	}
 	return cfg, nil
 }
 
@@ -101,7 +107,9 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 		return nil, err
 	}
 	var r struct{ Values []Sprint }
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	if len(r.Values) > 0 {
 		return r.Values, nil
 	}
@@ -109,7 +117,9 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	return r.Values, nil
 }
 
@@ -137,7 +147,9 @@ func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 			Total  int     `json:"total"`
 			IsLast bool    `json:"isLast"`
 		}
-		json.Unmarshal(b, &r)
+		if err := json.Unmarshal(b, &r); err != nil {
+			return nil, err
+		}
 		if len(r.Issues) == 0 {
 			break
 		}
@@ -156,7 +168,9 @@ func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 		return nil, err
 	}
 	var iss Issue
-	json.Unmarshal(b, &iss)
+	if err := json.Unmarshal(b, &iss); err != nil {
+		return nil, err
+	}
 	return &iss, nil
 }
 
@@ -166,7 +180,9 @@ func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
 		return nil, err
 	}
 	var iss Issue
-	json.Unmarshal(b, &iss)
+	if err := json.Unmarshal(b, &iss); err != nil {
+		return nil, err
+	}
 	return &iss, nil
 }
 
@@ -176,7 +192,9 @@ func (c *Client) GetProjects() ([]Project, error) {
 		return nil, err
 	}
 	var projects []Project
-	json.Unmarshal(b, &projects)
+	if err := json.Unmarshal(b, &projects); err != nil {
+		return nil, err
+	}
 	return projects, nil
 }
 
@@ -195,7 +213,9 @@ func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 		Total      int     `json:"total"`
 		MaxResults int     `json:"maxResults"`
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, 0, err
+	}
 	return r.Issues, r.Total, nil
 }
 
@@ -207,7 +227,9 @@ func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
 	var r struct {
 		Transitions []Transition `json:"transitions"`
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	return r.Transitions, nil
 }
 
@@ -227,7 +249,9 @@ func (c *Client) GetWorklog(issueKey string) ([]Worklog, error) {
 	var r struct {
 		Worklogs []Worklog `json:"worklogs"`
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	return r.Worklogs, nil
 }
 
@@ -258,7 +282,9 @@ func (c *Client) CreateIssue(projectKey, issueType, summary string, description 
 		return "", err
 	}
 	var resp struct{ Key string }
-	json.Unmarshal(b, &resp)
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return "", err
+	}
 	return resp.Key, nil
 }
 
@@ -324,7 +350,7 @@ func (c *Client) AssignIssue(issueKey, accountID string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
@@ -348,7 +374,7 @@ func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) err
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
@@ -409,7 +435,9 @@ func (c *Client) userPicker(query string) ([]UserRef, error) {
 	var r struct {
 		Users []UserRef `json:"users"`
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
 	return r.Users, nil
 }
 
@@ -452,7 +480,9 @@ func (c *Client) resolveViaJQL(email string) (accountID, displayName string, ok 
 			} `json:"fields"`
 		} `json:"issues"`
 	}
-	json.Unmarshal(b, &r)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", "", false
+	}
 	for _, iss := range r.Issues {
 		for _, u := range []*UserRef{iss.Fields.Creator, iss.Fields.Reporter, iss.Fields.Assignee} {
 			if u != nil && u.AccountID != "" && strings.EqualFold(u.EmailAddress, email) {
