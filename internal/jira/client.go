@@ -112,20 +112,41 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 	return r.Values, nil
 }
 
+// GetBoardIssues returns all issues on a board (or in one sprint), paging
+// through the Agile endpoint until every result is collected. A single
+// request is capped by the API at maxResults, which silently truncates
+// large sprints.
 func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
-	var path string
-	if sprintID > 0 {
-		path = fmt.Sprintf(pathSprintIssues+"?maxResults=100&fields=%s", boardID, sprintID, fieldsBasic)
-	} else {
-		path = fmt.Sprintf(pathBoardIssues+"?maxResults=100&fields=%s", boardID, fieldsBasic)
+	const page = 100
+	const maxIssues = 2000 // safety cap against servers that ignore startAt
+	var all []Issue
+	for startAt := 0; startAt < maxIssues; {
+		var path string
+		if sprintID > 0 {
+			path = fmt.Sprintf(pathSprintIssues+"?maxResults=%d&startAt=%d&fields=%s", boardID, sprintID, page, startAt, fieldsBasic)
+		} else {
+			path = fmt.Sprintf(pathBoardIssues+"?maxResults=%d&startAt=%d&fields=%s", boardID, page, startAt, fieldsBasic)
+		}
+		b, err := c.get(path)
+		if err != nil {
+			return nil, err
+		}
+		var r struct {
+			Issues []Issue `json:"issues"`
+			Total  int     `json:"total"`
+			IsLast bool    `json:"isLast"`
+		}
+		json.Unmarshal(b, &r)
+		if len(r.Issues) == 0 {
+			break
+		}
+		all = append(all, r.Issues...)
+		startAt += len(r.Issues)
+		if r.IsLast || (r.Total > 0 && len(all) >= r.Total) {
+			break
+		}
 	}
-	b, err := c.get(path)
-	if err != nil {
-		return nil, err
-	}
-	var r struct{ Issues []Issue }
-	json.Unmarshal(b, &r)
-	return r.Issues, nil
+	return all, nil
 }
 
 func (c *Client) GetIssue(issueKey string) (*Issue, error) {
