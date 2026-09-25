@@ -70,7 +70,9 @@ func openBrowser(key, domain string) tea.Cmd {
 			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 		}
 		if cmd != nil {
-			cmd.Start()
+			if err := cmd.Start(); err != nil {
+				return toastMsg{text: "Could not open browser: " + err.Error()}
+			}
 		}
 		return nil
 	}
@@ -799,9 +801,10 @@ func (m Model) View() string {
 		}
 		for i, board := range m.boards {
 			icon := "📋"
-			if board.Type == "scrum" {
+			switch board.Type {
+			case "scrum":
 				icon = "🏉"
-			} else if board.Type == "kanban" {
+			case "kanban":
 				icon = "📊"
 			}
 			// Show project name if available (e.g. "SCRUM board · Access Road Assistance")
@@ -1066,21 +1069,21 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n\n")
 
 	if iss.Fields.IssueType != nil {
-		b.WriteString(fmt.Sprintf("Type:     %s\n", iss.Fields.IssueType.Name))
+		_, _ = fmt.Fprintf(&b, "Type:     %s\n", iss.Fields.IssueType.Name)
 	}
 	if iss.Fields.Status != nil {
-		b.WriteString(fmt.Sprintf("Status:   %s\n", iss.Fields.Status.Name))
+		_, _ = fmt.Fprintf(&b, "Status:   %s\n", iss.Fields.Status.Name)
 	}
 	if iss.Fields.Priority != nil {
-		b.WriteString(fmt.Sprintf("Priority: %s\n", iss.Fields.Priority.Name))
+		_, _ = fmt.Fprintf(&b, "Priority: %s\n", iss.Fields.Priority.Name)
 	}
 	if iss.Fields.Assignee != nil {
-		b.WriteString(fmt.Sprintf("Assignee: %s\n", iss.Fields.Assignee.DisplayName))
+		_, _ = fmt.Fprintf(&b, "Assignee: %s\n", iss.Fields.Assignee.DisplayName)
 	} else {
 		b.WriteString("Assignee: Unassigned\n")
 	}
-	b.WriteString(fmt.Sprintf("Created:  %s\n", iss.Fields.Created))
-	b.WriteString(fmt.Sprintf("Updated:  %s\n", iss.Fields.Updated))
+	_, _ = fmt.Fprintf(&b, "Created:  %s\n", iss.Fields.Created)
+	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", iss.Fields.Updated)
 
 	if iss.Fields.Description != nil {
 		b.WriteString("\n── Description ──\n")
