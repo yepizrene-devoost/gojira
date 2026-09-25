@@ -8,11 +8,12 @@ import (
 // ─── Board / Sprint ────────────────────────────────────────────────────
 
 type Board struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Project *struct {
-		Key string `json:"key"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Location *struct {
+		ProjectName string `json:"projectName"`
+		ProjectKey  string `json:"projectKey"`
 	} `json:"location,omitempty"`
 }
 

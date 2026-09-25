@@ -65,7 +65,7 @@ func (c *Client) post(path string, payload []byte) ([]byte, error) {
 // ─── Read ──────────────────────────────────────────────────────────────
 
 func (c *Client) TestConnection() (string, error) {
-	b, err := c.get("/rest/api/3/serverInfo")
+	b, err := c.get(pathServerInfo)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +75,7 @@ func (c *Client) TestConnection() (string, error) {
 }
 
 func (c *Client) GetBoards() ([]Board, error) {
-	b, err := c.get("/rest/agile/1.0/board?maxResults=50")
+	b, err := c.get(pathBoardList)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (c *Client) GetBoards() ([]Board, error) {
 }
 
 func (c *Client) GetBoardConfig(id int) (BoardConfig, error) {
-	b, err := c.get(fmt.Sprintf("/rest/agile/1.0/board/%d/configuration", id))
+	b, err := c.get(fmt.Sprintf(pathBoardConfig, id))
 	if err != nil {
 		return BoardConfig{}, err
 	}
@@ -95,7 +95,7 @@ func (c *Client) GetBoardConfig(id int) (BoardConfig, error) {
 }
 
 func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
-	b, err := c.get(fmt.Sprintf("/rest/agile/1.0/board/%d/sprint?state=active&maxResults=50", boardID))
+	b, err := c.get(fmt.Sprintf(pathSprintList+"?state=active&maxResults=50", boardID))
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 	if len(r.Values) > 0 {
 		return r.Values, nil
 	}
-	b, err = c.get(fmt.Sprintf("/rest/agile/1.0/board/%d/sprint?maxResults=50", boardID))
+	b, err = c.get(fmt.Sprintf(pathSprintList+"?maxResults=50", boardID))
 	if err != nil {
 		return nil, err
 	}
@@ -113,9 +113,11 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 }
 
 func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
-	path := fmt.Sprintf("/rest/agile/1.0/board/%d/issue?maxResults=100&fields=summary,status,priority,assignee,issuetype", boardID)
+	var path string
 	if sprintID > 0 {
-		path = fmt.Sprintf("/rest/agile/1.0/board/%d/sprint/%d/issue?maxResults=100&fields=summary,status,priority,assignee,issuetype", boardID, sprintID)
+		path = fmt.Sprintf(pathSprintIssues+"?maxResults=100&fields=%s", boardID, sprintID, fieldsBasic)
+	} else {
+		path = fmt.Sprintf(pathBoardIssues+"?maxResults=100&fields=%s", boardID, fieldsBasic)
 	}
 	b, err := c.get(path)
 	if err != nil {
@@ -126,9 +128,8 @@ func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 	return r.Issues, nil
 }
 
-// GetIssue fetches a single issue with core fields (fast).
 func (c *Client) GetIssue(issueKey string) (*Issue, error) {
-	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,status,priority,assignee,issuetype,created,updated,description", issueKey))
+	b, err := c.get(pathIssueWithFields(issueKey, fieldsBasic+",created,updated,description"))
 	if err != nil {
 		return nil, err
 	}
@@ -137,10 +138,8 @@ func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 	return &iss, nil
 }
 
-// GetIssueFull fetches a single issue with all enriched fields (project, labels, components, reporter, comments, time tracking).
 func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
-	fields := "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
-	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=%s", issueKey, fields))
+	b, err := c.get(pathIssueWithFields(issueKey, fieldsFull))
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +148,8 @@ func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
 	return &iss, nil
 }
 
-// GetProjects returns all visible projects.
 func (c *Client) GetProjects() ([]Project, error) {
-	b, err := c.get("/rest/api/3/project?maxResults=100")
+	b, err := c.get(pathProjects)
 	if err != nil {
 		return nil, err
 	}
@@ -160,13 +158,12 @@ func (c *Client) GetProjects() ([]Project, error) {
 	return projects, nil
 }
 
-// SearchJQL runs a JQL query and returns matching issues.
 func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 	if maxResults <= 0 {
 		maxResults = 50
 	}
 	encoded := strings.ReplaceAll(jql, "'", "\\'")
-	path := fmt.Sprintf("/rest/api/3/search/jql?jql=%s&maxResults=%d&fields=summary,status,priority,assignee,issuetype,project,labels,created,updated", encoded, maxResults)
+	path := fmt.Sprintf("%s?jql=%s&maxResults=%d&fields=%s", pathSearchJQL, encoded, maxResults, fieldsSearch)
 	b, err := c.get(path)
 	if err != nil {
 		return nil, 0, err
@@ -181,7 +178,7 @@ func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 }
 
 func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
-	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey))
+	b, err := c.get(fmt.Sprintf(pathIssueTransitions, issueKey))
 	if err != nil {
 		return nil, err
 	}
@@ -196,12 +193,12 @@ func (c *Client) TransitionIssue(issueKey, transitionID string) error {
 	payload, _ := json.Marshal(map[string]map[string]string{
 		"transition": {"id": transitionID},
 	})
-	_, err := c.post(fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey), payload)
+	_, err := c.post(fmt.Sprintf(pathIssueTransitions, issueKey), payload)
 	return err
 }
 
 func (c *Client) GetWorklog(issueKey string) ([]Worklog, error) {
-	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey))
+	b, err := c.get(fmt.Sprintf(pathIssueWorklog, issueKey))
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +214,6 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 		"timeSpent": timeSpent,
 		"comment":   comment,
 	})
-	_, err := c.post(fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey), payload)
+	_, err := c.post(fmt.Sprintf(pathIssueWorklog, issueKey), payload)
 	return err
 }

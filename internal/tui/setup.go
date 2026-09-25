@@ -73,6 +73,16 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case setupDoneMsg:
+		if msg.err != nil {
+			m.step = stepFailed
+			m.err = msg.err.Error()
+		} else {
+			m.step = stepDone
+			m.testResult = msg.info
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":

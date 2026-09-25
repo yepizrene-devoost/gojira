@@ -530,7 +530,12 @@ func (m Model) View() string {
 			} else if board.Type == "kanban" {
 				icon = "📊"
 			}
-			line := fmt.Sprintf("%s %s [%s]", icon, board.Name, board.Type)
+			// Show project name if available (e.g. "SCRUM board · Access Road Assistance")
+			label := board.Name
+			if board.Location != nil && board.Location.ProjectName != "" {
+				label = board.Name + " · " + board.Location.ProjectName
+			}
+			line := fmt.Sprintf("%s %s [%s]", icon, label, board.Type)
 			if i == m.boardCur {
 				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + line))
 			} else {

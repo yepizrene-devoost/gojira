@@ -26,7 +26,11 @@ var boardsCmd = &cobra.Command{
 			fmt.Println(string(b))
 		} else {
 			for _, b := range boards {
-				fmt.Printf("%-6d  %-30s  [%s]\n", b.ID, b.Name, b.Type)
+				project := ""
+				if b.Location != nil && b.Location.ProjectKey != "" {
+					project = fmt.Sprintf("  (%s)", b.Location.ProjectName)
+				}
+				fmt.Printf("%-6d  %-30s  [%s]%s\n", b.ID, b.Name, b.Type, project)
 			}
 		}
 		return nil

@@ -1,0 +1,39 @@
+package jira
+
+import "fmt"
+
+// API path constants — all endpoints live here.
+// Platform REST API v3 (Cloud)  — https://developer.atlassian.com/cloud/jira/platform/rest/v3/
+// Agile API 1.0                — https://developer.atlassian.com/cloud/jira/software/rest/v1/
+//
+// If Atlassian deprecates an endpoint or you switch to Server/DC (v2),
+// change these paths here — no other file should contain raw paths.
+
+const (
+	// ─── Platform API v3 ──────────────────────────────────────────
+	pathServerInfo       = "/rest/api/3/serverInfo"
+	pathProjects         = "/rest/api/3/project?maxResults=100"
+	pathIssue            = "/rest/api/3/issue/%s"
+	pathIssueTransitions = "/rest/api/3/issue/%s/transitions"
+	pathIssueWorklog     = "/rest/api/3/issue/%s/worklog"
+	pathSearchJQL        = "/rest/api/3/search/jql"
+
+	// ─── Agile API 1.0 ────────────────────────────────────────────
+	pathBoardList   = "/rest/agile/1.0/board?maxResults=50"
+	pathBoardConfig = "/rest/agile/1.0/board/%d/configuration"
+	pathSprintList  = "/rest/agile/1.0/board/%d/sprint"
+	pathBoardIssues = "/rest/agile/1.0/board/%d/issue"
+	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
+)
+
+// Issue fields for different contexts.
+const (
+	fieldsBasic     = "summary,status,priority,assignee,issuetype"
+	fieldsFull      = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
+	fieldsSearch    = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
+	fieldsExport    = "summary,status,priority,assignee,issuetype"
+)
+
+func pathIssueWithFields(key, fields string) string {
+	return fmt.Sprintf("%s?fields=%s", fmt.Sprintf(pathIssue, key), fields)
+}
