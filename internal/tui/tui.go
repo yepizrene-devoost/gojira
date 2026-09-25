@@ -404,7 +404,7 @@ func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "C":
 		if m.colCur < len(m.columns) {
 			col := m.columns[m.colCur]
-			tickets := jira.IssuesToTicketJSON(col.issues)
+			tickets := jira.IssuesToTicketJSON(col.issues, m.domain)
 			b, _ := json.MarshalIndent(tickets, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
@@ -438,7 +438,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		if m.detail != nil {
-			ticket := jira.IssueToTicketJSON(*m.detail)
+			ticket := jira.IssueToTicketJSON(*m.detail, m.domain)
 			b, _ := json.MarshalIndent(ticket, "", "  ")
 			return m, copyToClipboard(string(b))
 		}

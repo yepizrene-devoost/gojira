@@ -21,7 +21,7 @@ var getCmd = &cobra.Command{
 	Long:  "Display complete ticket information including project, labels, components, reporter, comments, and more.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
+		client, domain, err := BuildClient()
 		if err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ var getCmd = &cobra.Command{
 		}
 
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			ticket := jira.IssueToTicketJSON(*iss)
+			ticket := jira.IssueToTicketJSON(*iss, domain)
 			b, _ := json.MarshalIndent(ticket, "", "  ")
 			fmt.Println(string(b))
 			return nil
@@ -109,7 +109,7 @@ func renderIssueFull(iss *jira.Issue) string {
 	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
 		b.WriteString(fmt.Sprintf("\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments)))
 		for i, c := range iss.Fields.Comment.Comments {
-			body := strings.TrimSpace(c.Body)
+			body := strings.TrimSpace(c.Body.Flatten())
 			if len(body) > 200 {
 				body = body[:197] + "..."
 			}

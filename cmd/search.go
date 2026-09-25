@@ -19,7 +19,7 @@ var searchCmd = &cobra.Command{
   gojira search "text ~ 'login bug'" --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
+		client, domain, err := BuildClient()
 		if err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ var searchCmd = &cobra.Command{
 		}
 
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			tickets := jira.IssuesToTicketJSON(issues)
+			tickets := jira.IssuesToTicketJSON(issues, domain)
 			b, _ := json.MarshalIndent(tickets, "", "  ")
 			fmt.Println(string(b))
 			return nil

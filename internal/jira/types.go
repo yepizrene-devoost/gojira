@@ -1,6 +1,9 @@
 package jira
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // ─── Board / Sprint ────────────────────────────────────────────────────
 
@@ -10,7 +13,7 @@ type Board struct {
 	Type    string `json:"type"`
 	Project *struct {
 		Key string `json:"key"`
-	} `json:"location,omitempty"` // populated when using enriched queries
+	} `json:"location,omitempty"`
 }
 
 type BoardConfig struct {
@@ -30,11 +33,115 @@ type Sprint struct {
 	State string `json:"state"`
 }
 
+// ─── ADF (Atlassian Document Format) ──────────────────────────────────
+
+// ADFNode represents a node in an Atlassian Document Format tree.
+type ADFNode struct {
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+	Attrs *struct {
+		Text string `json:"text"`
+	} `json:"attrs,omitempty"`
+	Content []ADFNode `json:"content,omitempty"`
+}
+
+// ADFDoc is the root of an ADF document (used by descriptions and comment bodies).
+type ADFDoc struct {
+	Type    string    `json:"type"`
+	Version int       `json:"version"`
+	Content []ADFNode `json:"content"`
+}
+
+// Flatten converts ADF to plain text. Blocks (paragraphs, list items) are
+// separated by newlines. Inline nodes (text, mentions) are joined within
+// their block without extra newlines. Mentions are rendered as @Name.
+func (d *ADFDoc) Flatten() string {
+	if d == nil {
+		return ""
+	}
+	var blocks []string
+	for _, node := range d.Content {
+		text := flattenBlock(node)
+		if text != "" {
+			blocks = append(blocks, text)
+		}
+	}
+	return strings.Join(blocks, "\n")
+}
+
+func flattenBlock(node ADFNode) string {
+	switch node.Type {
+	case "paragraph":
+		return flattenInline(node.Content)
+	case "bulletList", "orderedList":
+		var items []string
+		for _, child := range node.Content {
+			if child.Type == "listItem" {
+				items = append(items, "- "+flattenInline(child.Content))
+			}
+		}
+		return strings.Join(items, "\n")
+	case "heading":
+		return "## " + flattenInline(node.Content)
+	case "codeBlock":
+		return "```\n" + flattenInline(node.Content) + "\n```"
+	case "rule":
+		return "---"
+	case "blockquote":
+		lines := strings.Split(flattenInline(node.Content), "\n")
+		quoted := make([]string, len(lines))
+		for i, l := range lines {
+			quoted[i] = "> " + l
+		}
+		return strings.Join(quoted, "\n")
+	default:
+		// Fallback: recurse into content
+		if len(node.Content) > 0 {
+			return flattenInline(node.Content)
+		}
+		return node.Text
+	}
+}
+
+func flattenInline(nodes []ADFNode) string {
+	var parts []string
+	for _, n := range nodes {
+		switch n.Type {
+		case "text":
+			parts = append(parts, n.Text)
+		case "mention":
+			// Render as @Name
+			if n.Attrs != nil && n.Attrs.Text != "" {
+				parts = append(parts, n.Attrs.Text)
+			} else {
+				parts = append(parts, "@user")
+			}
+		case "hardBreak":
+			parts = append(parts, "\n")
+		case "code":
+			parts = append(parts, "`"+n.Text+"`")
+		default:
+			// Inline marks (strong, em, link, etc.) — just get the text
+			if n.Text != "" {
+				parts = append(parts, n.Text)
+			}
+			if len(n.Content) > 0 {
+				parts = append(parts, flattenInline(n.Content))
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 // ─── Issue fields ──────────────────────────────────────────────────────
 
 type StatusField struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
+	Name     string `json:"name"`
+	ID       string `json:"id"`
+	Category *struct {
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	} `json:"statusCategory,omitempty"`
 }
 
 type PriorityField struct {
@@ -62,22 +169,19 @@ type ComponentField struct {
 	Name string `json:"name"`
 }
 
-type DescriptionField struct {
-	Content []struct {
-		Content []struct{ Text string } `json:"content"`
-	} `json:"content"`
-}
-
-type CommentField struct {
-	Comments []Comment `json:"comments"`
-}
+type DescriptionField = ADFDoc
 
 type Comment struct {
 	Author struct {
 		DisplayName string `json:"displayName"`
 	} `json:"author"`
-	Body    string `json:"body"`
+	Body    ADFDoc `json:"body"`
+	Comment string `json:"comment,omitempty"`
 	Created string `json:"created"`
+}
+
+type CommentField struct {
+	Comments []Comment `json:"comments"`
 }
 
 type IssueFieldData struct {
@@ -127,21 +231,23 @@ type Worklog struct {
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
 
 type TicketJSON struct {
-	Key         string   `json:"key"`
-	Summary     string   `json:"summary"`
-	Status      string   `json:"status"`
-	Priority    string   `json:"priority"`
-	Assignee    string   `json:"assignee"`
-	Reporter    string   `json:"reporter,omitempty"`
-	IssueType   string   `json:"issueType"`
-	Project     string   `json:"project,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-	Components  []string `json:"components,omitempty"`
-	Description string   `json:"description"`
-	Created     string   `json:"created"`
-	Updated     string   `json:"updated"`
-	TimeLogged  string   `json:"timeLogged,omitempty"`
-	Comments    []CommentJSON `json:"comments,omitempty"`
+	Key            string   `json:"key"`
+	URL            string   `json:"url,omitempty"`
+	Summary        string   `json:"summary"`
+	Status         string   `json:"status"`
+	StatusCategory string   `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
+	Priority       string   `json:"priority"`
+	Assignee       string   `json:"assignee"`
+	Reporter       string   `json:"reporter,omitempty"`
+	IssueType      string   `json:"issueType"`
+	Project        string   `json:"project,omitempty"`
+	Labels         []string `json:"labels,omitempty"`
+	Components     []string `json:"components,omitempty"`
+	Description    string   `json:"description"`
+	Created        string   `json:"created"`
+	Updated        string   `json:"updated"`
+	TimeLogged     string   `json:"timeLogged,omitempty"`
+	Comments       []CommentJSON `json:"comments,omitempty"`
 }
 
 type CommentJSON struct {
@@ -150,17 +256,52 @@ type CommentJSON struct {
 	Created string `json:"created"`
 }
 
-func IssueToTicketJSON(iss Issue) TicketJSON {
+// normalizeDate converts Jira's date format to RFC3339.
+// Input: "2026-09-22T20:12:41.934-0600" → Output: "2026-09-22T20:12:41-06:00"
+// Falls back to the original string if parsing fails.
+func normalizeDate(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Jira uses non-RFC3339 offsets (no colon): 2026-09-22T20:12:41.934-0600
+	layouts := []string{
+		"2006-01-02T15:04:05.000-0700",
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02T15:04:05.000Z07:00",
+		"2006-01-02T15:04:05Z07:00",
+	}
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return t.Format(time.RFC3339)
+		}
+	}
+	return s
+}
+
+// browseURL returns the Jira browse URL for an issue given a domain.
+func browseURL(domain, key string) string {
+	if domain == "" || key == "" {
+		return ""
+	}
+	return "https://" + domain + "/browse/" + key
+}
+
+func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
 		Key:      iss.Key,
+		URL:      browseURL(domain, iss.Key),
 		Summary:  iss.Fields.Summary,
-		Created:  iss.Fields.Created,
-		Updated:  iss.Fields.Updated,
+		Created:  normalizeDate(iss.Fields.Created),
+		Updated:  normalizeDate(iss.Fields.Updated),
 		Assignee: "Unassigned",
 		Labels:   iss.Fields.Labels,
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name
+		if iss.Fields.Status.Category != nil {
+			t.StatusCategory = iss.Fields.Status.Category.Key
+		}
 	}
 	if iss.Fields.Priority != nil {
 		t.Priority = iss.Fields.Priority.Name
@@ -184,32 +325,25 @@ func IssueToTicketJSON(iss Issue) TicketJSON {
 		}
 	}
 	if iss.Fields.Description != nil {
-		for _, block := range iss.Fields.Description.Content {
-			for _, c := range block.Content {
-				if c.Text != "" {
-					t.Description += c.Text + "\n"
-				}
-			}
-		}
-		t.Description = strings.TrimRight(t.Description, "\n")
+		t.Description = iss.Fields.Description.Flatten()
 	}
 	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
 		t.Comments = make([]CommentJSON, len(iss.Fields.Comment.Comments))
 		for i, c := range iss.Fields.Comment.Comments {
 			t.Comments[i] = CommentJSON{
 				Author:  c.Author.DisplayName,
-				Body:    c.Body,
-				Created: c.Created,
+				Body:    c.Body.Flatten(),
+				Created: normalizeDate(c.Created),
 			}
 		}
 	}
 	return t
 }
 
-func IssuesToTicketJSON(issues []Issue) []TicketJSON {
+func IssuesToTicketJSON(issues []Issue, domain string) []TicketJSON {
 	out := make([]TicketJSON, len(issues))
 	for i, iss := range issues {
-		out[i] = IssueToTicketJSON(iss)
+		out[i] = IssueToTicketJSON(iss, domain)
 	}
 	return out
 }

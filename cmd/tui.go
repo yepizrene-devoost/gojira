@@ -50,3 +50,10 @@ func runTUI() error {
 	return err
 }
 
+func init() {
+	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return runTUI()
+	}
+	rootCmd.AddCommand(tuiCmd)
+}
+

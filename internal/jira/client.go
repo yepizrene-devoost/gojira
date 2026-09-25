@@ -139,7 +139,7 @@ func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 
 // GetIssueFull fetches a single issue with all enriched fields (project, labels, components, reporter, comments, time tracking).
 func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
-	fields := "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment"
+	fields := "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
 	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=%s", issueKey, fields))
 	if err != nil {
 		return nil, err

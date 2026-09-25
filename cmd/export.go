@@ -15,7 +15,7 @@ var exportCmd = &cobra.Command{
 	Short: "Export tickets from a board/sprint as JSON",
 	Long:  "Export tickets for agent consumption. Example: gojira export --board 1",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
+		client, domain, err := BuildClient()
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,7 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 
-		tickets := jira.IssuesToTicketJSON(issues)
+		tickets := jira.IssuesToTicketJSON(issues, domain)
 
 		b, _ := json.MarshalIndent(tickets, "", "  ")
 		fmt.Println(string(b))
