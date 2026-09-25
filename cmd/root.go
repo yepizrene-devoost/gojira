@@ -7,6 +7,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 
+	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
@@ -31,16 +32,38 @@ func initEnv() {
 	_ = godotenv.Load()
 }
 
-// BuildClient creates a JiraClient from env vars (JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN).
+// BuildClient resolves credentials with precedence:
+//
+//	environment variables > config.yaml (~/.config/gojira/config.yaml)
 func BuildClient() (*jira.Client, string, error) {
 	email := os.Getenv("JIRA_EMAIL")
 	token := os.Getenv("JIRA_API_TOKEN")
 	domain := os.Getenv("JIRA_DOMAIN")
 
+	// Fall back to config file
 	if email == "" || token == "" || domain == "" {
-		return nil, "", fmt.Errorf("set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN in .env")
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, "", err
+		}
+		if domain == "" {
+			domain = cfg.Domain
+		}
+		if email == "" {
+			email = cfg.Email
+		}
+		if token == "" {
+			t, err := config.LoadToken()
+			if err != nil {
+				return nil, "", fmt.Errorf("no credentials found (set env vars or run: gojira config init)")
+			}
+			token = t
+		}
 	}
 
-	client := jira.NewClient("https://"+domain, email, token)
-	return client, domain, nil
+	if domain == "" || email == "" || token == "" {
+		return nil, "", fmt.Errorf("incomplete credentials (run: gojira config init)")
+	}
+
+	return jira.NewClient("https://"+domain, email, token), domain, nil
 }
