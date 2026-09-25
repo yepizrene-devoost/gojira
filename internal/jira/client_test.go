@@ -41,3 +41,108 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 		t.Fatalf("made %d requests, want 2", hits)
 	}
 }
+
+// ResolveAccountID must go picker → exact email verification → JQL fallback,
+// because /user/username is gone and users/search no longer exposes emails.
+func TestResolveAccountID(t *testing.T) {
+	const email = "rene@devoost.com"
+	const reneID = "712020:7e4261c7"
+	const otherID = "557058:other"
+
+	tests := []struct {
+		name string
+		// picker: JSON for the picker response; "" → picker 404s
+		picker string
+		// emails per accountId for the /user?accountId verification step
+		emails map[string]string
+		// jql: JSON for the search/jql response; "" → endpoint 404s
+		jql string
+		wantID   string
+		wantErr  bool
+	}{
+		{
+			name:   "picker sole candidate verified by email",
+			picker: `{"users":[{"accountId":"` + reneID + `","displayName":"René"}],"total":1}`,
+			emails: map[string]string{reneID: email},
+			wantID: reneID,
+		},
+		{
+			name:   "picker fuzzy match rejected, second candidate wins",
+			picker: `{"users":[{"accountId":"` + otherID + `","displayName":"Other"},{"accountId":"` + reneID + `","displayName":"René"}],"total":2}`,
+			emails: map[string]string{otherID: "other@x.com", reneID: email},
+			wantID: reneID,
+		},
+		{
+			name:   "emails hidden from API: sole picker match accepted",
+			picker: `{"users":[{"accountId":"` + reneID + `","displayName":"René"}],"total":1}`,
+			emails: map[string]string{reneID: ""},
+			wantID: reneID,
+		},
+		{
+			name:   "picker empty falls back to JQL",
+			picker: `{"users":[],"total":0}`,
+			emails: map[string]string{},
+			jql:    `{"issues":[{"fields":{"creator":{"accountId":"` + reneID + `","displayName":"René","emailAddress":"RENE@devoost.com"}}}]}`,
+			wantID: reneID,
+		},
+		{
+			name:   "picker down falls back to JQL",
+			picker: "",
+			jql:    `{"issues":[{"fields":{"assignee":{"accountId":"` + reneID + `","displayName":"René","emailAddress":"` + email + `"}}}]}`,
+			wantID: reneID,
+		},
+		{
+			name:   "no path resolves the email",
+			picker: `{"users":[],"total":0}`,
+			jql:    `{"issues":[]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/rest/api/2/user/picker":
+					if tc.picker == "" {
+						w.WriteHeader(404)
+						return
+					}
+					fmt.Fprint(w, tc.picker)
+				case "/rest/api/3/user":
+					e, known := tc.emails[r.URL.Query().Get("accountId")]
+					if !known {
+						w.WriteHeader(404)
+						return
+					}
+					fmt.Fprintf(w, `{"accountId":%q,"displayName":"René","emailAddress":%q}`,
+						r.URL.Query().Get("accountId"), e)
+				case "/rest/api/3/search/jql":
+					if tc.jql == "" {
+						w.WriteHeader(404)
+						return
+					}
+					fmt.Fprint(w, tc.jql)
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.URL, "e@x.com", "tok")
+			id, _, err := client.ResolveAccountID(email)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got id %q", id)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id != tc.wantID {
+				t.Fatalf("got %q, want %q", id, tc.wantID)
+			}
+		})
+	}
+}

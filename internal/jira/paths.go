@@ -20,8 +20,12 @@ const (
 	pathIssueComment     = "/rest/api/3/issue/%s/comment"
 	pathIssueAssign      = "/rest/api/3/issue/%s/assignee"
 	pathSearchJQL        = "/rest/api/3/search/jql"
-	pathUserByUsername    = "/rest/api/3/user/username?username=%s"
+	pathUserByAccountID  = "/rest/api/3/user?accountId=%s"
 	pathCreateMeta       = "/rest/api/3/issue/createmeta?projectKeys=%s"
+	// Email lookup: /rest/api/3/user/username was removed by Atlassian and
+	// users/search no longer exposes emails. The v2 picker still matches email
+	// queries server-side; pathUserByAccountID verifies the exact match.
+	pathUserPicker = "/rest/api/2/user/picker?query=%s"
 
 	// ─── Agile API 1.0 ────────────────────────────────────────────
 	pathBoardList    = "/rest/agile/1.0/board?maxResults=50"

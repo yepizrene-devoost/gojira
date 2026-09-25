@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -355,20 +356,109 @@ func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) err
 	return nil
 }
 
-// ResolveAccountID looks up a Jira user by email and returns their accountId.
+// ResolveAccountID looks up a Jira user by email and returns their
+// accountId and display name.
+//
+// Atlassian removed /rest/api/3/user/username and stopped exposing emails in
+// users/search, so resolution goes:
+//  1. v2 user picker — matches the email query server-side;
+//  2. exact verification via GET /user?accountId (emailAddress compare);
+//  3. JQL fallback — an issue where the user is creator/reporter/assignee
+//     also resolves the email server-side.
 func (c *Client) ResolveAccountID(email string) (accountID, displayName string, err error) {
-	path := "/rest/api/3/user/username?username=" + email
+	cands, pickerErr := c.userPicker(email)
+	if pickerErr == nil {
+		for _, u := range cands {
+			if u.AccountID == "" {
+				continue
+			}
+			full, err := c.getUser(u.AccountID)
+			if err != nil {
+				// Cannot verify: accept a sole picker match rather than fail.
+				if len(cands) == 1 {
+					return u.AccountID, u.DisplayName, nil
+				}
+				continue
+			}
+			if full.EmailAddress == "" && len(cands) == 1 {
+				// Site hides emails from the API; trust the sole match.
+				return full.AccountID, full.DisplayName, nil
+			}
+			if strings.EqualFold(full.EmailAddress, email) {
+				return full.AccountID, full.DisplayName, nil
+			}
+		}
+	}
+
+	if id, name, ok := c.resolveViaJQL(email); ok {
+		return id, name, nil
+	}
+
+	if pickerErr != nil {
+		return "", "", fmt.Errorf("no user found for %s (%v)", email, pickerErr)
+	}
+	return "", "", fmt.Errorf("no user found for %s", email)
+}
+
+// userPicker returns account candidates for a free-form query (email or name).
+func (c *Client) userPicker(query string) ([]UserRef, error) {
+	b, err := c.get(fmt.Sprintf(pathUserPicker, url.QueryEscape(query)))
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Users []UserRef `json:"users"`
+	}
+	json.Unmarshal(b, &r)
+	return r.Users, nil
+}
+
+// getUser reads a user by accountId, including emailAddress when visible.
+func (c *Client) getUser(accountID string) (*UserRef, error) {
+	b, err := c.get(fmt.Sprintf(pathUserByAccountID, url.QueryEscape(accountID)))
+	if err != nil {
+		return nil, err
+	}
+	var u UserRef
+	if err := json.Unmarshal(b, &u); err != nil {
+		return nil, err
+	}
+	if u.AccountID == "" {
+		return nil, fmt.Errorf("user %s not found", accountID)
+	}
+	return &u, nil
+}
+
+// resolveViaJQL finds a user through any issue they touch. Jira resolves the
+// email server-side; the returned user objects carry the email for an exact
+// verification.
+func (c *Client) resolveViaJQL(email string) (accountID, displayName string, ok bool) {
+	if email == "" || strings.ContainsAny(email, "\"\\") {
+		return "", "", false // not a real email; never break the JQL string
+	}
+	jql := fmt.Sprintf(`creator = "%[1]s" OR reporter = "%[1]s" OR assignee = "%[1]s"`, email)
+	path := fmt.Sprintf("%s?jql=%s&maxResults=1&fields=creator,reporter,assignee",
+		pathSearchJQL, url.QueryEscape(jql))
 	b, err := c.get(path)
 	if err != nil {
-		return "", "", fmt.Errorf("user lookup failed: %w", err)
+		return "", "", false
 	}
-	var user struct {
-		AccountID   string `json:"accountId"`
-		DisplayName string `json:"displayName"`
+	var r struct {
+		Issues []struct {
+			Fields struct {
+				Creator  *UserRef `json:"creator"`
+				Reporter *UserRef `json:"reporter"`
+				Assignee *UserRef `json:"assignee"`
+			} `json:"fields"`
+		} `json:"issues"`
 	}
-	json.Unmarshal(b, &user)
-	if user.AccountID == "" {
-		return "", "", fmt.Errorf("no user found for %s", email)
+	json.Unmarshal(b, &r)
+	for _, iss := range r.Issues {
+		for _, u := range []*UserRef{iss.Fields.Creator, iss.Fields.Reporter, iss.Fields.Assignee} {
+			if u != nil && u.AccountID != "" && strings.EqualFold(u.EmailAddress, email) {
+				return u.AccountID, u.DisplayName, true
+			}
+		}
 	}
-	return user.AccountID, user.DisplayName, nil
+	return "", "", false
 }

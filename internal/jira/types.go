@@ -163,6 +163,15 @@ type AssigneeField struct {
 	DisplayName string `json:"displayName"`
 }
 
+// UserRef is a Jira user as returned by the user endpoints. EmailAddress is
+// only present when the site exposes emails to API clients.
+type UserRef struct {
+	AccountID    string `json:"accountId"`
+	DisplayName  string `json:"displayName"`
+	EmailAddress string `json:"emailAddress"`
+	Active       bool   `json:"active"`
+}
+
 type ReporterField struct {
 	DisplayName string `json:"displayName"`
 }
