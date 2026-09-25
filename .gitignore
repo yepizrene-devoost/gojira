@@ -2,5 +2,6 @@
 .atl/
 .env
 /gojira
+/bin/
 *.exe
 /dist/
