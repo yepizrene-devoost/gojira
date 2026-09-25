@@ -1,8 +1,9 @@
-package main
+package jira
 
 import "strings"
 
 // ─── Board / Sprint ────────────────────────────────────────────────────
+
 type Board struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -27,24 +28,30 @@ type Sprint struct {
 }
 
 // ─── Issue fields ──────────────────────────────────────────────────────
+
 type StatusField struct {
 	Name string `json:"name"`
 	ID   string `json:"id"`
 }
+
 type PriorityField struct {
 	Name string `json:"name"`
 }
+
 type AssigneeField struct {
 	DisplayName string `json:"displayName"`
 }
+
 type IssueTypeField struct {
 	Name string `json:"name"`
 }
+
 type DescriptionField struct {
 	Content []struct {
 		Content []struct{ Text string } `json:"content"`
 	} `json:"content"`
 }
+
 type IssueFieldData struct {
 	Summary     string            `json:"summary"`
 	Status      *StatusField      `json:"status,omitempty"`
@@ -55,12 +62,14 @@ type IssueFieldData struct {
 	Updated     string            `json:"updated"`
 	Description *DescriptionField `json:"description,omitempty"`
 }
+
 type Issue struct {
 	Key    string         `json:"key"`
 	Fields IssueFieldData `json:"fields"`
 }
 
 // ─── Transitions / Worklog ─────────────────────────────────────────────
+
 type Transition struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -76,6 +85,7 @@ type Worklog struct {
 }
 
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
+
 type TicketJSON struct {
 	Key         string   `json:"key"`
 	Summary     string   `json:"summary"`
@@ -89,7 +99,7 @@ type TicketJSON struct {
 	Labels      []string `json:"labels,omitempty"`
 }
 
-func issueToTicketJSON(iss Issue) TicketJSON {
+func IssueToTicketJSON(iss Issue) TicketJSON {
 	t := TicketJSON{
 		Key:      iss.Key,
 		Summary:  iss.Fields.Summary,
@@ -122,10 +132,10 @@ func issueToTicketJSON(iss Issue) TicketJSON {
 	return t
 }
 
-func issuesToTicketJSON(issues []Issue) []TicketJSON {
+func IssuesToTicketJSON(issues []Issue) []TicketJSON {
 	out := make([]TicketJSON, len(issues))
 	for i, iss := range issues {
-		out[i] = issueToTicketJSON(iss)
+		out[i] = IssueToTicketJSON(iss)
 	}
 	return out
 }

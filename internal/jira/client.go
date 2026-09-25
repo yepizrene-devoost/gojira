@@ -1,4 +1,4 @@
-package main
+package jira
 
 import (
 	"encoding/json"
@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-type JiraClient struct {
+type Client struct {
 	baseURL, auth string
 	http          *http.Client
 }
 
-func NewJiraClient(baseURL, email, token string) *JiraClient {
-	return &JiraClient{
+func NewClient(baseURL, email, token string) *Client {
+	return &Client{
 		baseURL: baseURL,
 		auth:    email + ":" + token,
 		http:    &http.Client{Timeout: 30 * time.Second},
@@ -29,7 +29,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-func (c *JiraClient) get(path string) ([]byte, error) {
+func (c *Client) get(path string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", c.baseURL+path, nil)
 	req.SetBasicAuth(c.auth, "")
 	req.Header.Set("Accept", "application/json")
@@ -45,7 +45,7 @@ func (c *JiraClient) get(path string) ([]byte, error) {
 	return body, nil
 }
 
-func (c *JiraClient) post(path string, payload []byte) ([]byte, error) {
+func (c *Client) post(path string, payload []byte) ([]byte, error) {
 	req, _ := http.NewRequest("POST", c.baseURL+path, strings.NewReader(string(payload)))
 	req.SetBasicAuth(c.auth, "")
 	req.Header.Set("Accept", "application/json")
@@ -63,7 +63,8 @@ func (c *JiraClient) post(path string, payload []byte) ([]byte, error) {
 }
 
 // ─── Read ──────────────────────────────────────────────────────────────
-func (c *JiraClient) TestConnection() (string, error) {
+
+func (c *Client) TestConnection() (string, error) {
 	b, err := c.get("/rest/api/3/serverInfo")
 	if err != nil {
 		return "", err
@@ -73,7 +74,7 @@ func (c *JiraClient) TestConnection() (string, error) {
 	return fmt.Sprintf("%s (Jira %s)", info.BaseURL, info.Version), nil
 }
 
-func (c *JiraClient) GetBoards() ([]Board, error) {
+func (c *Client) GetBoards() ([]Board, error) {
 	b, err := c.get("/rest/agile/1.0/board?maxResults=50")
 	if err != nil {
 		return nil, err
@@ -83,7 +84,7 @@ func (c *JiraClient) GetBoards() ([]Board, error) {
 	return r.Values, nil
 }
 
-func (c *JiraClient) GetBoardConfig(id int) (BoardConfig, error) {
+func (c *Client) GetBoardConfig(id int) (BoardConfig, error) {
 	b, err := c.get(fmt.Sprintf("/rest/agile/1.0/board/%d/configuration", id))
 	if err != nil {
 		return BoardConfig{}, err
@@ -93,7 +94,7 @@ func (c *JiraClient) GetBoardConfig(id int) (BoardConfig, error) {
 	return cfg, nil
 }
 
-func (c *JiraClient) GetSprints(boardID int) ([]Sprint, error) {
+func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 	b, err := c.get(fmt.Sprintf("/rest/agile/1.0/board/%d/sprint?state=active&maxResults=50", boardID))
 	if err != nil {
 		return nil, err
@@ -111,7 +112,7 @@ func (c *JiraClient) GetSprints(boardID int) ([]Sprint, error) {
 	return r.Values, nil
 }
 
-func (c *JiraClient) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
+func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 	path := fmt.Sprintf("/rest/agile/1.0/board/%d/issue?maxResults=100&fields=summary,status,priority,assignee,issuetype", boardID)
 	if sprintID > 0 {
 		path = fmt.Sprintf("/rest/agile/1.0/board/%d/sprint/%d/issue?maxResults=100&fields=summary,status,priority,assignee,issuetype", boardID, sprintID)
@@ -125,7 +126,7 @@ func (c *JiraClient) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 	return r.Issues, nil
 }
 
-func (c *JiraClient) GetIssue(issueKey string) (*Issue, error) {
+func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,status,priority,assignee,issuetype,created,updated,description", issueKey))
 	if err != nil {
 		return nil, err
@@ -135,7 +136,7 @@ func (c *JiraClient) GetIssue(issueKey string) (*Issue, error) {
 	return &iss, nil
 }
 
-func (c *JiraClient) GetTransitions(issueKey string) ([]Transition, error) {
+func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
 	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey))
 	if err != nil {
 		return nil, err
@@ -147,7 +148,7 @@ func (c *JiraClient) GetTransitions(issueKey string) ([]Transition, error) {
 	return r.Transitions, nil
 }
 
-func (c *JiraClient) TransitionIssue(issueKey, transitionID string) error {
+func (c *Client) TransitionIssue(issueKey, transitionID string) error {
 	payload, _ := json.Marshal(map[string]map[string]string{
 		"transition": {"id": transitionID},
 	})
@@ -155,7 +156,7 @@ func (c *JiraClient) TransitionIssue(issueKey, transitionID string) error {
 	return err
 }
 
-func (c *JiraClient) GetWorklog(issueKey string) ([]Worklog, error) {
+func (c *Client) GetWorklog(issueKey string) ([]Worklog, error) {
 	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey))
 	if err != nil {
 		return nil, err
@@ -167,7 +168,7 @@ func (c *JiraClient) GetWorklog(issueKey string) ([]Worklog, error) {
 	return r.Worklogs, nil
 }
 
-func (c *JiraClient) AddWorklog(issueKey, timeSpent, comment string) error {
+func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 	payload, _ := json.Marshal(map[string]string{
 		"timeSpent": timeSpent,
 		"comment":   comment,

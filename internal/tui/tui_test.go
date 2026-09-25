@@ -1,32 +1,34 @@
-package main
+package tui
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
-func testIssue(key string) Issue {
-	return Issue{
+func testIssue(key string) jira.Issue {
+	return jira.Issue{
 		Key:    key,
 		Fields: IssueFields("Test issue " + key),
 	}
 }
 
-func IssueFields(summary string) IssueFieldData {
-	return IssueFieldData{
+func IssueFields(summary string) jira.IssueFieldData {
+	return jira.IssueFieldData{
 		Summary:  summary,
-		Status:   &StatusField{Name: "To Do", ID: "10000"},
-		Priority: &PriorityField{Name: "High"},
-		Assignee: &AssigneeField{DisplayName: "TestUser"},
+		Status:   &jira.StatusField{Name: "To Do", ID: "10000"},
+		Priority: &jira.PriorityField{Name: "High"},
+		Assignee: &jira.AssigneeField{DisplayName: "TestUser"},
 	}
 }
 
-func makeTestModel(cols int, issuesPerCol int) model {
+func makeTestModel(cols int, issuesPerCol int) Model {
 	columns := make([]column, cols)
 	for c := 0; c < cols; c++ {
 		col := column{
 			name:   "Col" + string(rune('A'+c)),
-			issues: make([]Issue, issuesPerCol),
+			issues: make([]jira.Issue, issuesPerCol),
 		}
 		for i := 0; i < issuesPerCol; i++ {
 			col.issues[i] = testIssue(strings.Repeat("P", 1) + string(rune('0'+i%10)))
@@ -34,7 +36,7 @@ func makeTestModel(cols int, issuesPerCol int) model {
 		columns[c] = col
 	}
 
-	return model{
+	return Model{
 		view:     viewKanban,
 		columns:  columns,
 		colCur:   0,
@@ -42,7 +44,7 @@ func makeTestModel(cols int, issuesPerCol int) model {
 		width:    190,
 		height:   50,
 		boardCur: 0,
-		boards:   []Board{{ID: 1, Name: "Test Board", Type: "scrum"}},
+		boards:   []jira.Board{{ID: 1, Name: "Test Board", Type: "scrum"}},
 	}
 }
 

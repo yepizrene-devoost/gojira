@@ -1,10 +1,12 @@
-package main
+package cmd
 
 import (
 	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 var moveCmd = &cobra.Command{
@@ -13,7 +15,7 @@ var moveCmd = &cobra.Command{
 	Long:  "Move a ticket to a different status. Example: gojira move ARA-1892 --to '03 In Progress'",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := buildClient()
+		client, _, err := BuildClient()
 		if err != nil {
 			return err
 		}
@@ -22,7 +24,6 @@ var moveCmd = &cobra.Command{
 		targetStatus, _ := cmd.Flags().GetString("to")
 
 		if targetStatus == "" {
-			// List available transitions
 			transitions, err := client.GetTransitions(issueKey)
 			if err != nil {
 				return err
@@ -42,13 +43,12 @@ var moveCmd = &cobra.Command{
 			return nil
 		}
 
-		// Find matching transition
 		transitions, err := client.GetTransitions(issueKey)
 		if err != nil {
 			return err
 		}
 
-		var matched *Transition
+		var matched *jira.Transition
 		for _, t := range transitions {
 			if t.Name == targetStatus {
 				matched = &t
@@ -57,7 +57,11 @@ var moveCmd = &cobra.Command{
 		}
 
 		if matched == nil {
-			return fmt.Errorf("status %q not found. Available: %v", targetStatus, transitionNames(transitions))
+			names := make([]string, len(transitions))
+			for i, t := range transitions {
+				names[i] = t.Name
+			}
+			return fmt.Errorf("status %q not found. Available: %v", targetStatus, names)
 		}
 
 		if err := client.TransitionIssue(issueKey, matched.ID); err != nil {
@@ -67,14 +71,6 @@ var moveCmd = &cobra.Command{
 		fmt.Printf("✓ Moved %s → %s\n", issueKey, matched.Name)
 		return nil
 	},
-}
-
-func transitionNames(ts []Transition) []string {
-	out := make([]string, len(ts))
-	for i, t := range ts {
-		out[i] = t.Name
-	}
-	return out
 }
 
 func init() {

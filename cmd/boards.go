@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ var boardsCmd = &cobra.Command{
 	Use:   "boards",
 	Short: "List your Jira boards",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := buildClient()
+		client, _, err := BuildClient()
 		if err != nil {
 			return err
 		}

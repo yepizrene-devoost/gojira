@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ var logCmd = &cobra.Command{
 	Long:  "Log time spent on a ticket. Example: gojira log ARA-1892 --time 2h --comment 'Fixed auth bug'",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := buildClient()
+		client, _, err := BuildClient()
 		if err != nil {
 			return err
 		}

@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"fmt"
@@ -6,18 +6,17 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "gojira",
 	Short: "Manage your Jira boards from the terminal",
 	Long:  "GoJira — kanban boards, ticket transitions, worklog, and JSON export. All from your terminal.",
-	// Default: launch TUI
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTUI()
-	},
 }
 
+// Execute runs the root command.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -32,7 +31,8 @@ func initEnv() {
 	_ = godotenv.Load()
 }
 
-func buildClient() (*JiraClient, string, error) {
+// BuildClient creates a JiraClient from env vars (JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN).
+func BuildClient() (*jira.Client, string, error) {
 	email := os.Getenv("JIRA_EMAIL")
 	token := os.Getenv("JIRA_API_TOKEN")
 	domain := os.Getenv("JIRA_DOMAIN")
@@ -41,6 +41,6 @@ func buildClient() (*JiraClient, string, error) {
 		return nil, "", fmt.Errorf("set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN in .env")
 	}
 
-	client := NewJiraClient("https://"+domain, email, token)
+	client := jira.NewClient("https://"+domain, email, token)
 	return client, domain, nil
 }

@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"encoding/json"
@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 var exportCmd = &cobra.Command{
@@ -13,7 +15,7 @@ var exportCmd = &cobra.Command{
 	Short: "Export tickets from a board/sprint as JSON",
 	Long:  "Export tickets for agent consumption. Example: gojira export --board 1",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := buildClient()
+		client, _, err := BuildClient()
 		if err != nil {
 			return err
 		}
@@ -22,7 +24,6 @@ var exportCmd = &cobra.Command{
 		sprintID, _ := cmd.Flags().GetInt("sprint")
 
 		if boardID == 0 {
-			// List boards and pick first
 			boards, err := client.GetBoards()
 			if err != nil {
 				return err
@@ -35,7 +36,6 @@ var exportCmd = &cobra.Command{
 		}
 
 		if sprintID == 0 {
-			// Try active sprint
 			sprints, err := client.GetSprints(boardID)
 			if err != nil {
 				return err
@@ -54,7 +54,7 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 
-		tickets := issuesToTicketJSON(issues)
+		tickets := jira.IssuesToTicketJSON(issues)
 
 		b, _ := json.MarshalIndent(tickets, "", "  ")
 		fmt.Println(string(b))

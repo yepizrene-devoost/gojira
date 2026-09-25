@@ -1,9 +1,8 @@
-package main
+package tui
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -14,9 +13,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 // ─── Styles ────────────────────────────────────────────────────────────
+
 const colWidth = 24
 const colGap = 2
 
@@ -32,6 +34,7 @@ var (
 )
 
 // ─── Helpers ───────────────────────────────────────────────────────────
+
 func padRight(s string, w int) string {
 	n := ansi.StringWidth(s)
 	if n >= w {
@@ -54,9 +57,8 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max-3]) + "..."
 }
 
-func openBrowser(key string) tea.Cmd {
+func openBrowser(key, domain string) tea.Cmd {
 	return func() tea.Msg {
-		domain := os.Getenv("JIRA_DOMAIN")
 		url := "https://" + domain + "/browse/" + key
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
@@ -88,6 +90,7 @@ func clearToastAfter(delay time.Duration) tea.Cmd {
 }
 
 // ─── TUI Types ─────────────────────────────────────────────────────────
+
 type view int
 
 const (
@@ -100,14 +103,16 @@ const (
 
 type column struct {
 	name   string
-	issues []Issue
+	issues []jira.Issue
 }
 
-type model struct {
-	client       *JiraClient
+// Model is the top-level Bubble Tea model for GoJira's TUI.
+// Kept as a single model with NO sub-model message routing.
+type Model struct {
+	client       *jira.Client
 	domain       string
 	view         view
-	boards       []Board
+	boards       []jira.Board
 	boardCur     int
 	columns      []column
 	colCur       int
@@ -116,34 +121,44 @@ type model struct {
 	width        int
 	height       int
 	err          error
-	detail       *Issue
+	detail       *jira.Issue
 	toast        string
-	transitions  []Transition
+	transitions  []jira.Transition
 	transCur     int
 	transIssue   string
 	worklogInput textinput.Model
 	worklogIssue string
 }
 
-type boardsMsg struct{ boards []Board }
+type boardsMsg struct{ boards []jira.Board }
 type kanbanMsg struct {
 	columns    []column
 	sprintName string
 }
-type detailMsg struct{ issue *Issue }
+type detailMsg struct{ issue *jira.Issue }
 type clipboardMsg struct{ text string; err error }
 type toastMsg struct{ text string }
-type transitionsMsg struct{ transitions []Transition; issueKey string }
+type transitionsMsg struct{ transitions []jira.Transition; issueKey string }
 type transitionDoneMsg struct{ issueKey string; err error }
 type worklogDoneMsg struct{ err error }
 type errMsg struct{ err error }
 
+// New creates a new TUI model ready to be used with bubbletea.NewProgram.
+func New(client *jira.Client, domain string) Model {
+	return Model{
+		client: client,
+		domain: domain,
+		view:   viewBoards,
+	}
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────
-func (m model) Init() tea.Cmd {
+
+func (m Model) Init() tea.Cmd {
 	return m.loadBoards
 }
 
-func (m model) loadBoards() tea.Msg {
+func (m Model) loadBoards() tea.Msg {
 	boards, err := m.client.GetBoards()
 	if err != nil {
 		return errMsg{err}
@@ -151,7 +166,7 @@ func (m model) loadBoards() tea.Msg {
 	return boardsMsg{boards}
 }
 
-func (m model) loadBoardData(board Board) tea.Msg {
+func (m Model) loadBoardData(board jira.Board) tea.Msg {
 	cfg, err := m.client.GetBoardConfig(board.ID)
 	if err != nil {
 		return errMsg{err}
@@ -162,7 +177,7 @@ func (m model) loadBoardData(board Board) tea.Msg {
 		return errMsg{err}
 	}
 
-	var activeSprint *Sprint
+	var activeSprint *jira.Sprint
 	for i, s := range sprints {
 		if s.State == "active" {
 			activeSprint = &sprints[i]
@@ -170,7 +185,7 @@ func (m model) loadBoardData(board Board) tea.Msg {
 		}
 	}
 
-	var issues []Issue
+	var issues []jira.Issue
 	sprintName := "All issues"
 	if activeSprint != nil {
 		sprintName = activeSprint.Name
@@ -223,7 +238,8 @@ func (m model) loadBoardData(board Board) tea.Msg {
 }
 
 // ─── Update ────────────────────────────────────────────────────────────
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -313,7 +329,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -337,7 +353,7 @@ func (m model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -382,13 +398,13 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.colCur < len(m.columns) {
 			issues := m.columns[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
-				return m, openBrowser(issues[m.rowCur].Key)
+				return m, openBrowser(issues[m.rowCur].Key, m.domain)
 			}
 		}
 	case "C":
 		if m.colCur < len(m.columns) {
 			col := m.columns[m.colCur]
-			tickets := issuesToTicketJSON(col.issues)
+			tickets := jira.IssuesToTicketJSON(col.issues)
 			b, _ := json.MarshalIndent(tickets, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
@@ -410,7 +426,7 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "enter", "q":
 		m.view = viewKanban
@@ -418,11 +434,11 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "o":
 		if m.detail != nil {
-			return m, openBrowser(m.detail.Key)
+			return m, openBrowser(m.detail.Key, m.domain)
 		}
 	case "c":
 		if m.detail != nil {
-			ticket := issueToTicketJSON(*m.detail)
+			ticket := jira.IssueToTicketJSON(*m.detail)
 			b, _ := json.MarshalIndent(ticket, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
@@ -441,7 +457,7 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.view = viewKanban
@@ -467,7 +483,7 @@ func (m model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = viewDetail
@@ -491,7 +507,8 @@ func (m model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // ─── View ──────────────────────────────────────────────────────────────
-func (m model) View() string {
+
+func (m Model) View() string {
 	var b strings.Builder
 
 	switch m.view {
@@ -610,7 +627,7 @@ func (m model) View() string {
 	return b.String()
 }
 
-func (m model) colsPerPage() int {
+func (m Model) colsPerPage() int {
 	cw := colWidth + colGap
 	if cw < 1 {
 		return 1
@@ -632,7 +649,7 @@ func visiblePageStart(colCur, colsPerPage, total int) int {
 	return start
 }
 
-func (m model) renderColumn(col column, isActive bool, cw int, colH int, slots int) string {
+func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots int) string {
 	lines := make([]string, 0, colH)
 
 	hdr := fmt.Sprintf(" %s (%d) ", truncateRunes(col.name, cw-6), len(col.issues))
@@ -679,7 +696,7 @@ func (m model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 	return strings.Join(lines, "\n")
 }
 
-func (m model) renderCardLines(iss Issue, selected bool, cw int) []string {
+func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
 	key := truncateRunes(iss.Key, cw-2)
 	keyLine := keyStyle.Render(" " + key)
 	if selected {
@@ -716,7 +733,7 @@ func (m model) renderCardLines(iss Issue, selected bool, cw int) []string {
 	return []string{keyLine, summaryLine, metaLine}
 }
 
-func (m model) renderDetail() string {
+func (m Model) renderDetail() string {
 	iss := m.detail
 	var b strings.Builder
 
