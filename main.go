@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -78,6 +79,20 @@ type Sprint struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	State string `json:"state"`
+}
+
+type Transition struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type Worklog struct {
+	Author struct {
+		DisplayName string `json:"displayName"`
+	} `json:"author"`
+	Comment    string `json:"comment"`
+	TimeSpent  string `json:"timeSpent"`
+	Started    string `json:"started"`
 }
 
 type StatusField struct {
@@ -198,6 +213,23 @@ func (c *JiraClient) get(path string) ([]byte, error) {
 	return body, nil
 }
 
+func (c *JiraClient) post(path string, payload []byte) ([]byte, error) {
+	req, _ := http.NewRequest("POST", c.baseURL+path, strings.NewReader(string(payload)))
+	req.SetBasicAuth(c.auth, "")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
+	}
+	return body, nil
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -267,6 +299,47 @@ func (c *JiraClient) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 	return r.Issues, nil
 }
 
+func (c *JiraClient) GetTransitions(issueKey string) ([]Transition, error) {
+	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey))
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Transitions []Transition `json:"transitions"`
+	}
+	json.Unmarshal(b, &r)
+	return r.Transitions, nil
+}
+
+func (c *JiraClient) TransitionIssue(issueKey, transitionID string) error {
+	payload, _ := json.Marshal(map[string]map[string]string{
+		"transition": {"id": transitionID},
+	})
+	_, err := c.post(fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey), payload)
+	return err
+}
+
+func (c *JiraClient) GetWorklog(issueKey string) ([]Worklog, error) {
+	b, err := c.get(fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey))
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Worklogs []Worklog `json:"worklogs"`
+	}
+	json.Unmarshal(b, &r)
+	return r.Worklogs, nil
+}
+
+func (c *JiraClient) AddWorklog(issueKey, timeSpent, comment string) error {
+	payload, _ := json.Marshal(map[string]string{
+		"timeSpent": timeSpent,
+		"comment":   comment,
+	})
+	_, err := c.post(fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey), payload)
+	return err
+}
+
 // ─── TUI Types ─────────────────────────────────────────────────────────
 type view int
 
@@ -274,6 +347,8 @@ const (
 	viewBoards view = iota
 	viewKanban
 	viewDetail
+	viewTransition
+	viewWorklog
 )
 
 type column struct {
@@ -282,19 +357,26 @@ type column struct {
 }
 
 type model struct {
-	client     *JiraClient
-	view       view
-	boards     []Board
-	boardCur   int
-	columns    []column
-	colCur     int
-	rowCur     int
-	sprintName string
-	width      int
-	height     int
-	err        error
-	detail     *Issue
-	toast      string // brief feedback message
+	client       *JiraClient
+	view         view
+	boards       []Board
+	boardCur     int
+	columns      []column
+	colCur       int
+	rowCur       int
+	sprintName   string
+	width        int
+	height       int
+	err          error
+	detail       *Issue
+	toast        string // brief feedback message
+	// Transition picker
+	transitions  []Transition
+	transCur     int
+	transIssue   string // key of ticket being transitioned
+	// Worklog input
+	worklogInput textinput.Model
+	worklogIssue string // key of ticket being logged
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────
@@ -394,6 +476,10 @@ type kanbanMsg struct {
 type detailMsg struct{ issue *Issue }
 type clipboardMsg struct{ text string; err error }
 type toastMsg struct{ text string }
+type transitionsMsg struct{ transitions []Transition; issueKey string }
+type transitionDoneMsg struct{ issueKey string; err error }
+type worklogsMsg struct{ worklogs []Worklog; issueKey string }
+type worklogDoneMsg struct{ err error }
 type errMsg struct{ err error }
 
 // ─── Update ────────────────────────────────────────────────────────────
@@ -438,6 +524,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = msg.text
 		return m, nil
 
+	case transitionsMsg:
+		m.transitions = msg.transitions
+		m.transCur = 0
+		m.transIssue = msg.issueKey
+		m.view = viewTransition
+		return m, nil
+
+	case transitionDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.view = viewKanban
+			return m, nil
+		}
+		m.toast = fmt.Sprintf("Moved %s", msg.issueKey)
+		m.view = viewKanban
+		m.colCur = 0
+		m.rowCur = 0
+		// Reload current board
+		if m.boardCur < len(m.boards) {
+			return m, func() tea.Msg { return m.loadBoardData(m.boards[m.boardCur]) }
+		}
+		return m, nil
+
+	case worklogDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.view = viewKanban
+			return m, nil
+		}
+		m.toast = "Worklog added"
+		m.view = viewDetail
+		return m, clearToastAfter(3 * time.Second)
+
 	case tea.KeyMsg:
 		switch m.view {
 		case viewBoards:
@@ -446,6 +565,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKanban(msg)
 		case viewDetail:
 			return m.updateDetail(msg)
+		case viewTransition:
+			return m.updateTransition(msg)
+		case viewWorklog:
+			return m.updateWorklog(msg)
 		}
 	}
 	return m, nil
@@ -533,6 +656,20 @@ func (m model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			b, _ := json.MarshalIndent(tickets, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
+	case "t":
+		if m.colCur < len(m.columns) {
+			issues := m.columns[m.colCur].issues
+			if m.rowCur >= 0 && m.rowCur < len(issues) {
+				key := issues[m.rowCur].Key
+				return m, func() tea.Msg {
+					tr, err := m.client.GetTransitions(key)
+					if err != nil {
+						return errMsg{err}
+					}
+					return transitionsMsg{transitions: tr, issueKey: key}
+				}
+			}
+		}
 	}
 	return m, nil
 }
@@ -553,6 +690,66 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			b, _ := json.MarshalIndent(ticket, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
+	case "w":
+		if m.detail != nil {
+			ti := textinput.New()
+			ti.Placeholder = "e.g. 30m, 2h, 1d"
+			ti.Focus()
+			ti.CharLimit = 20
+			m.worklogInput = ti
+			m.worklogIssue = m.detail.Key
+			m.view = viewWorklog
+			return m, textinput.Blink
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.view = viewKanban
+		return m, nil
+	case "up", "k":
+		if m.transCur > 0 {
+			m.transCur--
+		}
+	case "down", "j":
+		if m.transCur < len(m.transitions)-1 {
+			m.transCur++
+		}
+	case "enter":
+		if m.transCur < len(m.transitions) {
+			tr := m.transitions[m.transCur]
+			key := m.transIssue
+			return m, func() tea.Msg {
+				err := m.client.TransitionIssue(key, tr.ID)
+				return transitionDoneMsg{issueKey: key, err: err}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = viewDetail
+		return m, nil
+	case "enter":
+		timeSpent := m.worklogInput.Value()
+		if timeSpent == "" {
+			return m, nil
+		}
+		key := m.worklogIssue
+		return m, func() tea.Msg {
+			err := m.client.AddWorklog(key, timeSpent, "")
+			return worklogDoneMsg{err: err}
+		}
+	default:
+		var cmd tea.Cmd
+		m.worklogInput, cmd = m.worklogInput.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -673,13 +870,36 @@ func (m model) View() string {
 		totalPages := (len(m.columns) + cpp - 1) / cpp
 		curPage := pageStart/cpp + 1
 		b.WriteString(subStyle.Render(
-			fmt.Sprintf("[←→] Columns  [↑↓] Issues  [Enter] Detail  [c] Copy JSON  [C] Copy Col  [o] Browser  [esc] Back    Col %d/%d  Page %d/%d",
+			fmt.Sprintf("[←→] Cols  [↑↓] Issues  [Enter] Detail  [t] Transition  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
 				m.colCur+1, len(m.columns), curPage, totalPages)))
 
 	case viewDetail:
 		if m.detail != nil {
 			b.WriteString(m.renderDetail())
 		}
+
+	case viewTransition:
+		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))
+		b.WriteString("\n\n")
+		for i, tr := range m.transitions {
+			if i == m.transCur {
+				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ "+tr.Name))
+			} else {
+				b.WriteString("  " + tr.Name)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Confirm  [esc] Cancel"))
+
+	case viewWorklog:
+		b.WriteString(titleStyle.Render("⏱ Worklog: " + m.worklogIssue))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("Time spent (e.g. 30m, 2h, 1d):"))
+		b.WriteString("\n")
+		b.WriteString(m.worklogInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("[Enter] Confirm  [esc] Cancel"))
 	}
 
 	// Toast feedback
@@ -847,7 +1067,7 @@ func (m model) renderDetail() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(subStyle.Render("[c] Copy JSON  [o] Browser  [esc] Close"))
+	b.WriteString(subStyle.Render("[c] Copy JSON  [w] Add Worklog  [o] Browser  [esc] Close"))
 	return detailBox.Render(b.String())
 }
 
