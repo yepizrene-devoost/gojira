@@ -202,8 +202,7 @@ func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 	if maxResults <= 0 {
 		maxResults = 50
 	}
-	encoded := strings.ReplaceAll(jql, "'", "\\'")
-	path := fmt.Sprintf("%s?jql=%s&maxResults=%d&fields=%s", pathSearchJQL, encoded, maxResults, fieldsSearch)
+	path := fmt.Sprintf("%s?jql=%s&maxResults=%d&fields=%s", pathSearchJQL, url.QueryEscape(jql), maxResults, fieldsSearch)
 	b, err := c.get(path)
 	if err != nil {
 		return nil, 0, err
