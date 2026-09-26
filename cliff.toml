@@ -35,6 +35,11 @@ commit_parsers = [
     { message = "^test", group = "Tests" },
     { message = "^chore", group = "Chores" },
     { message = "^revert", group = "Reverts" },
+    # Catch-all, last so it never shadows a named group. AGENTS.md documents
+    # seven conventional types; a commit that uses any other (build:, ci:,
+    # perf:, ...) lands here explicitly instead of letting git-cliff derive an
+    # unstated lowercase group from the raw type.
+    { message = ".*", group = "Other" },
 ]
 filter_commits = false
 tag_pattern = "v[0-9]*"
