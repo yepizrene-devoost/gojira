@@ -10,7 +10,7 @@
 - `go test ./cmd` — passed.
 - `go test ./internal/jira` — passed.
 - `go test ./...` — passed.
-- Commit identity: pending explicit commit authorization.
+- Commit identity: `721bd94` (`fix(jira): encode JQL and guard comment dates`).
 
 ## Scope
 
