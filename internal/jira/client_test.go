@@ -54,6 +54,43 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 	}
 }
 
+func TestRequestDoesNotRetryPostAfterTransportError(t *testing.T) {
+	hits := 0
+	client := NewClient("https://jira.example", "e@x.com", "tok")
+	client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		hits++
+		return nil, fmt.Errorf("temporary transport failure")
+	})
+
+	if _, err := client.post("/rest/api/3/issue", []byte(`{"fields":{}}`)); err == nil {
+		t.Fatal("POST transport error was swallowed")
+	}
+	if hits != 1 {
+		t.Fatalf("made %d requests, want 1", hits)
+	}
+}
+
+func TestRequestDoesNotRetryPostAfterTransientResponse(t *testing.T) {
+	hits := 0
+	client := NewClient("https://jira.example", "e@x.com", "tok")
+	client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		hits++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(strings.NewReader("temporarily unavailable")),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := client.post("/rest/api/3/issue", []byte(`{"fields":{}}`)); err == nil || !strings.Contains(err.Error(), "API 503") {
+		t.Fatalf("error = %v, want immediate API 503 failure", err)
+	}
+	if hits != 1 {
+		t.Fatalf("made %d requests, want 1", hits)
+	}
+}
+
 func TestRequestRetriesTransportErrors(t *testing.T) {
 	tests := []struct {
 		name     string

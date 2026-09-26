@@ -37,6 +37,7 @@ const (
 )
 
 func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
+	idempotent := method == http.MethodGet || method == http.MethodPut
 	for attempt := 0; attempt < maxRequestAttempts; attempt++ {
 		var body io.Reader
 		if payload != nil {
@@ -54,7 +55,7 @@ func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			if attempt+1 == maxRequestAttempts {
+			if !idempotent || attempt+1 == maxRequestAttempts {
 				return nil, err
 			}
 			time.Sleep(initialBackoff * time.Duration(1<<attempt))
@@ -68,7 +69,7 @@ func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
 		if resp.StatusCode < 400 {
 			return responseBody, nil
 		}
-		if !isRetryableStatus(resp.StatusCode) || attempt+1 == maxRequestAttempts {
+		if !idempotent || !isRetryableStatus(resp.StatusCode) || attempt+1 == maxRequestAttempts {
 			return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(responseBody[:minInt(len(responseBody), 200)]))
 		}
 		time.Sleep(retryDelay(resp, attempt))

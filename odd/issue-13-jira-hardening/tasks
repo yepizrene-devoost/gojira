@@ -16,3 +16,4 @@
 - Runtime harness: N/A; this unit changes the Jira client and has no separate local runtime harness.
 - Latency analysis: TUI board selection performs sequential config, sprint, and issue requests; optimization deferred as a separate measured change.
 - Rollback boundary: revert the issue-13 work-unit commit to remove retry/escaping behavior and its tests.
+- Native review correction: retries are now limited to idempotent GET/PUT requests; POST operations fail immediately to avoid duplicate side effects.
