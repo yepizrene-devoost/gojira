@@ -40,6 +40,30 @@ func TestTruncateRunes(t *testing.T) {
 	}
 }
 
+func TestRenderIssueFullCommentCreatedValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		created string
+		want    string
+	}{
+		{name: "normal Jira timestamp", created: "2026-09-26T10:00:00.000-0300", want: "2026-09-26"},
+		{name: "short value", created: "2026-", want: "2026-"},
+		{name: "empty value", created: "", want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iss := &jira.Issue{Key: "PROJ-1"}
+			iss.Fields.Comment = &jira.CommentField{Comments: []jira.Comment{{Created: tc.created}}}
+
+			out := renderIssueFull(iss)
+			if !strings.Contains(out, "("+tc.want+")") {
+				t.Fatalf("rendered output does not contain comment date %q: %q", tc.want, out)
+			}
+		})
+	}
+}
+
 // The renderer is the only caller, so the bound has to hold end to end: a long
 // comment must be previewed, not printed whole.
 func TestRenderIssueFullTruncatesComments(t *testing.T) {

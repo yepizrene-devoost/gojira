@@ -46,6 +46,26 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 	}
 }
 
+func TestSearchJQLPreservesQueryAtServerBoundary(t *testing.T) {
+	const wantJQL = `project = "A&B" AND summary ~ "50% + #tag"`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("jql"); got != wantJQL {
+			t.Errorf("JQL query = %q, want %q", got, wantJQL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := fmt.Fprint(w, `{"issues":[],"total":0,"maxResults":50}`); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "e@x.com", "tok")
+	if _, _, err := client.SearchJQL(wantJQL, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A 2xx response whose body does not decode must surface as an error: every
 // decode path returns the json.Unmarshal failure instead of handing back zero
 // values that read like an empty result (the contract fixed in 4f58abc).

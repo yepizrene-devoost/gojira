@@ -36,6 +36,13 @@ func truncateRunes(s string, max int) string {
 	return string(runes[:keep]) + ellipsis
 }
 
+func commentCreatedDate(created string) string {
+	if len(created) < 10 {
+		return created
+	}
+	return created[:10]
+}
+
 var getCmd = &cobra.Command{
 	Use:   "get <issue-key>",
 	Short: "View a ticket's full details",
@@ -138,7 +145,7 @@ func renderIssueFull(iss *jira.Issue) string {
 		writef(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
 		for i, c := range iss.Fields.Comment.Comments {
 			body := truncateRunes(strings.TrimSpace(c.Body.Flatten()), commentPreviewMax)
-			writef(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
+			writef(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, commentCreatedDate(c.Created), body)
 		}
 	}
 
