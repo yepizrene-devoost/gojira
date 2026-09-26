@@ -2,7 +2,17 @@
 
 - [x] Add focused config and token storage tests with deterministic keyring seams.
 - [x] Propagate token/config persistence errors and handle wizard input read errors.
-- [ ] Run focused and broader Go checks; record evidence and commit identity.
+- [x] Run focused and broader Go checks; record evidence and commit identity.
+
+## Evidence
+
+- `go test ./internal/config` — passed.
+- `go test ./cmd` — passed.
+- `go test ./...` — passed.
+- `go vet ./...` — passed.
+- `git diff --check` — passed.
+- Native RDD reliability review — approved; authority burned.
+- Work-unit commit: `3fe360a` (`fix(config): cover token storage and input errors`).
 
 ## Scope
 
