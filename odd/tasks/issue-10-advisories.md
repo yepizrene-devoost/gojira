@@ -73,7 +73,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 - [x] T3 — `refactor(jira)`: `resolveViaJQL` propagates its failure; `ResolveAccountID`
       reports picker and JQL errors separately.
 - [x] T4 — `test(jira)`: malformed 2xx body surfaces an error on every decode path.
-- [ ] T5 — `refactor(cli)`: route the discarded builder writes through `writef`.
+- [x] T5 — `refactor(cli)`: route the discarded builder writes through `writef`.
 
 ## Verification
 
@@ -90,7 +90,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 | T2 | _pending_ | `go test ./cmd/` — 5 helper cases + the renderer wiring case pass; `gofmt -l cmd/get.go cmd/get_test.go` clean |
 | T3 | _pending_ | `go test ./internal/jira/` — all 6 `TestResolveAccountID` cases pass unchanged; error text is now `(picker: …; jql: …)` with only the failing sources listed |
 | T4 | _pending_ | `go test ./internal/jira/` — 16 call cases cover all 17 `json.Unmarshal` sites + 1 wrong-shape case; all pass |
-| T5 | _pending_ | `make check` |
+| T5 | _pending_ | `make check` green; `grep '_, _ =' cmd/get.go` shows one site, the helper; `go vet` still printf-checks `writef` call sites (proved on a scratch package) |
 
 Commit identities are recorded as each task closes; the final `docs(odd)` commit
 closes the commit-identity stage.

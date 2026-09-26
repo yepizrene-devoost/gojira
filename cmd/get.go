@@ -66,6 +66,13 @@ var getCmd = &cobra.Command{
 	},
 }
 
+// writef appends a formatted line to b. strings.Builder.Write never returns a
+// non-nil error, so the discarded result is the documented outcome here instead
+// of an unexplained `_, _ =` repeated at every call site.
+func writef(b *strings.Builder, format string, args ...any) {
+	_, _ = fmt.Fprintf(b, format, args...)
+}
+
 func renderIssueFull(iss *jira.Issue) string {
 	var b strings.Builder
 
@@ -110,7 +117,7 @@ func renderIssueFull(iss *jira.Issue) string {
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
+		writef(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
 	}
 
 	// Description
@@ -128,10 +135,10 @@ func renderIssueFull(iss *jira.Issue) string {
 
 	// Comments
 	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
-		_, _ = fmt.Fprintf(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
+		writef(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
 		for i, c := range iss.Fields.Comment.Comments {
 			body := truncateRunes(strings.TrimSpace(c.Body.Flatten()), commentPreviewMax)
-			_, _ = fmt.Fprintf(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
+			writef(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
 		}
 	}
 
