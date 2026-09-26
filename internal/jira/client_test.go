@@ -46,6 +46,78 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 	}
 }
 
+// A 2xx response whose body does not decode must surface as an error: every
+// decode path returns the json.Unmarshal failure instead of handing back zero
+// values that read like an empty result (the contract fixed in 4f58abc).
+func TestMalformedSuccessBodySurfacesDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Truncated JSON: syntactically invalid for every target type.
+		if _, err := fmt.Fprint(w, `{"issues": [}`); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "e@x.com", "tok")
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"TestConnection", func() error { _, err := client.TestConnection(); return err }},
+		{"GetBoards", func() error { _, err := client.GetBoards(); return err }},
+		{"GetBoardConfig", func() error { _, err := client.GetBoardConfig(1); return err }},
+		{"GetSprints", func() error { _, err := client.GetSprints(1); return err }},
+		{"GetBoardIssues", func() error { _, err := client.GetBoardIssues(1, 0); return err }},
+		{"GetIssue", func() error { _, err := client.GetIssue("A-1"); return err }},
+		{"GetIssueFull", func() error { _, err := client.GetIssueFull("A-1"); return err }},
+		{"GetProjects", func() error { _, err := client.GetProjects(); return err }},
+		{"SearchJQL", func() error { _, _, err := client.SearchJQL("project = A", 10); return err }},
+		{"GetTransitions", func() error { _, err := client.GetTransitions("A-1"); return err }},
+		{"GetWorklog", func() error { _, err := client.GetWorklog("A-1"); return err }},
+		{"CreateIssue", func() error {
+			_, err := client.CreateIssue("A", "Task", "summary", nil)
+			return err
+		}},
+		{"GetIssueTypes", func() error { _, err := client.GetIssueTypes("A"); return err }},
+		{"userPicker", func() error { _, err := client.userPicker("rene@devoost.com"); return err }},
+		{"getUser", func() error { _, err := client.getUser("712020:7e4261c7"); return err }},
+		// Both fallbacks fail here, so the resolver must say so rather than
+		// report a plain "no user found".
+		{"ResolveAccountID", func() error {
+			_, _, err := client.ResolveAccountID("rene@devoost.com")
+			return err
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); err == nil {
+				t.Fatal("malformed 2xx body was accepted; want a decode error")
+			}
+		})
+	}
+}
+
+// A well-formed body of the wrong shape is a decode error too, so the contract
+// does not depend on the body being syntactically broken.
+func TestWrongShapeSuccessBodySurfacesDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Valid JSON, but an array where the endpoint promises an object.
+		if _, err := fmt.Fprint(w, `[]`); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "e@x.com", "tok")
+	if _, err := client.GetIssue("A-1"); err == nil {
+		t.Fatal("wrong-shape 2xx body was accepted; want a decode error")
+	}
+}
+
 // ResolveAccountID must go picker → exact email verification → JQL fallback,
 // because /user/username is gone and users/search no longer exposes emails.
 func TestResolveAccountID(t *testing.T) {
