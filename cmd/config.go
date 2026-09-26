@@ -31,18 +31,27 @@ var configInitCmd = &cobra.Command{
 
 		if domain == "" {
 			fmt.Print("Jira domain (e.g. mycompany.atlassian.net): ")
-			domain, _ = reader.ReadString('\n')
-			domain = strings.TrimSpace(domain)
+			value, err := readConfigInput(reader, "domain")
+			if err != nil {
+				return err
+			}
+			domain = value
 		}
 		if email == "" {
 			fmt.Print("Jira email: ")
-			email, _ = reader.ReadString('\n')
-			email = strings.TrimSpace(email)
+			value, err := readConfigInput(reader, "email")
+			if err != nil {
+				return err
+			}
+			email = value
 		}
 		if token == "" {
 			fmt.Print("Jira API token: ")
-			token, _ = reader.ReadString('\n')
-			token = strings.TrimSpace(token)
+			value, err := readConfigInput(reader, "token")
+			if err != nil {
+				return err
+			}
+			token = value
 		}
 
 		if domain == "" || email == "" || token == "" {
@@ -200,6 +209,14 @@ var configTestCmd = &cobra.Command{
 		fmt.Printf("✓ Connected to %s\n", info)
 		return nil
 	},
+}
+
+func readConfigInput(reader *bufio.Reader, field string) (string, error) {
+	value, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", field, err)
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func init() {
