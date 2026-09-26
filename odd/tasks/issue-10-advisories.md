@@ -86,14 +86,15 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 
 | Task | Commit | Verification |
 |---|---|---|
-| T1 | _pending_ | scratch render shows `## Other` for `build`/`ci`/`perf`, `## Chores` keeps `chore!:`; real-history render byte-identical to the old config (4 filtered commits in both) |
-| T2 | _pending_ | `go test ./cmd/` — 5 helper cases + the renderer wiring case pass; `gofmt -l cmd/get.go cmd/get_test.go` clean |
-| T3 | _pending_ | `go test ./internal/jira/` — all 6 `TestResolveAccountID` cases pass unchanged; error text is now `(picker: …; jql: …)` with only the failing sources listed |
-| T4 | _pending_ | `go test ./internal/jira/` — 16 call cases cover all 17 `json.Unmarshal` sites + 1 wrong-shape case; all pass |
-| T5 | _pending_ | `make check` green; `grep '_, _ =' cmd/get.go` shows one site, the helper; `go vet` still printf-checks `writef` call sites (proved on a scratch package) |
+| T1 | `637ceda` | scratch render shows `## Other` for `build`/`ci`/`perf`, `## Chores` keeps `chore!:`; real-history render byte-identical to the old config (4 filtered commits in both) |
+| T2 | `e86ba61` | `go test ./cmd/` — 5 helper cases + the renderer wiring case pass; `gofmt -l cmd/get.go cmd/get_test.go` clean |
+| T3 | `c21f35e` | `go test ./internal/jira/` — all 6 `TestResolveAccountID` cases pass unchanged; error text is now `(picker: …; jql: …)` with only the failing sources listed |
+| T4 | `ceeb8ad` | `go test ./internal/jira/` — 16 call cases cover all 17 `json.Unmarshal` sites + 1 wrong-shape case; all pass |
+| T5 | `809e167` | `make check` green; `grep '_, _ =' cmd/get.go` shows one site, the helper; `go vet` still printf-checks `writef` call sites (proved on a scratch package) |
 
-Commit identities are recorded as each task closes; the final `docs(odd)` commit
-closes the commit-identity stage.
+Five work units, one commit each, on `feature/issue-10-advisories` (from `develop`
+`3f3ad94`). Not pushed. Commit identities recorded here by the follow-up `docs(odd)`
+commit, which closes the commit-identity stage.
 
 ## Open follow-ups
 
