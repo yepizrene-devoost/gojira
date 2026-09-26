@@ -24,7 +24,7 @@ source without changing the documented rules.
       rules, conventional message format, branch-first guardrail, review-boundary
       guidance, and a pre-commit checklist.
 - [x] T2 — Verify Markdown structure and repository status; record evidence.
-- [ ] T3 — Commit the documentation work unit and record its identity.
+- [x] T3 — Commit the documentation work unit and record its identity.
 
 ## Verification
 
@@ -37,6 +37,6 @@ source without changing the documented rules.
 
 | Task | Commit | Verification |
 |---|---|---|
-| T1 | pending | `.agents/workflows/commits.md` written; Markdown structure inspected |
-| T2 | pending | `git diff --check` passed; verification subagent found no readability issues; untracked files remain unstaged |
-| T3 | pending | pending |
+| T1 | `5fbca26` | `.agents/workflows/commits.md` written; Markdown structure inspected |
+| T2 | `5fbca26` | `git diff --check` passed; verification subagent found no readability issues |
+| T3 | `5fbca26` | `docs(workflow): document the commit flow` created the work-unit commit; this follow-up records its identity |
