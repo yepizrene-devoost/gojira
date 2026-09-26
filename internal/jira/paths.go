@@ -1,6 +1,9 @@
 package jira
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // API path constants — all endpoints live here.
 // Platform REST API v3 (Cloud)  — https://developer.atlassian.com/cloud/jira/platform/rest/v3/
@@ -38,12 +41,16 @@ const (
 
 // Issue fields for different contexts.
 const (
-	fieldsBasic     = "summary,status,priority,assignee,issuetype"
-	fieldsFull      = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
-	fieldsSearch    = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
-	fieldsExport    = "summary,status,priority,assignee,issuetype"
+	fieldsBasic  = "summary,status,priority,assignee,issuetype"
+	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
+	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
+	fieldsExport = "summary,status,priority,assignee,issuetype"
 )
 
+func issuePath(path, key string) string {
+	return fmt.Sprintf(path, url.PathEscape(key))
+}
+
 func pathIssueWithFields(key, fields string) string {
-	return fmt.Sprintf("%s?fields=%s", fmt.Sprintf(pathIssue, key), fields)
+	return fmt.Sprintf("%s?fields=%s", issuePath(pathIssue, key), fields)
 }

@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,37 +31,76 @@ func minInt(a, b int) int {
 	return b
 }
 
+const (
+	maxRequestAttempts = 4
+	initialBackoff     = 10 * time.Millisecond
+)
+
+func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
+	for attempt := 0; attempt < maxRequestAttempts; attempt++ {
+		var body io.Reader
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequest(method, c.baseURL+path, body)
+		if err != nil {
+			return nil, err
+		}
+		req.SetBasicAuth(c.auth, "")
+		req.Header.Set("Accept", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if attempt+1 == maxRequestAttempts {
+				return nil, err
+			}
+			time.Sleep(initialBackoff * time.Duration(1<<attempt))
+			continue
+		}
+		responseBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode < 400 {
+			return responseBody, nil
+		}
+		if !isRetryableStatus(resp.StatusCode) || attempt+1 == maxRequestAttempts {
+			return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(responseBody[:minInt(len(responseBody), 200)]))
+		}
+		time.Sleep(retryDelay(resp, attempt))
+	}
+	return nil, fmt.Errorf("request failed after %d attempts", maxRequestAttempts)
+}
+
+func isRetryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
+}
+
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if value := resp.Header.Get("Retry-After"); value != "" {
+		if seconds, err := time.ParseDuration(value + "s"); err == nil {
+			return seconds
+		}
+		if when, err := http.ParseTime(value); err == nil {
+			if delay := time.Until(when); delay > 0 {
+				return delay
+			}
+			return 0
+		}
+	}
+	return initialBackoff * time.Duration(1<<attempt)
+}
+
 func (c *Client) get(path string) ([]byte, error) {
-	req, _ := http.NewRequest("GET", c.baseURL+path, nil)
-	req.SetBasicAuth(c.auth, "")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
-	}
-	return body, nil
+	return c.request(http.MethodGet, path, nil)
 }
 
 func (c *Client) post(path string, payload []byte) ([]byte, error) {
-	req, _ := http.NewRequest("POST", c.baseURL+path, strings.NewReader(string(payload)))
-	req.SetBasicAuth(c.auth, "")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
-	}
-	return body, nil
+	return c.request(http.MethodPost, path, payload)
 }
 
 // ─── Read ──────────────────────────────────────────────────────────────
@@ -219,7 +259,7 @@ func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 }
 
 func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
-	b, err := c.get(fmt.Sprintf(pathIssueTransitions, issueKey))
+	b, err := c.get(issuePath(pathIssueTransitions, issueKey))
 	if err != nil {
 		return nil, err
 	}
@@ -236,12 +276,12 @@ func (c *Client) TransitionIssue(issueKey, transitionID string) error {
 	payload, _ := json.Marshal(map[string]map[string]string{
 		"transition": {"id": transitionID},
 	})
-	_, err := c.post(fmt.Sprintf(pathIssueTransitions, issueKey), payload)
+	_, err := c.post(issuePath(pathIssueTransitions, issueKey), payload)
 	return err
 }
 
 func (c *Client) GetWorklog(issueKey string) ([]Worklog, error) {
-	b, err := c.get(fmt.Sprintf(pathIssueWorklog, issueKey))
+	b, err := c.get(issuePath(pathIssueWorklog, issueKey))
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +299,7 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 		"timeSpent": timeSpent,
 		"comment":   comment,
 	})
-	_, err := c.post(fmt.Sprintf(pathIssueWorklog, issueKey), payload)
+	_, err := c.post(issuePath(pathIssueWorklog, issueKey), payload)
 	return err
 }
 
@@ -268,9 +308,9 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 // CreateIssue creates a new issue and returns its key.
 func (c *Client) CreateIssue(projectKey, issueType, summary string, description *ADFDoc) (string, error) {
 	fields := map[string]interface{}{
-		"project":  map[string]string{"key": projectKey},
+		"project":   map[string]string{"key": projectKey},
 		"issuetype": map[string]string{"name": issueType},
-		"summary":  summary,
+		"summary":   summary,
 	}
 	if description != nil && len(description.Content) > 0 {
 		fields["description"] = description
@@ -329,56 +369,22 @@ func (c *Client) GetIssueTypes(projectKey string) ([]string, error) {
 // AddComment adds a comment (ADF body) to an issue.
 func (c *Client) AddComment(issueKey string, body ADFDoc) error {
 	payload, _ := json.Marshal(map[string]interface{}{"body": body})
-	_, err := c.post(fmt.Sprintf(pathIssueComment, issueKey), payload)
+	_, err := c.post(issuePath(pathIssueComment, issueKey), payload)
 	return err
 }
 
 // AssignIssue assigns an issue by account ID.
 func (c *Client) AssignIssue(issueKey, accountID string) error {
 	payload, _ := json.Marshal(map[string]string{"accountId": accountID})
-	req, err := http.NewRequest("PUT",
-		c.baseURL+fmt.Sprintf(pathIssueAssign, issueKey),
-		strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(c.auth, "")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
-	}
-	return nil
+	_, err := c.request(http.MethodPut, issuePath(pathIssueAssign, issueKey), payload)
+	return err
 }
 
 // UpdateIssue updates one or more fields on an issue.
 func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) error {
 	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
-	req, err := http.NewRequest("PUT",
-		c.baseURL+fmt.Sprintf(pathIssue, issueKey),
-		strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(c.auth, "")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API %d: %s", resp.StatusCode, string(body[:minInt(len(body), 200)]))
-	}
-	return nil
+	_, err := c.request(http.MethodPut, issuePath(pathIssue, issueKey), payload)
+	return err
 }
 
 // ResolveAccountID looks up a Jira user by email and returns their

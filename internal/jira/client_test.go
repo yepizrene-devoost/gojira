@@ -2,10 +2,18 @@ package jira
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // GetBoardIssues must page through the Agile endpoint: a single request is
 // capped server-side and silently truncates large sprints (the bug that hid
@@ -43,6 +51,114 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Fatalf("made %d requests, want 2", hits)
+	}
+}
+
+func TestRequestRetriesTransportErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		failures int
+		wantHits int
+	}{
+		{name: "one transport error", failures: 1, wantHits: 2},
+		{name: "multiple transport errors", failures: 2, wantHits: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			client := NewClient("https://jira.example", "e@x.com", "tok")
+			client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hits++
+				if hits <= tc.failures {
+					return nil, fmt.Errorf("temporary transport failure")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"issues":[],"total":0,"maxResults":50}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})
+
+			if _, _, err := client.SearchJQL("project = A", 0); err != nil {
+				t.Fatal(err)
+			}
+			if hits != tc.wantHits {
+				t.Fatalf("made %d requests, want %d", hits, tc.wantHits)
+			}
+		})
+	}
+}
+
+func TestRequestRetriesTransientResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		statuses   []int
+		retryAfter string
+		wantHits   int
+	}{
+		{name: "rate limited", statuses: []int{http.StatusTooManyRequests, http.StatusOK}, retryAfter: "0", wantHits: 2},
+		{name: "server error", statuses: []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusOK}, wantHits: 3},
+		{name: "client error is immediate", statuses: []int{http.StatusBadRequest}, wantHits: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				status := tc.statuses[hits]
+				hits++
+				if tc.retryAfter != "" && status != http.StatusOK {
+					w.Header().Set("Retry-After", tc.retryAfter)
+				}
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_, _ = fmt.Fprint(w, `{"issues":[],"total":0,"maxResults":50}`)
+				}
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.URL, "e@x.com", "tok")
+			_, _, err := client.SearchJQL("project = A", 0)
+			if tc.name == "client error is immediate" {
+				if err == nil || !strings.Contains(err.Error(), "API 400") {
+					t.Fatalf("error = %v, want immediate API 400 failure", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if hits != tc.wantHits {
+				t.Fatalf("made %d requests, want %d", hits, tc.wantHits)
+			}
+		})
+	}
+}
+
+func TestIssueKeyPathEscapingAcrossEndpoints(t *testing.T) {
+	const issueKey = "PROJ/13?part=1"
+	wantPath := "/rest/api/3/issue/PROJ%2F13%3Fpart=1"
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.EscapedPath())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "e@x.com", "tok")
+	if err := client.AssignIssue(issueKey, "account"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UpdateIssue(issueKey, map[string]interface{}{"summary": "updated"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d requests, want 2", len(got))
+	}
+	for _, path := range got {
+		if path != wantPath && path != wantPath+"/assignee" {
+			t.Errorf("path = %q, want issue key escaped in %q or assignee variant", path, wantPath)
+		}
 	}
 }
 
@@ -152,9 +268,9 @@ func TestResolveAccountID(t *testing.T) {
 		// emails per accountId for the /user?accountId verification step
 		emails map[string]string
 		// jql: JSON for the search/jql response; "" → endpoint 404s
-		jql string
-		wantID   string
-		wantErr  bool
+		jql     string
+		wantID  string
+		wantErr bool
 	}{
 		{
 			name:   "picker sole candidate verified by email",
@@ -188,9 +304,9 @@ func TestResolveAccountID(t *testing.T) {
 			wantID: reneID,
 		},
 		{
-			name:   "no path resolves the email",
-			picker: `{"users":[],"total":0}`,
-			jql:    `{"issues":[]}`,
+			name:    "no path resolves the email",
+			picker:  `{"users":[],"total":0}`,
+			jql:     `{"issues":[]}`,
 			wantErr: true,
 		},
 	}
