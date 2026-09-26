@@ -69,7 +69,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 
 - [x] T1 — `chore(changelog)`: explicit catch-all group in `cliff.toml`; verified with
       `make changelog` on a scratch repo.
-- [ ] T2 — `fix(cli)`: rune-safe comment preview with a named constant + `cmd/get_test.go`.
+- [x] T2 — `fix(cli)`: rune-safe comment preview with a named constant + `cmd/get_test.go`.
 - [ ] T3 — `refactor(jira)`: `resolveViaJQL` propagates its failure; `ResolveAccountID`
       reports picker and JQL errors separately.
 - [ ] T4 — `test(jira)`: malformed 2xx body surfaces an error on every decode path.
@@ -87,7 +87,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 | Task | Commit | Verification |
 |---|---|---|
 | T1 | _pending_ | scratch render shows `## Other` for `build`/`ci`/`perf`, `## Chores` keeps `chore!:`; real-history render byte-identical to the old config (4 filtered commits in both) |
-| T2 | _pending_ | `go test ./cmd/` |
+| T2 | _pending_ | `go test ./cmd/` — 5 helper cases + the renderer wiring case pass; `gofmt -l cmd/get.go cmd/get_test.go` clean |
 | T3 | _pending_ | `go test ./internal/jira/` |
 | T4 | _pending_ | `go test ./internal/jira/` |
 | T5 | _pending_ | `make check` |
