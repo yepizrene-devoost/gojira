@@ -1,0 +1,12 @@
+# Issue #14 — Config and token storage safety
+
+- [x] Add focused config and token storage tests with deterministic keyring seams.
+- [x] Propagate token/config persistence errors and handle wizard input read errors.
+- [ ] Run focused and broader Go checks; record evidence and commit identity.
+
+## Scope
+
+- `internal/config/config.go`
+- `internal/config/config_test.go`
+- `cmd/config.go`
+- `cmd/config_test.go` (if needed for wizard input coverage)

@@ -18,6 +18,12 @@ const (
 	keyringUser    = "api-token"
 )
 
+var (
+	keyringSet = keyring.Set
+	keyringGet = keyring.Get
+	saveConfig = func(cfg *Config) error { return cfg.Save() }
+)
+
 // Config holds the application's persistent configuration.
 type Config struct {
 	Domain  string            `yaml:"domain"`
@@ -108,12 +114,14 @@ func (c *Config) Save() error {
 // if that fails, stores it in the config file.
 func SaveToken(token string) error {
 	// Try keychain
-	if err := keyring.Set(keyringService, keyringUser, token); err == nil {
-		// Also clear any leftover token in the YAML
+	if err := keyringSet(keyringService, keyringUser, token); err == nil {
+		// Also clear any leftover token in the YAML.
 		cfg, err := Load()
 		if err == nil && cfg.Token != "" {
 			cfg.Token = ""
-			_ = cfg.Save() // best effort
+			if err := saveConfig(cfg); err != nil {
+				return fmt.Errorf("clearing token from config: %w", err)
+			}
 		}
 		return nil
 	}
@@ -124,14 +132,14 @@ func SaveToken(token string) error {
 		return err
 	}
 	cfg.Token = token
-	return cfg.Save()
+	return saveConfig(cfg)
 }
 
 // LoadToken retrieves the API token. Tries the OS keychain first,
 // then falls back to the config file.
 func LoadToken() (string, error) {
 	// Try keychain
-	token, err := keyring.Get(keyringService, keyringUser)
+	token, err := keyringGet(keyringService, keyringUser)
 	if err == nil && token != "" {
 		return token, nil
 	}
