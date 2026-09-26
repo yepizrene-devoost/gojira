@@ -70,7 +70,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 - [x] T1 — `chore(changelog)`: explicit catch-all group in `cliff.toml`; verified with
       `make changelog` on a scratch repo.
 - [x] T2 — `fix(cli)`: rune-safe comment preview with a named constant + `cmd/get_test.go`.
-- [ ] T3 — `refactor(jira)`: `resolveViaJQL` propagates its failure; `ResolveAccountID`
+- [x] T3 — `refactor(jira)`: `resolveViaJQL` propagates its failure; `ResolveAccountID`
       reports picker and JQL errors separately.
 - [ ] T4 — `test(jira)`: malformed 2xx body surfaces an error on every decode path.
 - [ ] T5 — `refactor(cli)`: route the discarded builder writes through `writef`.
@@ -88,7 +88,7 @@ Branch: `feature/issue-10-advisories` (from `develop`, dflow, `--no-push`).
 |---|---|---|
 | T1 | _pending_ | scratch render shows `## Other` for `build`/`ci`/`perf`, `## Chores` keeps `chore!:`; real-history render byte-identical to the old config (4 filtered commits in both) |
 | T2 | _pending_ | `go test ./cmd/` — 5 helper cases + the renderer wiring case pass; `gofmt -l cmd/get.go cmd/get_test.go` clean |
-| T3 | _pending_ | `go test ./internal/jira/` |
+| T3 | _pending_ | `go test ./internal/jira/` — all 6 `TestResolveAccountID` cases pass unchanged; error text is now `(picker: …; jql: …)` with only the failing sources listed |
 | T4 | _pending_ | `go test ./internal/jira/` |
 | T5 | _pending_ | `make check` |
 
@@ -101,3 +101,11 @@ closes the commit-identity stage.
   covered by finding 5 and deliberately left untouched.
 - `R3-001` grew into real work (a decode-error contract sweep over every decode path):
   per the issue, promote it to its own tracker only if it turns into more than this pass.
+- Repo-wide `gofmt` drift, **pre-existing in `develop`** and unrelated to these findings:
+  `gofmt -l` flags `cmd/tui.go`, `internal/jira/client.go` (a `CreateIssue` map
+  alignment), `internal/jira/paths.go`, `internal/jira/types.go`, `internal/tui/tui.go`
+  (an import-order swap). There is no CI or lint gate that would catch it — `.github/`
+  holds issue templates only, and `make lint` needs a locally installed
+  `golangci-lint`. Left out of this candidate on purpose: fixing one file here would
+  split one repo-wide condition across two commits and add unrelated diff noise.
+  Proposed home: issue #8 (release pipeline / CI).
