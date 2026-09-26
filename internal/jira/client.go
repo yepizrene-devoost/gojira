@@ -416,12 +416,22 @@ func (c *Client) ResolveAccountID(email string) (accountID, displayName string, 
 		}
 	}
 
-	if id, name, ok := c.resolveViaJQL(email); ok {
-		return id, name, nil
+	// The JQL fallback is best-effort: matching nobody is a normal miss, but a
+	// transport or decode failure must not be reported as "no such user".
+	jqlUser, jqlErr := c.resolveViaJQL(email)
+	if jqlUser != nil {
+		return jqlUser.AccountID, jqlUser.DisplayName, nil
 	}
 
+	var reasons []string
 	if pickerErr != nil {
-		return "", "", fmt.Errorf("no user found for %s (%v)", email, pickerErr)
+		reasons = append(reasons, fmt.Sprintf("picker: %v", pickerErr))
+	}
+	if jqlErr != nil {
+		reasons = append(reasons, fmt.Sprintf("jql: %v", jqlErr))
+	}
+	if len(reasons) > 0 {
+		return "", "", fmt.Errorf("no user found for %s (%s)", email, strings.Join(reasons, "; "))
 	}
 	return "", "", fmt.Errorf("no user found for %s", email)
 }
@@ -459,17 +469,18 @@ func (c *Client) getUser(accountID string) (*UserRef, error) {
 
 // resolveViaJQL finds a user through any issue they touch. Jira resolves the
 // email server-side; the returned user objects carry the email for an exact
-// verification.
-func (c *Client) resolveViaJQL(email string) (accountID, displayName string, ok bool) {
+// verification. A nil user with a nil error means the fallback ran and matched
+// nobody; a non-nil error means it could not be evaluated at all.
+func (c *Client) resolveViaJQL(email string) (*UserRef, error) {
 	if email == "" || strings.ContainsAny(email, "\"\\") {
-		return "", "", false // not a real email; never break the JQL string
+		return nil, nil // not a real email; never break the JQL string
 	}
 	jql := fmt.Sprintf(`creator = "%[1]s" OR reporter = "%[1]s" OR assignee = "%[1]s"`, email)
 	path := fmt.Sprintf("%s?jql=%s&maxResults=1&fields=creator,reporter,assignee",
 		pathSearchJQL, url.QueryEscape(jql))
 	b, err := c.get(path)
 	if err != nil {
-		return "", "", false
+		return nil, err
 	}
 	var r struct {
 		Issues []struct {
@@ -481,14 +492,14 @@ func (c *Client) resolveViaJQL(email string) (accountID, displayName string, ok 
 		} `json:"issues"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
-		return "", "", false
+		return nil, err
 	}
 	for _, iss := range r.Issues {
 		for _, u := range []*UserRef{iss.Fields.Creator, iss.Fields.Reporter, iss.Fields.Assignee} {
 			if u != nil && u.AccountID != "" && strings.EqualFold(u.EmailAddress, email) {
-				return u.AccountID, u.DisplayName, true
+				return u, nil
 			}
 		}
 	}
-	return "", "", false
+	return nil, nil
 }

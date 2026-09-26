@@ -14,6 +14,28 @@ import (
 var keyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
 var metaLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Bold(true)
 
+// commentPreviewMax bounds a rendered comment preview, counted in runes so a
+// multi-byte body (accented Spanish is common in this workspace) is never cut
+// in the middle of a character.
+const commentPreviewMax = 200
+
+// ellipsis marks a truncated preview and counts toward the bound.
+const ellipsis = "..."
+
+// truncateRunes shortens s to at most max runes, replacing the tail with an
+// ellipsis that counts toward max. max is expected to be at least len(ellipsis).
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	keep := max - len(ellipsis)
+	if keep < 0 {
+		keep = 0
+	}
+	return string(runes[:keep]) + ellipsis
+}
+
 var getCmd = &cobra.Command{
 	Use:   "get <issue-key>",
 	Short: "View a ticket's full details",
@@ -42,6 +64,13 @@ var getCmd = &cobra.Command{
 		fmt.Println(renderIssueFull(iss))
 		return nil
 	},
+}
+
+// writef appends a formatted line to b. strings.Builder.Write never returns a
+// non-nil error, so the discarded result is the documented outcome here instead
+// of an unexplained `_, _ =` repeated at every call site.
+func writef(b *strings.Builder, format string, args ...any) {
+	_, _ = fmt.Fprintf(b, format, args...)
 }
 
 func renderIssueFull(iss *jira.Issue) string {
@@ -88,7 +117,7 @@ func renderIssueFull(iss *jira.Issue) string {
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 
 	for _, row := range rows {
-		_, _ = fmt.Fprintf(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
+		writef(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
 	}
 
 	// Description
@@ -106,13 +135,10 @@ func renderIssueFull(iss *jira.Issue) string {
 
 	// Comments
 	if iss.Fields.Comment != nil && len(iss.Fields.Comment.Comments) > 0 {
-		_, _ = fmt.Fprintf(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
+		writef(&b, "\n── Comments (%d) ──\n", len(iss.Fields.Comment.Comments))
 		for i, c := range iss.Fields.Comment.Comments {
-			body := strings.TrimSpace(c.Body.Flatten())
-			if len(body) > 200 {
-				body = body[:197] + "..."
-			}
-			_, _ = fmt.Fprintf(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
+			body := truncateRunes(strings.TrimSpace(c.Body.Flatten()), commentPreviewMax)
+			writef(&b, "  [%d] %s (%s): %q\n", i+1, c.Author.DisplayName, c.Created[:10], body)
 		}
 	}
 
