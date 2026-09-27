@@ -1,0 +1,48 @@
+name: Release checks
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-checks:
+    name: Validate release configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          install-only: true
+
+      - name: Check GoReleaser configuration
+        run: goreleaser check
+
+      - name: Check curated changelog contract
+        shell: sh
+        run: |
+          # The workflow delegates extraction to Make so CI and local releases
+          # execute the byte-identical POSIX awk program.
+          version=$(awk '$1 == "##" && $2 == "📦" { print $3; exit }' CHANGELOG.md)
+          test -n "$version"
+          make release-notes VERSION="$version" RELEASE_NOTES="$RUNNER_TEMP/RELEASE_NOTES.md"
