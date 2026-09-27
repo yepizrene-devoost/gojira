@@ -136,7 +136,7 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 | `←/→` or `h/l` | Move between columns (pages horizontally) |
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
 | `Enter` | Open ticket detail in a floating modal |
-| `?` | Show the Kanban help overlay (`?`, `Esc`, or `q` closes it) |
+| `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `s` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
@@ -144,9 +144,12 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |
 
-Ticket detail and help float over the board, so the current column and ticket
-remain visible and selected after closing them. Overlay keys are isolated from
-the board: navigation and action keys do nothing until the overlay is closed.
+Ticket detail and help float over the board at a consistent height (up to 35 rows)
+and width (up to 100 columns), so long content scrolls inside instead of stretching
+the modal. Detail shows the ticket key and summary together in its header; a long
+summary also remains available in the scrollable body. The current column
+and ticket remain selected after closing them. Overlay keys are isolated from
+the board: detail navigation scrolls its content without moving the board cursor.
 Transition, issue creation, and worklog entry remain full-screen flows.
 
 Boards with an active sprint show a trailing **Backlog** column with the
@@ -157,6 +160,7 @@ created with `n` go directly into the active sprint.
 
 | Key | Action |
 |---|---|
+| `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |

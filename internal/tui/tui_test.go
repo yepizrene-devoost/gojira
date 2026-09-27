@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -619,6 +620,203 @@ func TestOverlayGeometryIsBounded(t *testing.T) {
 				t.Fatalf("detail key missing from bounded overlay:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestDetailModalKeepsBordersAndScrollsLongDescription(t *testing.T) {
+	m := makeTestModel(8, 2)
+	m.width, m.height = 190, 32
+	m.view = viewDetail
+	issue := testIssue("ARA-1858")
+	issue.Fields.Summary = strings.Repeat("Long issue title ", 12)
+	issue.Fields.Description = &jira.ADFDoc{Content: []jira.ADFNode{{
+		Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: strings.Repeat("long description words ", 120) + "END MARKER"}},
+	}}}
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+
+	check := func(output string) {
+		t.Helper()
+		if got := lipgloss.Height(output); got > m.height {
+			t.Fatalf("modal height=%d exceeds terminal height=%d", got, m.height)
+		}
+		for _, line := range strings.Split(output, "\n") {
+			if got := ansi.StringWidth(line); got > m.width {
+				t.Fatalf("modal line width=%d exceeds terminal width=%d", got, m.width)
+			}
+		}
+		plain := ansi.Strip(output)
+		if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╮") || !strings.Contains(plain, "╰") || !strings.Contains(plain, "╯") {
+			t.Fatalf("modal border was clipped:\n%s", plain)
+		}
+		if !strings.Contains(plain, "[esc] Close") {
+			t.Fatalf("modal actions were clipped:\n%s", plain)
+		}
+	}
+	check(m.View().Content)
+	if strings.Contains(ansi.Strip(m.View().Content), "END MARKER") {
+		t.Fatal("long description should require scrolling")
+	}
+	for i := 0; i < 200; i++ {
+		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	}
+	output := m.View().Content
+	check(output)
+	if !strings.Contains(ansi.Strip(output), "END MARKER") {
+		t.Fatalf("last description line is unreachable:\n%s", ansi.Strip(output))
+	}
+	before := m.detailScroll
+	m, _ = updateModel(t, m, specialKey(tea.KeyUp))
+	if m.detailScroll != before-1 || m.View().Content == output {
+		t.Fatalf("up after last page did not move viewport: offset %d → %d", before, m.detailScroll)
+	}
+}
+
+func TestDetailScrollRepeatedLinesAndResize(t *testing.T) {
+	m := makeTestModel(3, 2)
+	m.width, m.height = 65, 16
+	m.view = viewDetail
+	issue := testIssue("P0")
+	issue.Fields.Description = &jira.ADFDoc{Content: []jira.ADFNode{{
+		Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: strings.Repeat("repeat\n", 100) + "END"}},
+	}}}
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	for i := 0; i < 110; i++ {
+		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "END") {
+		t.Fatal("repeated lines blocked navigation to the final line")
+	}
+	if m.detailScroll != m.detailMaxScroll() {
+		t.Fatalf("scroll offset %d should clamp to %d", m.detailScroll, m.detailMaxScroll())
+	}
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.detailScroll != m.detailMaxScroll() {
+		t.Fatalf("resize kept stale scroll offset %d, limit %d", m.detailScroll, m.detailMaxScroll())
+	}
+	before := m.detailScroll
+	m, _ = updateModel(t, m, specialKey(tea.KeyUp))
+	if m.detailScroll != before-1 {
+		t.Fatalf("up after resize moved offset %d to %d", before, m.detailScroll)
+	}
+}
+
+func TestCompactDetailKeepsScrollableBody(t *testing.T) {
+	for _, width := range []int{36, 60} {
+		m := makeTestModel(2, 2)
+		m.width, m.height = width, 9
+		m.view = viewDetail
+		issue := testIssue("P0")
+		issue.Fields.Description = &jira.ADFDoc{Content: []jira.ADFNode{{
+			Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: strings.Repeat("line\n", 20) + "END"}},
+		}}}
+		m.detail = &issue
+		m.detailIssueKey = issue.Key
+		for i := 0; i < 80; i++ {
+			m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+		}
+		plain := ansi.Strip(m.View().Content)
+		if !strings.Contains(plain, "END") || !strings.Contains(plain, "[esc] Close") {
+			t.Fatalf("compact viewport hid its body or close action:\n%s", plain)
+		}
+		if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╮") || !strings.Contains(plain, "╰") || !strings.Contains(plain, "╯") {
+			t.Fatalf("compact width %d lost border corners:\n%s", width, plain)
+		}
+	}
+}
+
+func TestModalHeightStaysConsistentAcrossContentAndTerminalSizes(t *testing.T) {
+	for _, terminal := range []struct{ width, height, want int }{{190, 50, 35}, {120, 32, 30}, {60, 16, 14}} {
+		t.Run(fmt.Sprintf("%dx%d", terminal.width, terminal.height), func(t *testing.T) {
+			m := makeTestModel(2, 2)
+			m.width, m.height = terminal.width, terminal.height
+			issue := testIssue("P0")
+			m.view = viewDetail
+			m.detail = &issue
+			m.detailIssueKey = issue.Key
+			short := m.renderDetail()
+			issue.Fields.Description = &jira.ADFDoc{Content: []jira.ADFNode{{Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: strings.Repeat("many words ", 200)}}}}}
+			m.detail = &issue
+			long := m.renderDetail()
+			m.view = viewKanban
+			m.helpOpen = true
+			help := m.renderHelp()
+			for name, overlay := range map[string]string{"short": short, "long": long, "help": help} {
+				if got := lipgloss.Height(overlay); got != terminal.want {
+					t.Errorf("%s height=%d, want consistent height %d", name, got, terminal.want)
+				}
+				plain := ansi.Strip(overlay)
+				if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╮") || !strings.Contains(plain, "╰") || !strings.Contains(plain, "╯") {
+					t.Errorf("%s border clipped:\n%s", name, plain)
+				}
+			}
+		})
+	}
+}
+
+func TestDetailHeaderCombinesKeyAndSummaryWithoutLosingLongSummary(t *testing.T) {
+	m := makeTestModel(2, 2)
+	m.width, m.height = 120, 40
+	m.view = viewDetail
+	issue := testIssue("ARA-1901")
+	issue.Fields.Summary = "Review unexpected error sentry"
+	m.detail = &issue
+	content, _ := m.detailContent()
+	plain := ansi.Strip(content)
+	if !strings.HasPrefix(plain, "📋 ARA-1901  Review unexpected error sentry\n") || strings.Count(plain, issue.Fields.Summary) != 1 {
+		t.Fatalf("short summary not in single-line title:\n%s", plain)
+	}
+	if got := lipgloss.Width(m.renderDetail()); got != 100 {
+		t.Fatalf("modal width=%d, want 100", got)
+	}
+
+	issue.Fields.Summary = strings.Repeat("long summary words ", 12) + "FINAL"
+	m.detail = &issue
+	content, _ = m.detailContent()
+	plain = ansi.Strip(content)
+	lines := strings.Split(plain, "\n")
+	if ansi.StringWidth(lines[0]) > m.modalWidth() || !strings.Contains(lines[0], "ARA-1901") || !strings.Contains(plain, issue.Fields.Summary) {
+		t.Fatalf("long summary lost key, exceeded title width, or became inaccessible:\n%s", plain)
+	}
+}
+
+func TestDetailPageKeysAdvanceByVisibleRows(t *testing.T) {
+	m := makeTestModel(2, 2)
+	m.width, m.height = 120, 50
+	m.view = viewDetail
+	issue := testIssue("P0")
+	issue.Fields.Description = &jira.ADFDoc{Content: []jira.ADFNode{{Type: "paragraph", Content: []jira.ADFNode{{Type: "text", Text: strings.Repeat("line\n", 100)}}}}}
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	page := m.detailPageSize()
+	if page < 1 || page > m.modalHeight()-5 {
+		t.Fatalf("unexpected visible page size %d", page)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyPgDown))
+	if m.detailScroll != page {
+		t.Fatalf("PgDn advanced %d rows, want %d", m.detailScroll, page)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyPgUp))
+	if m.detailScroll != 0 {
+		t.Fatalf("PgUp did not return to start: %d", m.detailScroll)
+	}
+}
+
+func TestCompactHelpScrollKeepsBoardCursor(t *testing.T) {
+	m := makeTestModel(3, 2)
+	m.width, m.height = 60, 16
+	m.helpOpen = true
+	col, row := m.colCur, m.rowCur
+	for i := 0; i < 20; i++ {
+		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	}
+	if m.colCur != col || m.rowCur != row {
+		t.Fatalf("help scrolling moved board cursor: (%d,%d)", m.colCur, m.rowCur)
+	}
+	plain := ansi.Strip(m.renderHelp())
+	if !strings.Contains(plain, "Ctrl+C") || !strings.Contains(plain, "[? / esc / q] Close") {
+		t.Fatalf("compact help hid final entry or close action:\n%s", plain)
 	}
 }
 

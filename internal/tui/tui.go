@@ -142,12 +142,14 @@ type Model struct {
 	height               int
 	err                  error
 	detail               *jira.Issue
+	detailScroll         int
 	detailLoading        bool
 	detailIssueKey       string
 	detailBoardRequest   uint64
 	nextDetailRequest    uint64
 	activeDetailRequest  uint64
 	helpOpen             bool
+	helpScroll           int
 	toast                string
 	transitions          []jira.Transition
 	transCur             int
@@ -268,11 +270,13 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.sprintID = 0
 	m.err = nil
 	m.detail = nil
+	m.detailScroll = 0
 	m.detailLoading = false
 	m.detailIssueKey = ""
 	m.detailBoardRequest = 0
 	m.activeDetailRequest = 0
 	m.helpOpen = false
+	m.helpScroll = 0
 	m.activeWorklogRequest = 0
 	m.colCur = 0
 	m.rowCur = 0
@@ -398,6 +402,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.view == viewDetail {
+			m.detailScroll = min(m.detailScroll, m.detailMaxScroll())
+		} else if m.helpOpen {
+			m.helpScroll = min(m.helpScroll, m.helpMaxScroll())
+		}
 		return m, nil
 
 	case boardsMsg:
@@ -444,6 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.detail = msg.issue
+		m.detailScroll = 0
 		return m, nil
 
 	case errMsg:
@@ -620,6 +630,15 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?", "esc", "q":
 			m.helpOpen = false
+			m.helpScroll = 0
+		case "down", "j":
+			m.helpScroll = min(m.helpScroll+1, m.helpMaxScroll())
+		case "up", "k":
+			m.helpScroll = max(m.helpScroll-1, 0)
+		case "pgdown":
+			m.helpScroll = min(m.helpScroll+m.helpPageSize(), m.helpMaxScroll())
+		case "pgup":
+			m.helpScroll = max(m.helpScroll-m.helpPageSize(), 0)
 		}
 		return m, nil
 	}
@@ -640,6 +659,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "?":
 		m.helpOpen = true
+		m.helpScroll = 0
 	case "left", "h":
 		if m.colCur > 0 {
 			m.colCur--
@@ -666,6 +686,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				boardRequest := m.loadedBoardRequest
 				m.view = viewDetail
 				m.detail = nil
+				m.detailScroll = 0
 				m.detailLoading = true
 				m.detailIssueKey = key
 				m.detailBoardRequest = boardRequest
@@ -732,11 +753,20 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "down", "j":
+		m = m.scrollDetail(1)
+	case "up", "k":
+		m = m.scrollDetail(-1)
+	case "pgdown":
+		m = m.scrollDetail(m.detailPageSize())
+	case "pgup":
+		m = m.scrollDetail(-m.detailPageSize())
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "enter", "q":
 		m.view = viewKanban
 		m.detail = nil
+		m.detailScroll = 0
 		m.detailLoading = false
 		m.detailIssueKey = ""
 		m.detailBoardRequest = 0
@@ -768,6 +798,14 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) scrollDetail(steps int) Model {
+	if m.detailLoading || m.detail == nil {
+		return m
+	}
+	m.detailScroll = max(0, min(m.detailScroll+steps, m.detailMaxScroll()))
+	return m
 }
 
 func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1190,27 +1228,87 @@ func (m Model) kanbanFooter(curPage, totalPages int) string {
 	return "[?] Help\n[esc] Back"
 }
 
-func (m Model) renderHelp() string {
+func (m Model) helpContent() (string, string) {
 	var b strings.Builder
 	b.WriteString(keyStyle.Render("? Kanban Help"))
 	b.WriteString("\n\n")
 	for _, entry := range kanbanHelp {
 		_, _ = fmt.Fprintf(&b, "%-14s %s\n", entry.keys, entry.action)
 	}
-	b.WriteString("\n")
-	b.WriteString(subStyle.Render("[? / esc / q] Close"))
-	return m.modalStyle().Render(b.String())
+	return b.String(), "[↑↓] Scroll  [? / esc / q] Close"
+}
+
+func (m Model) helpMaxScroll() int {
+	content, actions := m.helpContent()
+	_, _, _, limit := m.detailViewport(content, actions)
+	return limit
+}
+
+func (m Model) helpPageSize() int {
+	content, actions := m.helpContent()
+	_, _, visible, _ := m.detailViewport(content, actions)
+	return max(visible, 1)
+}
+
+func (m Model) renderHelp() string {
+	content, actions := m.helpContent()
+	return m.renderModal(content, actions, m.helpScroll)
+}
+
+func (m Model) modalWidth() int {
+	if m.width <= 0 {
+		return 94
+	}
+	return max(min(m.width-8, 94), 1)
+}
+
+func (m Model) modalHeight() int {
+	if m.contentHeight() <= 0 {
+		return 35
+	}
+	return min(35, max(m.contentHeight()-2, 1))
 }
 
 func (m Model) modalStyle() lipgloss.Style {
-	width := m.width - 8
-	if width > 68 {
-		width = 68
+	return detailBox.Width(m.modalWidth() + 6).Height(m.modalHeight())
+}
+
+func (m Model) detailViewport(content, actions string) ([]string, string, int, int) {
+	wrapped := strings.Split(ansi.Wrap(strings.TrimRight(content, "\n"), m.modalWidth(), ""), "\n")
+	if strings.Contains(actions, "Scroll") && ansi.StringWidth(actions) > m.modalWidth() && (m.modalWidth() < 40 || m.modalHeight() < 10) {
+		actions = "[↑↓] Scroll  [esc] Close"
 	}
-	if width < 18 {
-		width = 18
+	footer := subStyle.Render(ansi.Wrap(actions, m.modalWidth(), ""))
+	// Border and padding use four rows. Keep the title and actions visible.
+	visible := min(len(wrapped)-1, max(m.modalHeight()-5-lipgloss.Height(footer), 0))
+	return wrapped, footer, visible, max(len(wrapped)-1-visible, 0)
+}
+
+func (m Model) detailMaxScroll() int {
+	content, actions := m.detailContent()
+	_, _, _, limit := m.detailViewport(content, actions)
+	return limit
+}
+
+func (m Model) detailPageSize() int {
+	content, actions := m.detailContent()
+	_, _, visible, _ := m.detailViewport(content, actions)
+	return max(visible, 1)
+}
+
+func (m Model) renderModal(content, actions string, offset int) string {
+	wrapped, footer, visible, limit := m.detailViewport(content, actions)
+	start := min(offset, limit)
+	body := append([]string{wrapped[0]}, wrapped[1+start:1+start+visible]...)
+	for len(body)+lipgloss.Height(footer) < m.modalHeight()-4 {
+		body = append(body, "")
 	}
-	return detailBox.MaxWidth(width)
+	body = append(body, footer)
+	return m.modalStyle().Render(strings.Join(body, "\n"))
+}
+
+func (m Model) renderDetailModal(content, actions string) string {
+	return m.renderModal(content, actions, m.detailScroll)
 }
 
 func (m Model) composeOverlay(background, overlay string) string {
@@ -1365,32 +1463,45 @@ func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
 }
 
 func (m Model) renderDetail() string {
+	content, actions := m.detailContent()
+	return m.renderDetailModal(content, actions)
+}
+
+func (m Model) detailContent() (string, string) {
 	var b strings.Builder
 	if m.detailLoading {
 		b.WriteString(keyStyle.Render("📋 " + m.detailIssueKey))
 		b.WriteString("\n\n")
 		b.WriteString(subStyle.Render("Loading ticket detail..."))
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("[esc] Close  [ctrl+c] Quit"))
-		return m.modalStyle().Render(b.String())
+		return b.String(), "[esc] Close  [ctrl+c] Quit"
 	}
 	if m.err != nil {
 		b.WriteString(keyStyle.Render("📋 " + m.detailIssueKey))
 		b.WriteString("\n\n")
 		b.WriteString(errStyle.Render("Error: " + m.err.Error()))
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("[esc] Close"))
-		return m.modalStyle().Render(b.String())
+		return b.String(), "[esc] Close"
 	}
 	if m.detail == nil {
-		return m.modalStyle().Render(subStyle.Render("Ticket detail unavailable\n\n[esc] Close"))
+		return "Ticket detail unavailable", "[esc] Close"
 	}
 
 	iss := m.detail
-	b.WriteString(keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key)))
+	key := keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key))
+	summary := strings.TrimSpace(strings.ReplaceAll(iss.Fields.Summary, "\n", " "))
+	room := m.modalWidth() - ansi.StringWidth(key) - 2
+	b.WriteString(key)
+	if room > 0 && summary != "" {
+		b.WriteString("  ")
+		b.WriteString(ansi.Truncate(summary, room, "…"))
+	}
 	b.WriteString("\n\n")
-	b.WriteString(iss.Fields.Summary)
-	b.WriteString("\n\n")
+	if room < ansi.StringWidth(summary) {
+		b.WriteString("Summary: ")
+		b.WriteString(summary)
+		b.WriteString("\n\n")
+	}
 	if iss.Fields.IssueType != nil {
 		_, _ = fmt.Fprintf(&b, "Type:     %s\n", iss.Fields.IssueType.Name)
 	}
@@ -1418,7 +1529,5 @@ func (m Model) renderDetail() string {
 			}
 		}
 	}
-	b.WriteString("\n")
-	b.WriteString(subStyle.Render("[c] Copy JSON  [w] Add Worklog  [o] Browser  [esc] Close"))
-	return m.modalStyle().Render(b.String())
+	return b.String(), "[↑↓] Scroll  [c] JSON  [w] Log  [o] Open  [esc] Close"
 }
