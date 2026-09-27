@@ -5,13 +5,10 @@
 # Regenerate the draft with `make changelog`.
 
 [changelog]
-header = "# Changelog\n\nAll notable changes to this project are documented in this file.\n\n"
+# This is reference material for manual curation: no changelog title, release
+# heading, version heading, or date is generated here.
+header = ""
 body = """
-{% if version %}\
-## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
-{% else %}\
-## Unreleased
-{% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
@@ -27,6 +24,8 @@ conventional_commits = true
 filter_unconventional = true
 split_commits = false
 commit_parsers = [
+    # ODD bookkeeping is useful in Git history but not in a release draft.
+    { message = "^docs\\(odd\\)", skip = true },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
     { message = "^docs", group = "Documentation" },

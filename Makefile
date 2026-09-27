@@ -1,7 +1,9 @@
 # gojira Makefile
 
-BINARY_NAME = gojira
-BIN_DIR     = bin
+BINARY_NAME   = gojira
+BIN_DIR       = bin
+CHANGELOG    ?= CHANGELOG.md
+RELEASE_NOTES ?= RELEASE_NOTES.md
 
 # Channel marker only. A tag is injected when HEAD is exactly on it; every
 # other revision keeps the `dev` marker, so a development tree never claims a
@@ -32,6 +34,40 @@ lint:
 changelog:
 	@command -v git-cliff >/dev/null 2>&1 || { echo "git-cliff not installed"; exit 1; }
 	git-cliff --config cliff.toml --output CHANGELOG.draft.md
+
+.PHONY: release-notes
+release-notes:
+	@tmp="$(RELEASE_NOTES).tmp"; \
+	rm -f "$$tmp" "$(RELEASE_NOTES)"; \
+	if awk -v tag="$(VERSION)" ' \
+		BEGIN { found = 0; content = 0 } \
+		$$1 == "##" && $$2 == "📦" { \
+			if (found) exit; \
+			if ($$3 == tag && tag ~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$$/) { found = 1; next } \
+			exit 1 \
+		} \
+		found { print; if ($$0 ~ /[^[:space:]]/) content = 1 } \
+		END { if (!found || !content) exit 1 } \
+	' "$(CHANGELOG)" >"$$tmp" && mv "$$tmp" "$(RELEASE_NOTES)"; then \
+		:; \
+	else \
+		rm -f "$$tmp" "$(RELEASE_NOTES)"; \
+		echo "release notes rejected: newest package section must match $(VERSION) and contain content" >&2; \
+		exit 1; \
+	fi
+
+.PHONY: release
+release:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "goreleaser not installed" >&2; exit 1; }; \
+	if [ ! -r .env ]; then echo ".env is missing or unreadable" >&2; exit 1; fi; \
+	set -a; . ./.env; set +a; \
+	if [ -z "$${GITHUB_TOKEN:-}" ]; then echo "GITHUB_TOKEN is missing from .env" >&2; exit 1; fi; \
+	if [ "$(VERSION)" = dev ]; then echo "release version cannot be dev" >&2; exit 1; fi; \
+	tag_commit=$$(git rev-parse --verify "refs/tags/$(VERSION)^{commit}" 2>/dev/null) || { echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; }; \
+	head_commit=$$(git rev-parse --verify HEAD 2>/dev/null) || { echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; }; \
+	if [ "$$tag_commit" != "$$head_commit" ]; then echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; fi; \
+	$(MAKE) --no-print-directory release-notes VERSION="$(VERSION)" CHANGELOG="$(CHANGELOG)" RELEASE_NOTES="$(RELEASE_NOTES)" || exit 1; \
+	goreleaser release --clean --release-notes="$(RELEASE_NOTES)"
 
 .PHONY: vet
 vet:

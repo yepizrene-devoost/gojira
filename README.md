@@ -234,10 +234,26 @@ Run the TUI in a real terminal (it needs a TTY):
 ./gojira
 ```
 
+### Release maintenance
+
+Release notes are curated; generated history is only reference material.
+
+| Target | Result |
+|---|---|
+| `make changelog` | Writes a heading-free, grouped commit draft to `CHANGELOG.draft.md`; `docs(odd)` bookkeeping is omitted. |
+| `make release-notes VERSION=vX.Y.Z` | Extracts the body of the newest matching package section from `CHANGELOG.md` into ignored `RELEASE_NOTES.md`. |
+| `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, and publishes or replaces the GitHub release through GoReleaser. |
+
+`make release` is an explicit local publishing command, not a dry run. GitHub
+Actions only checks release configuration; pushing a tag does not start a CI
+publisher. Maintainers must follow [RELEASING.md](RELEASING.md) for the dflow
+promotion, tag-on-`main`, token permission, approval, rerun, and verification
+checklists.
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome. Use the issue templates (bug / feature / chore) and open a PR. Maintainers should follow [RELEASING.md](RELEASING.md) for release promotion, dry-run, tagging, and artifact verification.
+Contributions are welcome. Use the issue templates (bug / feature / chore) and open a PR. Maintainers should follow [RELEASING.md](RELEASING.md) for release promotion, local publication, and artifact verification.

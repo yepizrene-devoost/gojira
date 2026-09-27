@@ -39,7 +39,9 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
+# Changelog generation is intentionally omitted; release notes are hand-curated.
 release:
+  mode: replace
   github:
     owner: yepizrene-devoost
     name: gojira

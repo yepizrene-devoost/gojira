@@ -7,5 +7,6 @@
 /dist/
 .DS_Store
 
-# Regenerable changelog draft produced by `make changelog`
+# Regenerable release documents produced by Make targets
 CHANGELOG.draft.md
+RELEASE_NOTES.md
