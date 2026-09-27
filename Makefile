@@ -22,6 +22,16 @@ build:
 	@echo "Building $(BINARY_NAME) (version: $(VERSION))..."
 	go build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) .
 
+.PHONY: build-all
+build-all:
+	@mkdir -p "$(BIN_DIR)"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-linux-amd64" .
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-linux-arm64" .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-darwin-amd64" .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-darwin-arm64" .
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-windows-amd64.exe" .
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)-windows-arm64.exe" .
+
 .PHONY: test
 test:
 	go test ./...
