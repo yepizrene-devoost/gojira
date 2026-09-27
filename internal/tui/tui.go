@@ -33,6 +33,23 @@ var (
 	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2)
 )
 
+type helpEntry struct {
+	keys   string
+	action string
+}
+
+var kanbanHelp = []helpEntry{
+	{keys: "←/→ or h/l", action: "Move between columns"},
+	{keys: "↑/↓ or k/j", action: "Move within a column"},
+	{keys: "Enter", action: "Open ticket detail"},
+	{keys: "t", action: "Transition ticket"},
+	{keys: "n", action: "Create issue"},
+	{keys: "s", action: "Add ticket to active sprint"},
+	{keys: "C", action: "Copy column as JSON"},
+	{keys: "Esc or q", action: "Back to boards"},
+	{keys: "Ctrl+C", action: "Quit"},
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 func padRight(s string, w int) string {
@@ -112,25 +129,33 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
-	client       *jira.Client
-	domain       string
-	view         view
-	boards       []jira.Board
-	boardCur     int
-	columns      []column
-	colCur       int
-	rowCur       int
-	sprintName   string
-	width        int
-	height       int
-	err          error
-	detail       *jira.Issue
-	toast        string
-	transitions  []jira.Transition
-	transCur     int
-	transIssue   string
-	worklogInput textinput.Model
-	worklogIssue string
+	client               *jira.Client
+	domain               string
+	view                 view
+	boards               []jira.Board
+	boardCur             int
+	columns              []column
+	colCur               int
+	rowCur               int
+	sprintName           string
+	width                int
+	height               int
+	err                  error
+	detail               *jira.Issue
+	detailLoading        bool
+	detailIssueKey       string
+	detailBoardRequest   uint64
+	nextDetailRequest    uint64
+	activeDetailRequest  uint64
+	helpOpen             bool
+	toast                string
+	transitions          []jira.Transition
+	transCur             int
+	transIssue           string
+	worklogInput         textinput.Model
+	worklogIssue         string
+	nextWorklogRequest   uint64
+	activeWorklogRequest uint64
 
 	// Active sprint of the current board (0 = none; used by create + "s")
 	sprintID int
@@ -166,11 +191,16 @@ type boardLoadMsg struct {
 	err        error
 }
 type detailMsg struct {
-	issue        *jira.Issue
-	boardRequest uint64
-	err          error
+	issue         *jira.Issue
+	issueKey      string
+	boardRequest  uint64
+	detailRequest uint64
+	err           error
 }
-type clipboardMsg struct{ text string; err error }
+type clipboardMsg struct {
+	text string
+	err  error
+}
 type toastMsg struct{ text string }
 type transitionsMsg struct {
 	transitions  []jira.Transition
@@ -178,11 +208,28 @@ type transitionsMsg struct {
 	boardRequest uint64
 	err          error
 }
-type transitionDoneMsg struct{ issueKey string; err error }
-type worklogDoneMsg struct{ err error }
-type createTypesMsg struct{ types []string; err error }
-type createdMsg struct{ key string; sprintID int; err error }
-type sprintDoneMsg struct{ issueKey string; err error }
+type transitionDoneMsg struct {
+	issueKey string
+	err      error
+}
+type worklogDoneMsg struct {
+	requestID uint64
+	issueKey  string
+	err       error
+}
+type createTypesMsg struct {
+	types []string
+	err   error
+}
+type createdMsg struct {
+	key      string
+	sprintID int
+	err      error
+}
+type sprintDoneMsg struct {
+	issueKey string
+	err      error
+}
 type errMsg struct{ err error }
 
 // New creates a new TUI model ready to be used with bubbletea.NewProgram.
@@ -220,6 +267,13 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.sprintName = ""
 	m.sprintID = 0
 	m.err = nil
+	m.detail = nil
+	m.detailLoading = false
+	m.detailIssueKey = ""
+	m.detailBoardRequest = 0
+	m.activeDetailRequest = 0
+	m.helpOpen = false
+	m.activeWorklogRequest = 0
 	m.colCur = 0
 	m.rowCur = 0
 
@@ -374,15 +428,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailMsg:
-		if m.view != viewKanban || m.boardLoading || msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest {
+		if m.view != viewDetail || !m.detailLoading || msg.boardRequest == 0 ||
+			msg.boardRequest != m.loadedBoardRequest || msg.boardRequest != m.detailBoardRequest ||
+			msg.detailRequest == 0 || msg.detailRequest != m.activeDetailRequest ||
+			msg.issueKey == "" || msg.issueKey != m.detailIssueKey {
 			return m, nil
 		}
+		m.detailLoading = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
+		if msg.issue == nil || msg.issue.Key != msg.issueKey {
+			return m, nil
+		}
+		m.err = nil
 		m.detail = msg.issue
-		m.view = viewDetail
 		return m, nil
 
 	case errMsg:
@@ -436,13 +497,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case worklogDoneMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.view = viewKanban
+		if m.view != viewWorklog || msg.requestID == 0 || msg.requestID != m.activeWorklogRequest ||
+			msg.issueKey == "" || msg.issueKey != m.worklogIssue || m.detail == nil || msg.issueKey != m.detail.Key {
 			return m, nil
 		}
-		m.toast = "Worklog added"
+		m.activeWorklogRequest = 0
 		m.view = viewDetail
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.err = nil
+		m.toast = "Worklog added"
 		return m, clearToastAfter(3 * time.Second)
 
 	case createTypesMsg:
@@ -548,6 +614,15 @@ func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.helpOpen {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "?", "esc", "q":
+			m.helpOpen = false
+		}
+		return m, nil
+	}
 	if m.boardLoading && key != "ctrl+c" && key != "q" && key != "esc" {
 		return m, nil
 	}
@@ -563,6 +638,8 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.loadedBoardRequest = 0
 		m.boardLoading = false
 		return m, nil
+	case "?":
+		m.helpOpen = true
 	case "left", "h":
 		if m.colCur > 0 {
 			m.colCur--
@@ -587,9 +664,18 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
+				m.view = viewDetail
+				m.detail = nil
+				m.detailLoading = true
+				m.detailIssueKey = key
+				m.detailBoardRequest = boardRequest
+				m.nextDetailRequest++
+				detailRequest := m.nextDetailRequest
+				m.activeDetailRequest = detailRequest
+				m.err = nil
 				return m, func() tea.Msg {
 					iss, err := m.client.GetIssue(key)
-					return detailMsg{issue: iss, boardRequest: boardRequest, err: err}
+					return detailMsg{issue: iss, issueKey: key, boardRequest: boardRequest, detailRequest: detailRequest, err: err}
 				}
 			}
 		}
@@ -646,9 +732,16 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc", "enter", "q":
 		m.view = viewKanban
 		m.detail = nil
+		m.detailLoading = false
+		m.detailIssueKey = ""
+		m.detailBoardRequest = 0
+		m.activeDetailRequest = 0
+		m.err = nil
 		return m, nil
 	case "o":
 		if m.detail != nil {
@@ -668,6 +761,8 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			ti.CharLimit = 20
 			m.worklogInput = ti
 			m.worklogIssue = m.detail.Key
+			m.activeWorklogRequest = 0
+			m.err = nil
 			m.view = viewWorklog
 			return m, textinput.Blink
 		}
@@ -703,7 +798,11 @@ func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc":
+		m.activeWorklogRequest = 0
+		m.err = nil
 		m.view = viewDetail
 		return m, nil
 	case "enter":
@@ -712,9 +811,12 @@ func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		key := m.worklogIssue
+		m.nextWorklogRequest++
+		requestID := m.nextWorklogRequest
+		m.activeWorklogRequest = requestID
 		return m, func() tea.Msg {
 			err := m.client.AddWorklog(key, timeSpent, "")
-			return worklogDoneMsg{err: err}
+			return worklogDoneMsg{requestID: requestID, issueKey: key, err: err}
 		}
 	default:
 		var cmd tea.Cmd
@@ -911,76 +1013,22 @@ func (m Model) View() tea.View {
 		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [q] Quit"))
 
 	case viewKanban:
-		boardName := m.loadingBoardName
-		if !m.boardLoading && m.boardCur >= 0 && m.boardCur < len(m.boards) {
-			boardName = m.boards[m.boardCur].Name
+		board := m.renderKanban()
+		if m.helpOpen {
+			b.WriteString(m.composeOverlay(board, m.renderHelp()))
+		} else {
+			b.WriteString(board)
 		}
-		b.WriteString(titleStyle.Render(fmt.Sprintf("📋 %s", boardName)))
-		if !m.boardLoading {
-			b.WriteString(" ")
-			b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
-		}
-		b.WriteString("\n")
-
-		if m.boardLoading {
-			b.WriteString("\n")
-			b.WriteString(subStyle.Render("Loading " + boardName + "..."))
-			return altScreenView(b.String())
-		}
-
-		if m.err != nil {
-			b.WriteString("\n")
-			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
-			return altScreenView(b.String())
-		}
-
-		if len(m.columns) == 0 {
-			b.WriteString(subStyle.Render("No board columns available."))
-			return altScreenView(b.String())
-		}
-
-		cpp := m.colsPerPage()
-		if cpp < 1 {
-			cpp = 1
-		}
-		pageStart := visiblePageStart(m.colCur, cpp, len(m.columns))
-		pageEnd := pageStart + cpp
-		if pageEnd > len(m.columns) {
-			pageEnd = len(m.columns)
-		}
-
-		colH := m.height - 4
-		if colH < 5 {
-			colH = 5
-		}
-		slots := (colH - 1) / 4
-
-		cw := colWidth + colGap
-		colStrs := make([]string, 0, pageEnd-pageStart)
-		for i := pageStart; i < pageEnd; i++ {
-			colStrs = append(colStrs, m.renderColumn(m.columns[i], i == m.colCur, cw, colH, slots))
-		}
-
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, colStrs...))
-		b.WriteString("\n\n")
-
-		totalPages := (len(m.columns) + cpp - 1) / cpp
-		curPage := pageStart/cpp + 1
-		b.WriteString(subStyle.Render(
-			fmt.Sprintf("[←→] Cols  [↑↓] Issues  [Enter] Detail  [t] Transition  [n] New  [s] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
-				m.colCur+1, len(m.columns), curPage, totalPages)))
 
 	case viewDetail:
-		if m.detail != nil {
-			b.WriteString(m.renderDetail())
-		}
+		b.WriteString(m.composeOverlay(m.renderKanban(), m.renderDetail()))
 
 	case viewTransition:
 		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))
 		b.WriteString("\n\n")
 		for i, tr := range m.transitions {
 			if i == m.transCur {
-				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ "+tr.Name))
+				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
 			} else {
 				b.WriteString("  " + tr.Name)
 			}
@@ -1043,13 +1091,165 @@ func (m Model) View() tea.View {
 		b.WriteString(subStyle.Render("[tab] Field  [←→] Type  [Enter] Create  [esc] Cancel"))
 	}
 
-	// Toast
-	if m.toast != "" {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Bold(true).Render("  ✓ " + m.toast))
+	return altScreenView(m.renderToast(b.String()))
+}
+
+func (m Model) renderToast(content string) string {
+	if m.toast == "" {
+		return content
 	}
 
-	return altScreenView(b.String())
+	toast := lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Bold(true).Render("✓ " + m.toast)
+	if m.width <= 0 || m.height <= 0 {
+		return content + "\n" + toast
+	}
+
+	toast = fitToBounds(toast, m.width, 1)
+	if m.height == 1 || content == "" {
+		return toast
+	}
+	return fitToBounds(content, m.width, m.contentHeight()) + "\n" + toast
+}
+
+func (m Model) contentHeight() int {
+	if m.height <= 0 {
+		return m.height
+	}
+	if m.toast != "" {
+		return max(m.height-1, 0)
+	}
+	return m.height
+}
+
+func (m Model) renderKanban() string {
+	var b strings.Builder
+	boardName := m.loadingBoardName
+	if !m.boardLoading && m.boardCur >= 0 && m.boardCur < len(m.boards) {
+		boardName = m.boards[m.boardCur].Name
+	}
+	b.WriteString(titleStyle.Render(fmt.Sprintf("📋 %s", boardName)))
+	if !m.boardLoading {
+		b.WriteString(" ")
+		b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
+	}
+	b.WriteString("\n")
+
+	if m.boardLoading {
+		b.WriteString("\n")
+		b.WriteString(subStyle.Render("Loading " + boardName + "..."))
+		return b.String()
+	}
+	if m.err != nil && m.view == viewKanban {
+		b.WriteString("\n")
+		b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+		return b.String()
+	}
+	if len(m.columns) == 0 {
+		b.WriteString(subStyle.Render("No board columns available."))
+		return b.String()
+	}
+
+	cpp := max(m.colsPerPage(), 1)
+	pageStart := visiblePageStart(m.colCur, cpp, len(m.columns))
+	pageEnd := min(pageStart+cpp, len(m.columns))
+	totalPages := (len(m.columns) + cpp - 1) / cpp
+	curPage := pageStart/cpp + 1
+	footer := m.kanbanFooter(curPage, totalPages)
+	footerHeight := lipgloss.Height(footer)
+	height := m.contentHeight()
+	colH := max(height-1-footerHeight-1, 1) // title, columns, spacer, footer
+	slots := max((colH-1)/4, 0)
+	cw := colWidth + colGap
+	colStrs := make([]string, 0, pageEnd-pageStart)
+	for i := pageStart; i < pageEnd; i++ {
+		colStrs = append(colStrs, m.renderColumn(m.columns[i], i == m.colCur, cw, colH, slots))
+	}
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, colStrs...))
+	b.WriteString("\n\n")
+	b.WriteString(subStyle.Render(footer))
+
+	content := b.String()
+	if m.width > 0 && height > 0 {
+		return fitToBounds(content, m.width, height)
+	}
+	return content
+}
+
+func (m Model) kanbanFooter(curPage, totalPages int) string {
+	full := fmt.Sprintf(
+		"[←→] Cols  [↑↓] Issues  [Enter] Detail  [?] Help  [t] Transition  [n] New  [s] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
+		m.colCur+1, len(m.columns), curPage, totalPages)
+	if m.width <= 0 || ansi.StringWidth(full) <= m.width {
+		return full
+	}
+
+	const compact = "[?] Help  [esc] Back"
+	if ansi.StringWidth(compact) <= m.width {
+		return compact
+	}
+	return "[?] Help\n[esc] Back"
+}
+
+func (m Model) renderHelp() string {
+	var b strings.Builder
+	b.WriteString(keyStyle.Render("? Kanban Help"))
+	b.WriteString("\n\n")
+	for _, entry := range kanbanHelp {
+		_, _ = fmt.Fprintf(&b, "%-14s %s\n", entry.keys, entry.action)
+	}
+	b.WriteString("\n")
+	b.WriteString(subStyle.Render("[? / esc / q] Close"))
+	return m.modalStyle().Render(b.String())
+}
+
+func (m Model) modalStyle() lipgloss.Style {
+	width := m.width - 8
+	if width > 68 {
+		width = 68
+	}
+	if width < 18 {
+		width = 18
+	}
+	return detailBox.MaxWidth(width)
+}
+
+func (m Model) composeOverlay(background, overlay string) string {
+	width, height := m.width, m.contentHeight()
+	if width <= 0 {
+		width = max(lipgloss.Width(background), lipgloss.Width(overlay))
+	}
+	if height <= 0 && m.height <= 0 {
+		height = max(lipgloss.Height(background), lipgloss.Height(overlay))
+	}
+	width = max(width, 1)
+	height = max(height, 1)
+
+	if width < 50 || height < 16 {
+		return fitToBounds(overlay, width, height)
+	}
+	background = fitToBounds(background, width, height)
+	overlay = fitToBounds(overlay, width-2, height-2)
+	x := max((width-lipgloss.Width(overlay))/2, 0)
+	y := max((height-lipgloss.Height(overlay))/2, 0)
+	compositor := lipgloss.NewCompositor(
+		lipgloss.NewLayer(background).Z(0),
+		lipgloss.NewLayer(overlay).X(x).Y(y).Z(1),
+	)
+	return lipgloss.NewCanvas(width, height).Compose(compositor).Render()
+}
+
+func fitToBounds(content string, width, height int) string {
+	if width < 1 || height < 1 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], width, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func altScreenView(content string) tea.View {
@@ -1165,14 +1365,32 @@ func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
 }
 
 func (m Model) renderDetail() string {
-	iss := m.detail
 	var b strings.Builder
+	if m.detailLoading {
+		b.WriteString(keyStyle.Render("📋 " + m.detailIssueKey))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("Loading ticket detail..."))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("[esc] Close  [ctrl+c] Quit"))
+		return m.modalStyle().Render(b.String())
+	}
+	if m.err != nil {
+		b.WriteString(keyStyle.Render("📋 " + m.detailIssueKey))
+		b.WriteString("\n\n")
+		b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("[esc] Close"))
+		return m.modalStyle().Render(b.String())
+	}
+	if m.detail == nil {
+		return m.modalStyle().Render(subStyle.Render("Ticket detail unavailable\n\n[esc] Close"))
+	}
 
+	iss := m.detail
 	b.WriteString(keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key)))
 	b.WriteString("\n\n")
 	b.WriteString(iss.Fields.Summary)
 	b.WriteString("\n\n")
-
 	if iss.Fields.IssueType != nil {
 		_, _ = fmt.Fprintf(&b, "Type:     %s\n", iss.Fields.IssueType.Name)
 	}
@@ -1189,20 +1407,18 @@ func (m Model) renderDetail() string {
 	}
 	_, _ = fmt.Fprintf(&b, "Created:  %s\n", iss.Fields.Created)
 	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", iss.Fields.Updated)
-
 	if iss.Fields.Description != nil {
 		b.WriteString("\n── Description ──\n")
 		for _, block := range iss.Fields.Description.Content {
-			for _, c := range block.Content {
-				if c.Text != "" {
-					b.WriteString(c.Text)
+			for _, content := range block.Content {
+				if content.Text != "" {
+					b.WriteString(content.Text)
 					b.WriteString("\n")
 				}
 			}
 		}
 	}
-
 	b.WriteString("\n")
 	b.WriteString(subStyle.Render("[c] Copy JSON  [w] Add Worklog  [o] Browser  [esc] Close"))
-	return detailBox.Render(b.String())
+	return m.modalStyle().Render(b.String())
 }

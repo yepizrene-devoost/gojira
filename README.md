@@ -135,12 +135,19 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 |---|---|
 | `←/→` or `h/l` | Move between columns (pages horizontally) |
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
-| `Enter` | Ticket detail |
+| `Enter` | Open ticket detail in a floating modal |
+| `?` | Show the Kanban help overlay (`?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `s` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
+| `Ctrl+C` | Quit, including while an overlay is open |
+
+Ticket detail and help float over the board, so the current column and ticket
+remain visible and selected after closing them. Overlay keys are isolated from
+the board: navigation and action keys do nothing until the overlay is closed.
+Transition, issue creation, and worklog entry remain full-screen flows.
 
 Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues
@@ -151,7 +158,7 @@ created with `n` go directly into the active sprint.
 | Key | Action |
 |---|---|
 | `c` | Copy ticket as JSON to clipboard |
-| `w` | Add worklog |
+| `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to board |
 

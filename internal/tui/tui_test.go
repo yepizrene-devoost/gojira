@@ -8,6 +8,8 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
@@ -243,7 +245,7 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 			startKey: specialKey(tea.KeyEnter),
 			response: func(boardRequest uint64) tea.Msg {
 				issue := testIssue("A-1")
-				return detailMsg{issue: &issue, boardRequest: boardRequest}
+				return detailMsg{issue: &issue, issueKey: "A-1", boardRequest: boardRequest, detailRequest: 1}
 			},
 		},
 		{
@@ -276,6 +278,9 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 			stale := tt.response(requestA)
 
 			m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+			if m.view == viewKanban {
+				m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+			}
 			m, _ = updateModel(t, m, stale)
 			if m.view != viewBoards {
 				t.Fatalf("stale response opened view %v while browsing boards", m.view)
@@ -304,19 +309,22 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 func TestBoardScopedAsyncResponsesOpenForCurrentBoard(t *testing.T) {
 	tests := []struct {
 		name     string
+		startKey tea.KeyPressMsg
 		response func(uint64) tea.Msg
 		wantView view
 	}{
 		{
-			name: "detail",
+			name:     "detail",
+			startKey: specialKey(tea.KeyEnter),
 			response: func(boardRequest uint64) tea.Msg {
 				issue := testIssue("A-1")
-				return detailMsg{issue: &issue, boardRequest: boardRequest}
+				return detailMsg{issue: &issue, issueKey: "A-1", boardRequest: boardRequest, detailRequest: 1}
 			},
 			wantView: viewDetail,
 		},
 		{
-			name: "transitions",
+			name:     "transitions",
+			startKey: textKey("t"),
 			response: func(boardRequest uint64) tea.Msg {
 				return transitionsMsg{
 					transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
@@ -334,9 +342,281 @@ func TestBoardScopedAsyncResponsesOpenForCurrentBoard(t *testing.T) {
 			m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 			requestID := m.activeBoardRequest
 			m, _ = updateModel(t, m, boardResult(requestID, 1, "Sprint A", "A-1"))
+			m, _ = updateModel(t, m, tt.startKey)
 			m, _ = updateModel(t, m, tt.response(m.loadedBoardRequest))
 			if m.view != tt.wantView {
 				t.Fatalf("current-board response opened view %v, want %v", m.view, tt.wantView)
+			}
+		})
+	}
+}
+
+func TestDetailOpensLoadingModalAndPreservesBoardCursor(t *testing.T) {
+	m := makeTestModel(2, 2)
+	m.loadedBoardRequest = 7
+	m.colCur = 1
+	m.rowCur = 1
+
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil || m.view != viewDetail || !m.detailLoading || m.detailIssueKey != "P1" {
+		t.Fatalf("detail did not open immediately: cmd=%v view=%v loading=%v key=%q", cmd != nil, m.view, m.detailLoading, m.detailIssueKey)
+	}
+	loading := m.View().Content
+	if !strings.Contains(loading, "Loading ticket detail...") || !strings.Contains(loading, "ColA") {
+		t.Fatalf("loading detail was not composed over the board:\n%s", loading)
+	}
+
+	issue := testIssue("P1")
+	m, _ = updateModel(t, m, detailMsg{issue: &issue, issueKey: "P1", boardRequest: 7, detailRequest: m.activeDetailRequest})
+	if m.detailLoading || m.detail == nil || m.detail.Key != "P1" {
+		t.Fatalf("matching detail response was not shown: loading=%v detail=%v", m.detailLoading, m.detail)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.colCur != 1 || m.rowCur != 1 {
+		t.Fatalf("closing detail lost board cursor: view=%v cursor=(%d,%d)", m.view, m.colCur, m.rowCur)
+	}
+}
+
+func TestDetailRejectsMismatchedIssueResponse(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.loadedBoardRequest = 9
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	firstRequest := m.activeDetailRequest
+	wrong := testIssue("OTHER-1")
+	m, _ = updateModel(t, m, detailMsg{issue: &wrong, issueKey: "OTHER-1", boardRequest: 9, detailRequest: firstRequest})
+	if m.view != viewDetail || !m.detailLoading || m.detail != nil || m.detailIssueKey != "P0" {
+		t.Fatalf("mismatched issue response altered active detail request: %#v", m)
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	issue := testIssue("P0")
+	m, _ = updateModel(t, m, detailMsg{issue: &issue, issueKey: "P0", boardRequest: 9, detailRequest: firstRequest})
+	if !m.detailLoading || m.detail != nil || m.activeDetailRequest == firstRequest {
+		t.Fatal("response from an earlier open of the same ticket replaced the current request")
+	}
+}
+
+func TestHelpOverlayBlocksBoardActionsAndCtrlCStillQuits(t *testing.T) {
+	m := makeTestModel(2, 2)
+	m.loadedBoardRequest = 3
+	m, _ = updateModel(t, m, textKey("?"))
+	if !m.helpOpen || !strings.Contains(m.View().Content, "Kanban Help") {
+		t.Fatal("help key did not open the Kanban help overlay")
+	}
+
+	for _, key := range []tea.KeyPressMsg{specialKey(tea.KeyDown), specialKey(tea.KeyRight), textKey("n"), specialKey(tea.KeyEnter)} {
+		var cmd tea.Cmd
+		m, cmd = updateModel(t, m, key)
+		if cmd != nil || m.view != viewKanban || m.colCur != 0 || m.rowCur != 0 || !m.helpOpen {
+			t.Fatalf("help leaked key %q to board: view=%v cursor=(%d,%d) open=%v", key.String(), m.view, m.colCur, m.rowCur, m.helpOpen)
+		}
+	}
+	_, quit := updateModel(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if quit == nil {
+		t.Fatal("ctrl+c did not remain available while help was open")
+	}
+	m, cmd := updateModel(t, m, textKey("q"))
+	if cmd != nil || m.view != viewKanban || m.helpOpen {
+		t.Fatal("closing help with q triggered the underlying board quit/back action")
+	}
+}
+
+func TestWorklogReturnsToDetailAndIgnoresCancelledResponse(t *testing.T) {
+	issue := testIssue("P0")
+	m := makeTestModel(1, 1)
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 4
+	m.loadedBoardRequest = 4
+
+	m, _ = updateModel(t, m, textKey("w"))
+	if m.view != viewWorklog {
+		t.Fatalf("worklog did not remain a full-screen flow: view=%v", m.view)
+	}
+	m.worklogInput.SetValue("2h")
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil || m.activeWorklogRequest == 0 {
+		t.Fatal("worklog submit did not start a scoped request")
+	}
+	requestID := m.activeWorklogRequest
+	m, _ = updateModel(t, m, worklogDoneMsg{requestID: requestID, issueKey: issue.Key})
+	if m.view != viewDetail || m.detail == nil || m.detail.Key != issue.Key || m.toast != "Worklog added" {
+		t.Fatalf("successful worklog did not return to detail: view=%v detail=%v toast=%q", m.view, m.detail, m.toast)
+	}
+
+	m, _ = updateModel(t, m, textKey("w"))
+	m.worklogInput.SetValue("30m")
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	cancelledID := m.activeWorklogRequest
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, worklogDoneMsg{requestID: cancelledID, issueKey: issue.Key, err: errors.New("late failure")})
+	if m.view != viewDetail || m.activeWorklogRequest != 0 || m.err != nil || m.detail == nil {
+		t.Fatalf("cancelled worklog response altered detail state: view=%v request=%d err=%v", m.view, m.activeWorklogRequest, m.err)
+	}
+}
+
+func TestToastGeometryIsBoundedAfterUpdate(t *testing.T) {
+	issue := testIssue("P0")
+	worklog := makeTestModel(1, 1)
+	worklog.width, worklog.height = 40, 8
+	worklog.view = viewDetail
+	worklog.detail = &issue
+	worklog.detailIssueKey = issue.Key
+	worklog.detailBoardRequest = 4
+	worklog.loadedBoardRequest = 4
+	worklog, _ = updateModel(t, worklog, textKey("w"))
+	worklog.worklogInput.SetValue("2h")
+	worklog, _ = updateModel(t, worklog, specialKey(tea.KeyEnter))
+	worklog, _ = updateModel(t, worklog, worklogDoneMsg{
+		requestID: worklog.activeWorklogRequest,
+		issueKey:  issue.Key,
+	})
+	if worklog.toast == "" || worklog.view != viewDetail {
+		t.Fatalf("worklog success did not produce detail toast: view=%v toast=%q", worklog.view, worklog.toast)
+	}
+
+	longToast := makeTestModel(2, 2)
+	longToast.width, longToast.height = 28, 7
+	longToast.view = viewDetail
+	longToast.detail = &issue
+	longToast.detailIssueKey = issue.Key
+	longToast, _ = updateModel(t, longToast, toastMsg{text: strings.Repeat("long toast text ", 20)})
+
+	normal := makeTestModel(1, 1)
+	normal.width, normal.height = 60, 12
+	normal, _ = updateModel(t, normal, toastMsg{text: "Board updated"})
+
+	tiny := makeTestModel(1, 1)
+	tiny.width, tiny.height = 1, 1
+	tiny, _ = updateModel(t, tiny, toastMsg{text: strings.Repeat("tiny toast ", 10)})
+
+	tests := []struct {
+		name     string
+		model    Model
+		contains []string
+	}{
+		{name: "worklog success overlay", model: worklog, contains: []string{"✓", "Worklog added"}},
+		{name: "long detail toast", model: longToast, contains: []string{"✓", "long toast text"}},
+		{name: "normal kanban toast", model: normal, contains: []string{"Test Board", "✓", "Board updated"}},
+		{name: "tiny kanban toast", model: tiny, contains: []string{"✓"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := tt.model.View().Content
+			for _, text := range tt.contains {
+				if !strings.Contains(output, text) {
+					t.Fatalf("%q is not visible in bounded view:\n%s", text, output)
+				}
+			}
+			for lineNumber, line := range strings.Split(output, "\n") {
+				if got := lipgloss.Width(line); got > tt.model.width {
+					t.Fatalf("line %d width=%d exceeds terminal width=%d:\n%s", lineNumber+1, got, tt.model.width, output)
+				}
+			}
+			if got := lipgloss.Height(output); got > tt.model.height {
+				t.Fatalf("view height=%d exceeds terminal height=%d:\n%s", got, tt.model.height, output)
+			}
+		})
+	}
+}
+
+func TestWorklogSuccessToastPreservesFullKanbanFooter(t *testing.T) {
+	issue := testIssue("P0")
+	m := makeTestModel(3, 2)
+	m.width, m.height = 190, 32
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 4
+	m.loadedBoardRequest = 4
+
+	m, _ = updateModel(t, m, textKey("w"))
+	m.worklogInput.SetValue("2h")
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateModel(t, m, worklogDoneMsg{
+		requestID: m.activeWorklogRequest,
+		issueKey:  issue.Key,
+	})
+
+	output := m.View().Content
+	for _, want := range []string{"P0", "Worklog added", "[←→] Cols", "[?] Help", "[esc] Back"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("full compositor toast dropped %q:\n%s", want, output)
+		}
+	}
+	if got := lipgloss.Height(output); got != m.height {
+		t.Fatalf("composited view height=%d, want terminal height=%d:\n%s", got, m.height, output)
+	}
+	for lineNumber, line := range strings.Split(output, "\n") {
+		if got := ansi.StringWidth(line); got > m.width {
+			t.Fatalf("ANSI line %d width=%d exceeds terminal width=%d", lineNumber+1, got, m.width)
+		}
+	}
+}
+
+func TestKanbanToastUsesDiscoverableCompactFooter(t *testing.T) {
+	m := makeTestModel(2, 2)
+	m.width, m.height = 60, 12
+	m.toast = "Board updated"
+
+	output := m.View().Content
+	for _, want := range []string{"[?] Help", "[esc] Back", "Board updated"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("compact toast view dropped %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "[←→] Cols") {
+		t.Fatalf("compact footer was left-prefix clipped instead of intentionally replaced:\n%s", output)
+	}
+	if got := lipgloss.Height(output); got > m.height {
+		t.Fatalf("compact view height=%d exceeds terminal height=%d", got, m.height)
+	}
+	for lineNumber, line := range strings.Split(output, "\n") {
+		if got := ansi.StringWidth(line); got > m.width {
+			t.Fatalf("ANSI line %d width=%d exceeds terminal width=%d", lineNumber+1, got, m.width)
+		}
+	}
+}
+
+func TestOverlayGeometryIsBounded(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+		help   bool
+	}{
+		{name: "normal detail", width: 120, height: 32},
+		{name: "compact detail", width: 36, height: 10},
+		{name: "normal help", width: 120, height: 32, help: true},
+		{name: "compact help", width: 36, height: 10, help: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(3, 2)
+			m.width, m.height = tt.width, tt.height
+			if tt.help {
+				m.helpOpen = true
+			} else {
+				issue := testIssue("P0")
+				issue.Fields.Summary = strings.Repeat("bounded detail ", 12)
+				m.view = viewDetail
+				m.detail = &issue
+				m.detailIssueKey = issue.Key
+			}
+			output := m.View().Content
+			if got := lipgloss.Width(output); got > tt.width {
+				t.Fatalf("overlay width=%d exceeds terminal width=%d:\n%s", got, tt.width, output)
+			}
+			if got := lipgloss.Height(output); got > tt.height {
+				t.Fatalf("overlay height=%d exceeds terminal height=%d:\n%s", got, tt.height, output)
+			}
+			if tt.help && !strings.Contains(output, "Kanban Help") {
+				t.Fatalf("help title missing from bounded overlay:\n%s", output)
+			}
+			if !tt.help && !strings.Contains(output, "P0") {
+				t.Fatalf("detail key missing from bounded overlay:\n%s", output)
 			}
 		})
 	}
