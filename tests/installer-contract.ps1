@@ -8,6 +8,7 @@ $fixture = Join-Path $temp 'fixture'
 $install = Join-Path $temp 'install'
 $assetName = 'gojira_Windows_x86_64.zip'
 $global:GojiraInstallerFixtureUseBasicParsingCalls = @()
+$global:GojiraInstallerFixtureDir = $fixture
 
 function Invoke-WebRequest {
     [CmdletBinding()]
@@ -22,7 +23,7 @@ function Invoke-WebRequest {
         throw 'The fixture only permits pinned-version file downloads.'
     }
     $name = ($Uri -split '/')[-1]
-    $source = Join-Path $script:fixture $name
+    $source = Join-Path $global:GojiraInstallerFixtureDir $name
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
         throw "Unexpected fixture download: $Uri"
     }
@@ -129,6 +130,7 @@ try {
 }
 finally {
     Remove-Variable -Name GojiraInstallerFixtureUseBasicParsingCalls -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name GojiraInstallerFixtureDir -Scope Global -ErrorAction SilentlyContinue
     Remove-Item Env:GOJIRA_INSTALL_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:GOJIRA_VERSION -ErrorAction SilentlyContinue
     Remove-Item Env:GOJIRA_SKIP_PATH_UPDATE -ErrorAction SilentlyContinue
