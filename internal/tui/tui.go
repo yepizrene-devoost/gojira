@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/x/ansi"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
@@ -486,7 +486,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch m.view {
 		case viewBoards:
 			return m.updateBoards(msg)
@@ -501,11 +501,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewCreate:
 			return m.updateCreate(msg)
 		}
+
+	case tea.PasteMsg:
+		switch m.view {
+		case viewWorklog:
+			var cmd tea.Cmd
+			m.worklogInput, cmd = m.worklogInput.Update(msg)
+			return m, cmd
+		case viewCreate:
+			var cmd tea.Cmd
+			switch m.createField {
+			case 1:
+				m.createSummary, cmd = m.createSummary.Update(msg)
+			case 2:
+				m.createDesc, cmd = m.createDesc.Update(msg)
+			}
+			return m, cmd
+		}
 	}
 	return m, nil
 }
 
-func (m Model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -529,7 +546,7 @@ func (m Model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if m.boardLoading && key != "ctrl+c" && key != "q" && key != "esc" {
 		return m, nil
@@ -627,7 +644,7 @@ func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "enter", "q":
 		m.view = viewKanban
@@ -658,7 +675,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.view = viewKanban
@@ -684,7 +701,7 @@ func (m Model) updateTransition(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.view = viewDetail
@@ -727,11 +744,11 @@ func (m Model) enterCreate() (tea.Model, tea.Cmd) {
 	sum := textinput.New()
 	sum.Placeholder = "required"
 	sum.CharLimit = 255
-	sum.Width = 40
+	sum.SetWidth(40)
 	desc := textinput.New()
 	desc.Placeholder = "optional, single line"
 	desc.CharLimit = 2000
-	desc.Width = 40
+	desc.SetWidth(40)
 
 	m.createProject = project
 	m.createTypes = []string{"Task"} // replaced by createmeta when it lands
@@ -765,7 +782,7 @@ func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -854,7 +871,7 @@ func findIssuePos(cols []column, key string) (int, int, bool) {
 
 // ─── View ──────────────────────────────────────────────────────────────
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
 	var b strings.Builder
 
 	switch m.view {
@@ -867,7 +884,7 @@ func (m Model) View() string {
 		}
 		if len(m.boards) == 0 {
 			b.WriteString(subStyle.Render("Loading boards..."))
-			return b.String()
+			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
 			icon := "📋"
@@ -908,18 +925,18 @@ func (m Model) View() string {
 		if m.boardLoading {
 			b.WriteString("\n")
 			b.WriteString(subStyle.Render("Loading " + boardName + "..."))
-			return b.String()
+			return altScreenView(b.String())
 		}
 
 		if m.err != nil {
 			b.WriteString("\n")
 			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
-			return b.String()
+			return altScreenView(b.String())
 		}
 
 		if len(m.columns) == 0 {
 			b.WriteString(subStyle.Render("No board columns available."))
-			return b.String()
+			return altScreenView(b.String())
 		}
 
 		cpp := m.colsPerPage()
@@ -1032,7 +1049,13 @@ func (m Model) View() string {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Bold(true).Render("  ✓ " + m.toast))
 	}
 
-	return b.String()
+	return altScreenView(b.String())
+}
+
+func altScreenView(content string) tea.View {
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func (m Model) colsPerPage() int {

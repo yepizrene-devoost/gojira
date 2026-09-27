@@ -2,10 +2,12 @@ package tui
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
@@ -57,7 +59,7 @@ func TestKanbanMultipleColumnsFit(t *testing.T) {
 		t.Fatalf("Expected cols per page >= 2 at width=190, got %d", cpp)
 	}
 
-	output := m.View()
+	output := m.View().Content
 
 	for _, col := range m.columns {
 		if !strings.Contains(output, col.name) {
@@ -73,7 +75,7 @@ func TestKanbanPagination(t *testing.T) {
 		t.Fatalf("Expected pagination (cpp=%d < 11) at width=190", cpp)
 	}
 
-	output := m.View()
+	output := m.View().Content
 	shown := 0
 	for _, col := range m.columns {
 		if strings.Contains(output, col.name) {
@@ -86,7 +88,7 @@ func TestKanbanPagination(t *testing.T) {
 
 	// Move to last column
 	m.colCur = 10
-	output = m.View()
+	output = m.View().Content
 	shown = 0
 	for _, col := range m.columns {
 		if strings.Contains(output, col.name) {
@@ -106,8 +108,8 @@ func TestKanbanEmptyColumnSameHeight(t *testing.T) {
 	empty := makeTestModel(3, 10)
 	empty.columns[1].issues = nil
 
-	fullOut := full.View()
-	emptyOut := empty.View()
+	fullOut := full.View().Content
+	emptyOut := empty.View().Content
 
 	fullLines := strings.Count(fullOut, "\n")
 	emptyLines := strings.Count(emptyOut, "\n")
@@ -122,12 +124,39 @@ func TestKanbanScrollFollowsCursor(t *testing.T) {
 	m := makeTestModel(1, 20)
 	m.height = 30
 
-	out1 := m.View()
+	out1 := m.View().Content
 	m.rowCur = 19
-	out2 := m.View()
+	out2 := m.View().Content
 
 	if out1 == "" || out2 == "" {
 		t.Error("Empty view output")
+	}
+}
+
+func specialKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code}
+}
+
+func textKey(text string) tea.KeyPressMsg {
+	runes := []rune(text)
+	return tea.KeyPressMsg{Code: runes[0], Text: text}
+}
+
+func TestViewsUseAltScreen(t *testing.T) {
+	mainView := makeTestModel(1, 1).View()
+	if !mainView.AltScreen {
+		t.Fatal("main TUI view must request the alternate screen")
+	}
+	if !strings.Contains(mainView.Content, "Test Board") {
+		t.Fatal("main TUI content was not preserved in tea.View.Content")
+	}
+
+	setupView := NewSetup().View()
+	if !setupView.AltScreen {
+		t.Fatal("setup view must request the alternate screen")
+	}
+	if !strings.Contains(setupView.Content, "GoJira Setup") {
+		t.Fatal("setup content was not preserved in tea.View.Content")
 	}
 }
 
@@ -162,7 +191,7 @@ func TestBoardSwitchImmediatelyHidesPreviousBoard(t *testing.T) {
 	m.sprintName = "Sprint A"
 	m.columns[0].issues[0] = testIssue("A-1")
 
-	m, cmd := updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
 	if cmd == nil {
 		t.Fatal("selecting a board should start a load command")
 	}
@@ -173,7 +202,7 @@ func TestBoardSwitchImmediatelyHidesPreviousBoard(t *testing.T) {
 		t.Fatalf("previous board data remained during load: columns=%d sprint=%q", len(m.columns), m.sprintName)
 	}
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Loading Board B...") {
 		t.Fatalf("loading view does not identify target board:\n%s", view)
 	}
@@ -186,10 +215,10 @@ func TestBoardSwitchImmediatelyHidesPreviousBoard(t *testing.T) {
 
 func TestBoardLoadingDisablesCreateWithoutDiscardingResponse(t *testing.T) {
 	m := Model{view: viewBoards, boards: []jira.Board{{ID: 1, Name: "Board A"}}}
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	requestID := m.activeBoardRequest
 
-	m, cmd := updateModel(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m, cmd := updateModel(t, m, textKey("n"))
 	if cmd != nil {
 		t.Fatal("create key started a command while the board was loading")
 	}
@@ -206,12 +235,12 @@ func TestBoardLoadingDisablesCreateWithoutDiscardingResponse(t *testing.T) {
 func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 	tests := []struct {
 		name     string
-		startKey tea.KeyMsg
+		startKey tea.KeyPressMsg
 		response func(uint64) tea.Msg
 	}{
 		{
 			name:     "detail",
-			startKey: tea.KeyMsg{Type: tea.KeyEnter},
+			startKey: specialKey(tea.KeyEnter),
 			response: func(boardRequest uint64) tea.Msg {
 				issue := testIssue("A-1")
 				return detailMsg{issue: &issue, boardRequest: boardRequest}
@@ -219,7 +248,7 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 		},
 		{
 			name:     "transitions",
-			startKey: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}},
+			startKey: textKey("t"),
 			response: func(boardRequest uint64) tea.Msg {
 				return transitionsMsg{
 					transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
@@ -233,7 +262,7 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := Model{view: viewBoards, boards: []jira.Board{{ID: 1, Name: "Board A"}, {ID: 2, Name: "Board B"}}}
-			m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+			m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 			requestA := m.activeBoardRequest
 			m, _ = updateModel(t, m, boardResult(requestA, 1, "Sprint A", "A-1"))
 			if m.loadedBoardRequest != requestA {
@@ -246,14 +275,14 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 			}
 			stale := tt.response(requestA)
 
-			m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+			m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 			m, _ = updateModel(t, m, stale)
 			if m.view != viewBoards {
 				t.Fatalf("stale response opened view %v while browsing boards", m.view)
 			}
 
-			m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyDown})
-			m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+			m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+			m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 			requestB := m.activeBoardRequest
 			m, _ = updateModel(t, m, stale)
 			if m.view != viewKanban || !m.boardLoading || m.activeBoardRequest != requestB {
@@ -302,7 +331,7 @@ func TestBoardScopedAsyncResponsesOpenForCurrentBoard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := Model{view: viewBoards, boards: []jira.Board{{ID: 1, Name: "Board A"}}}
-			m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+			m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 			requestID := m.activeBoardRequest
 			m, _ = updateModel(t, m, boardResult(requestID, 1, "Sprint A", "A-1"))
 			m, _ = updateModel(t, m, tt.response(m.loadedBoardRequest))
@@ -317,11 +346,11 @@ func TestBoardLoadRejectsObsoleteResponses(t *testing.T) {
 	boards := []jira.Board{{ID: 1, Name: "Board A"}, {ID: 2, Name: "Board B"}}
 	m := Model{view: viewBoards, boards: boards, width: 120, height: 30}
 
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	requestA := m.activeBoardRequest
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	requestB := m.activeBoardRequest
 
 	m, _ = updateModel(t, m, boardResult(requestA, 1, "Sprint A", "A-1"))
@@ -345,11 +374,11 @@ func TestBoardLoadFailureWinsOnlyForActiveRequest(t *testing.T) {
 		view:   viewBoards,
 		boards: []jira.Board{{ID: 1, Name: "Board A"}, {ID: 2, Name: "Board B"}},
 	}
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	requestA := m.activeBoardRequest
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	requestB := m.activeBoardRequest
 
 	loadErr := errors.New("Board B unavailable")
@@ -359,7 +388,7 @@ func TestBoardLoadFailureWinsOnlyForActiveRequest(t *testing.T) {
 	if !errors.Is(m.err, loadErr) || m.boardLoading || len(m.columns) != 0 {
 		t.Fatalf("active failure was not preserved: err=%v loading=%v columns=%d", m.err, m.boardLoading, len(m.columns))
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Board B unavailable") || strings.Contains(view, "A-1") {
 		t.Fatalf("failure view has incorrect response ordering:\n%s", view)
 	}
@@ -367,13 +396,13 @@ func TestBoardLoadFailureWinsOnlyForActiveRequest(t *testing.T) {
 
 func TestLeavingAndReenteringSameBoardInvalidatesPreviousRequest(t *testing.T) {
 	m := Model{view: viewBoards, boards: []jira.Board{{ID: 1, Name: "Board A"}}}
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	firstRequest := m.activeBoardRequest
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 	if m.activeBoardRequest != 0 {
 		t.Fatal("leaving the board did not invalidate its request")
 	}
-	m, _ = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	secondRequest := m.activeBoardRequest
 	if secondRequest <= firstRequest {
 		t.Fatalf("re-entry request %d did not supersede request %d", secondRequest, firstRequest)
@@ -436,6 +465,81 @@ func TestBoardMutationsStartSameBoardRefresh(t *testing.T) {
 			}
 			if m.focusIssue != "" {
 				t.Fatalf("focusIssue=%q after matching response, want cleared", m.focusIssue)
+			}
+		})
+	}
+}
+
+func TestPasteRoutesToActiveFormInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     Model
+		wantValue func(Model) string
+	}{
+		{
+			name: "create summary",
+			model: func() Model {
+				input := textinput.New()
+				input.Focus()
+				return Model{view: viewCreate, createField: 1, createSummary: input}
+			}(),
+			wantValue: func(m Model) string { return m.createSummary.Value() },
+		},
+		{
+			name: "create description",
+			model: func() Model {
+				input := textinput.New()
+				input.Focus()
+				return Model{view: viewCreate, createField: 2, createDesc: input}
+			}(),
+			wantValue: func(m Model) string { return m.createDesc.Value() },
+		},
+		{
+			name: "worklog",
+			model: func() Model {
+				input := textinput.New()
+				input.Focus()
+				return Model{view: viewWorklog, worklogInput: input}
+			}(),
+			wantValue: func(m Model) string { return m.worklogInput.Value() },
+		},
+	}
+
+	const pasted = "nq 2h pasted"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := updateModel(t, tt.model, tea.PasteMsg{Content: pasted})
+			if got := tt.wantValue(m); got != pasted {
+				t.Fatalf("pasted value=%q, want %q", got, pasted)
+			}
+			if m.view != tt.model.view {
+				t.Fatalf("paste changed view from %v to %v", tt.model.view, m.view)
+			}
+		})
+	}
+}
+
+func TestPasteOutsideFormsDoesNotAlterState(t *testing.T) {
+	tests := []struct {
+		name string
+		view view
+	}{
+		{name: "boards", view: viewBoards},
+		{name: "kanban", view: viewKanban},
+		{name: "detail", view: viewDetail},
+		{name: "transition", view: viewTransition},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := makeTestModel(1, 1)
+			before.view = tt.view
+			after, cmd := updateModel(t, before, tea.PasteMsg{Content: "nq"})
+			if cmd != nil {
+				t.Fatal("paste outside a form returned a command")
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("paste outside a form altered model state: before=%#v after=%#v", before, after)
 			}
 		})
 	}
