@@ -233,6 +233,39 @@ func TestIssueKeyPathEscapingAcrossEndpoints(t *testing.T) {
 	}
 }
 
+func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		jql   string
+	}{
+		{name: "plain text", query: "login failure", jql: `text ~ "login failure"`},
+		{name: "backslash and quote", query: `path\segment "quoted"`, jql: `text ~ "path\\segment \"quoted\""`},
+		{name: "trailing backslash", query: `folder\`, jql: `text ~ "folder\\"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("jql"); got != tt.jql {
+					t.Errorf("JQL query = %q, want %q", got, tt.jql)
+				}
+				if got := r.URL.Query().Get("maxResults"); got != "50" {
+					t.Errorf("maxResults = %q, want 50", got)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"issues":[],"total":0,"maxResults":50}`)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.URL, "e@x.com", "tok")
+			if _, _, err := client.SearchText(tt.query, 50); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestSearchJQLPreservesQueryAtServerBoundary(t *testing.T) {
 	const wantJQL = `project = "A&B" AND summary ~ "50% + #tag"`
 

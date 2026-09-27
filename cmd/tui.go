@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/yepizrene-devoost/gojira/internal/config"
@@ -24,7 +24,7 @@ func runTUI() error {
 	if !config.Exists() {
 		fmt.Fprintln(os.Stderr, "No configuration found. Let's set things up.")
 		m := tui.NewSetup()
-		p := tea.NewProgram(m, tea.WithAltScreen())
+		p := tea.NewProgram(m)
 		if _, err := p.Run(); err != nil {
 			return fmt.Errorf("setup wizard: %w", err)
 		}
@@ -45,7 +45,7 @@ func runTUI() error {
 
 	// ── Launch TUI ────────────────────────────────────────────────
 	m := tui.New(client, domain)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
 }

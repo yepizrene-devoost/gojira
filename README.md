@@ -18,9 +18,9 @@
 
 ## Features
 
-- **Kanban board view** — columns, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
+- **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
 - **Full ticket management** — view, transition status, add worklog, comment, create, assign, update — in CLI *and* TUI
-- **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `s`)
+- **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
 - **Secure auth** — API token in OS keychain (macOS/Linux/Windows) with encrypted-file fallback
 - **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
@@ -127,6 +127,7 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 |---|---|
 | `↑/↓` or `k/j` | Navigate boards |
 | `Enter` | Open board |
+| `s` | Search all Jira tickets |
 | `q` | Quit |
 
 ### Kanban view
@@ -135,25 +136,57 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 |---|---|
 | `←/→` or `h/l` | Move between columns (pages horizontally) |
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
-| `Enter` | Ticket detail |
+| `Enter` | Open ticket detail in a floating modal |
+| `/` | Filter loaded tickets by key or summary (case-insensitive); `Enter` searches Jira for the same text |
+| `s` | Search all Jira tickets directly |
+| `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
-| `s` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
+| `Ctrl+C` | Quit, including while an overlay is open |
+
+Ticket detail and help float over the board at a consistent height (up to 35 rows)
+and width (up to 100 columns), so long content scrolls inside instead of stretching
+the modal. Detail shows the ticket key and summary together in its header; a long
+summary also remains available in the scrollable body. The current column
+and ticket remain selected after closing them. Overlay keys are isolated from
+the board: detail navigation scrolls its content without moving the board cursor.
+Transition, issue creation, and worklog entry remain full-screen flows. The
+transition flow shows bounded progress while loading choices and submitting a
+move; repeated keys cannot start duplicate requests. `Esc` explicitly dismisses
+pending transition UI and ignores its late reply, but cannot cancel an HTTP
+mutation already in flight, which may still complete in Jira. If a same-board
+sprint refresh dismisses the picker instead, the mutation remains owned: success
+shows a toast and starts a fresh board refresh, while failure remains visible
+after the sprint refresh. Switching boards rejects the old board's response.
+
+The Kanban status always identifies the board, sprint, selected column, and
+horizontal page. On narrower terminals it gives board and sprint separate space
+alongside compact column/page context, even when names are long or the shortcut
+footer collapses.
 
 Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues
 created with `n` go directly into the active sprint.
 
+Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
+it, or press `Enter` with a nonempty filter to search Jira's text index. Search
+results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
+detail returns to the same query, result list, and cursor. Press `s` from a
+result list to edit the query, or `Esc` to return to the board or boards list
+where search started.
+
 ### Ticket detail
 
 | Key | Action |
 |---|---|
+| `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
-| `w` | Add worklog |
+| `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
-| `Esc` | Back to board |
+| `Esc` | Back to the board or search results |
 
 ## Project structure
 
