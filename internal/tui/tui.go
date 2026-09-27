@@ -146,18 +146,38 @@ type Model struct {
 
 	// Issue key to select after the next board reload
 	focusIssue string
+
+	// Board requests are identified so late responses cannot replace newer state.
+	nextBoardRequest   uint64
+	activeBoardRequest uint64
+	loadedBoardRequest uint64
+	loadingBoardID     int
+	loadingBoardName   string
+	boardLoading       bool
 }
 
 type boardsMsg struct{ boards []jira.Board }
-type kanbanMsg struct {
+type boardLoadMsg struct {
+	requestID  uint64
+	boardID    int
 	columns    []column
 	sprintName string
 	sprintID   int
+	err        error
 }
-type detailMsg struct{ issue *jira.Issue }
+type detailMsg struct {
+	issue        *jira.Issue
+	boardRequest uint64
+	err          error
+}
 type clipboardMsg struct{ text string; err error }
 type toastMsg struct{ text string }
-type transitionsMsg struct{ transitions []jira.Transition; issueKey string }
+type transitionsMsg struct {
+	transitions  []jira.Transition
+	issueKey     string
+	boardRequest uint64
+	err          error
+}
 type transitionDoneMsg struct{ issueKey string; err error }
 type worklogDoneMsg struct{ err error }
 type createTypesMsg struct{ types []string; err error }
@@ -188,15 +208,37 @@ func (m Model) loadBoards() tea.Msg {
 	return boardsMsg{boards}
 }
 
-func (m Model) loadBoardData(board jira.Board) tea.Msg {
+func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
+	m.nextBoardRequest++
+	requestID := m.nextBoardRequest
+	m.activeBoardRequest = requestID
+	m.loadedBoardRequest = 0
+	m.loadingBoardID = board.ID
+	m.loadingBoardName = board.Name
+	m.boardLoading = true
+	m.columns = nil
+	m.sprintName = ""
+	m.sprintID = 0
+	m.err = nil
+	m.colCur = 0
+	m.rowCur = 0
+
+	return m, func() tea.Msg { return m.loadBoardData(board, requestID) }
+}
+
+func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
+	result := boardLoadMsg{requestID: requestID, boardID: board.ID}
+
 	cfg, err := m.client.GetBoardConfig(board.ID)
 	if err != nil {
-		return errMsg{err}
+		result.err = err
+		return result
 	}
 
 	sprints, err := m.client.GetSprints(board.ID)
 	if err != nil {
-		return errMsg{err}
+		result.err = err
+		return result
 	}
 
 	var activeSprint *jira.Sprint
@@ -216,7 +258,8 @@ func (m Model) loadBoardData(board jira.Board) tea.Msg {
 		sprintID = activeSprint.ID
 		issues, err = m.client.GetBoardIssues(board.ID, activeSprint.ID)
 		if err != nil {
-			return errMsg{err}
+			result.err = err
+			return result
 		}
 		// Backlog = board issues outside the active sprint. Best-effort:
 		// a board/issue failure must not break the sprint view.
@@ -240,7 +283,8 @@ func (m Model) loadBoardData(board jira.Board) tea.Msg {
 	} else {
 		issues, err = m.client.GetBoardIssues(board.ID, 0)
 		if err != nil {
-			return errMsg{err}
+			result.err = err
+			return result
 		}
 	}
 
@@ -287,7 +331,10 @@ func (m Model) loadBoardData(board jira.Board) tea.Msg {
 		cols = append(cols, column{name: "Backlog", issues: backlog})
 	}
 
-	return kanbanMsg{columns: cols, sprintName: sprintName, sprintID: sprintID}
+	result.columns = cols
+	result.sprintName = sprintName
+	result.sprintID = sprintID
+	return result
 }
 
 // ─── Update ────────────────────────────────────────────────────────────
@@ -303,7 +350,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.boards = msg.boards
 		return m, nil
 
-	case kanbanMsg:
+	case boardLoadMsg:
+		if m.view != viewKanban || msg.requestID != m.activeBoardRequest || msg.boardID != m.loadingBoardID {
+			return m, nil
+		}
+		m.activeBoardRequest = 0
+		m.boardLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.loadedBoardRequest = msg.requestID
 		m.columns = msg.columns
 		m.sprintName = msg.sprintName
 		m.sprintID = msg.sprintID
@@ -317,6 +374,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailMsg:
+		if m.view != viewKanban || m.boardLoading || msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
 		m.detail = msg.issue
 		m.view = viewDetail
 		return m, nil
@@ -342,6 +406,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case transitionsMsg:
+		if m.view != viewKanban || m.boardLoading || msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
 		m.transitions = msg.transitions
 		m.transCur = 0
 		m.transIssue = msg.issueKey
@@ -359,7 +430,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.colCur = 0
 		m.rowCur = 0
 		if m.boardCur < len(m.boards) {
-			return m, func() tea.Msg { return m.loadBoardData(m.boards[m.boardCur]) }
+			loaded, cmd := m.startBoardLoad(m.boards[m.boardCur])
+			return loaded, cmd
 		}
 		return m, nil
 
@@ -400,10 +472,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toast = "Created " + msg.key
 		}
 		board := m.boards[m.boardCur]
-		return m, tea.Batch(
-			func() tea.Msg { return m.loadBoardData(board) },
-			clearToastAfter(4*time.Second),
-		)
+		loaded, loadCmd := m.startBoardLoad(board)
+		return loaded, tea.Batch(loadCmd, clearToastAfter(4*time.Second))
 
 	case sprintDoneMsg:
 		if msg.err != nil {
@@ -413,10 +483,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = "Added " + msg.issueKey + " to " + m.sprintName
 		m.focusIssue = msg.issueKey
 		board := m.boards[m.boardCur]
-		return m, tea.Batch(
-			func() tea.Msg { return m.loadBoardData(board) },
-			clearToastAfter(3*time.Second),
-		)
+		loaded, loadCmd := m.startBoardLoad(board)
+		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
 	case tea.KeyMsg:
 		switch m.view {
@@ -453,24 +521,30 @@ func (m Model) updateBoards(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.boardCur >= 0 && m.boardCur < len(m.boards) {
 			board := m.boards[m.boardCur]
 			m.view = viewKanban
-			m.err = nil
-			m.colCur = 0
-			m.rowCur = 0
 			m.focusIssue = ""
-			return m, func() tea.Msg { return m.loadBoardData(board) }
+			loaded, cmd := m.startBoardLoad(board)
+			return loaded, cmd
 		}
 	}
 	return m, nil
 }
 
 func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+	if m.boardLoading && key != "ctrl+c" && key != "q" && key != "esc" {
+		return m, nil
+	}
+
+	switch key {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "q", "esc":
 		m.view = viewBoards
 		m.colCur = 0
 		m.rowCur = 0
+		m.activeBoardRequest = 0
+		m.loadedBoardRequest = 0
+		m.boardLoading = false
 		return m, nil
 	case "left", "h":
 		if m.colCur > 0 {
@@ -495,12 +569,10 @@ func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			issues := m.columns[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
+				boardRequest := m.loadedBoardRequest
 				return m, func() tea.Msg {
 					iss, err := m.client.GetIssue(key)
-					if err != nil {
-						return errMsg{err}
-					}
-					return detailMsg{issue: iss}
+					return detailMsg{issue: iss, boardRequest: boardRequest, err: err}
 				}
 			}
 		}
@@ -523,12 +595,10 @@ func (m Model) updateKanban(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			issues := m.columns[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
+				boardRequest := m.loadedBoardRequest
 				return m, func() tea.Msg {
 					tr, err := m.client.GetTransitions(key)
-					if err != nil {
-						return errMsg{err}
-					}
-					return transitionsMsg{transitions: tr, issueKey: key}
+					return transitionsMsg{transitions: tr, issueKey: key, boardRequest: boardRequest, err: err}
 				}
 			}
 		}
@@ -824,10 +894,22 @@ func (m Model) View() string {
 		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [q] Quit"))
 
 	case viewKanban:
-		b.WriteString(titleStyle.Render(fmt.Sprintf("📋 %s", m.boards[m.boardCur].Name)))
-		b.WriteString(" ")
-		b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
+		boardName := m.loadingBoardName
+		if !m.boardLoading && m.boardCur >= 0 && m.boardCur < len(m.boards) {
+			boardName = m.boards[m.boardCur].Name
+		}
+		b.WriteString(titleStyle.Render(fmt.Sprintf("📋 %s", boardName)))
+		if !m.boardLoading {
+			b.WriteString(" ")
+			b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
+		}
 		b.WriteString("\n")
+
+		if m.boardLoading {
+			b.WriteString("\n")
+			b.WriteString(subStyle.Render("Loading " + boardName + "..."))
+			return b.String()
+		}
 
 		if m.err != nil {
 			b.WriteString("\n")
@@ -836,7 +918,7 @@ func (m Model) View() string {
 		}
 
 		if len(m.columns) == 0 {
-			b.WriteString(subStyle.Render("Loading..."))
+			b.WriteString(subStyle.Render("No board columns available."))
 			return b.String()
 		}
 
