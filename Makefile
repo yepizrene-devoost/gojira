@@ -4,6 +4,7 @@ BINARY_NAME   = gojira
 BIN_DIR       = bin
 CHANGELOG    ?= CHANGELOG.md
 RELEASE_NOTES ?= RELEASE_NOTES.md
+GOLANGCI_LINT_VERSION = 2.11.4
 
 # Channel marker only. A tag is injected when HEAD is exactly on it; every
 # other revision keeps the `dev` marker, so a development tree never claims a
@@ -27,7 +28,12 @@ test:
 
 .PHONY: lint
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed"; exit 1; }
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint v$(GOLANGCI_LINT_VERSION) is required but is not installed" >&2; exit 1; }
+	@installed_version=$$(golangci-lint version 2>/dev/null | awk 'NR == 1 { print $$4 }'); \
+	if [ "$$installed_version" != "$(GOLANGCI_LINT_VERSION)" ]; then \
+		echo "golangci-lint version mismatch: required v$(GOLANGCI_LINT_VERSION), found v$${installed_version:-unknown}" >&2; \
+		exit 1; \
+	fi
 	golangci-lint run ./...
 
 .PHONY: changelog

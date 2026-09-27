@@ -226,7 +226,15 @@ All endpoints live in `internal/jira/paths.go`. If Atlassian deprecates a path, 
 ```bash
 go build -o gojira .
 go test ./...
+make lint
 ```
+
+`make lint` requires an already installed `golangci-lint` v2.11.4 and fails on a
+missing or different version; it does not install tools. The lint command covers
+every Go package through `./...`, while non-Go files need separate checks. CI
+runs lint as a standalone job only for the workflow's existing push and pull
+request events. Making that job a required check is separate branch protection
+configuration.
 
 Run the TUI in a real terminal (it needs a TTY):
 
