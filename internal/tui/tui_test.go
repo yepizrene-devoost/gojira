@@ -3,6 +3,8 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -169,6 +171,16 @@ func updateModel(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	result, ok := updated.(Model)
 	if !ok {
 		t.Fatalf("Update returned %T, want tui.Model", updated)
+	}
+	return result, cmd
+}
+
+func startSearchModel(t *testing.T, m Model, query string) (Model, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.startSearch(query)
+	result, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("startSearch returned %T, want tui.Model", updated)
 	}
 	return result, cmd
 }
@@ -820,6 +832,381 @@ func TestCompactHelpScrollKeepsBoardCursor(t *testing.T) {
 	}
 }
 
+func TestLocalFilterMatchesKeyAndSummaryCaseInsensitively(t *testing.T) {
+	m := makeTestModel(2, 0)
+	m.columns[0].issues = []jira.Issue{
+		{Key: "ARA-101", Fields: IssueFields("Fix Login Flow")},
+		{Key: "OPS-7", Fields: IssueFields("Rotate keys")},
+	}
+	m.columns[1].issues = []jira.Issue{{Key: "WEB-22", Fields: IssueFields("LOGIN metrics")}}
+	m.colCur, m.rowCur = 1, 4
+
+	m, cmd := updateModel(t, m, textKey("/"))
+	if cmd == nil || !m.filterActive || m.colCur != 0 || m.rowCur != 0 {
+		t.Fatalf("filter did not open with a bounded cursor: active=%v cursor=(%d,%d)", m.filterActive, m.colCur, m.rowCur)
+	}
+	m.filterInput.SetValue("LoGiN")
+	cols := m.visibleColumns()
+	if len(cols) != 2 || len(cols[0].issues) != 1 || cols[0].issues[0].Key != "ARA-101" || len(cols[1].issues) != 1 {
+		t.Fatalf("summary filter produced unexpected columns: %#v", cols)
+	}
+	m.filterInput.SetValue("ara-10")
+	cols = m.visibleColumns()
+	if len(cols[0].issues) != 1 || cols[0].issues[0].Key != "ARA-101" || len(cols[1].issues) != 0 {
+		t.Fatalf("key filter produced unexpected columns: %#v", cols)
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.filterActive || m.filterInput.Value() != "" || len(m.visibleColumns()[0].issues) != 2 {
+		t.Fatalf("Escape did not clear local filter: active=%v value=%q", m.filterActive, m.filterInput.Value())
+	}
+}
+
+func TestLocalFilterEnterSearchesJiraAndRoundTripsToFilteredBoard(t *testing.T) {
+	m := makeTestModel(1, 2)
+	m.loadedBoardRequest = 7
+	m, _ = updateModel(t, m, textKey("/"))
+	m.filterInput.SetValue("login")
+
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil || m.view != viewSearch || !m.searchLoading || m.searchEditing || m.activeSearchRequest == 0 {
+		t.Fatalf("nonempty filter did not start server search: view=%v loading=%v editing=%v request=%d", m.view, m.searchLoading, m.searchEditing, m.activeSearchRequest)
+	}
+	if got := m.searchInput.Value(); got != "login" {
+		t.Fatalf("server query=%q, want local filter value", got)
+	}
+	requestID := m.activeSearchRequest
+	results := []jira.Issue{{Key: "ARA-1", Fields: IssueFields("Login result")}}
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 1})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.filterInput.Value() != "login" {
+		t.Fatalf("search did not return to filtered board: view=%v filter=%q", m.view, m.filterInput.Value())
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.filterInput.Value() != "" {
+		t.Fatalf("Escape should clear a retained filter before leaving board: view=%v filter=%q", m.view, m.filterInput.Value())
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewBoards {
+		t.Fatalf("second Escape should leave an unfiltered board, got view %v", m.view)
+	}
+}
+
+func TestEmptyLocalFilterDoesNotStartServerSearch(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m, _ = updateModel(t, m, textKey("/"))
+	m.filterInput.SetValue("  ")
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd != nil || m.view != viewKanban || !m.filterActive || m.activeSearchRequest != 0 {
+		t.Fatalf("empty filter unexpectedly searched: cmd=%v view=%v active=%v request=%d", cmd != nil, m.view, m.filterActive, m.activeSearchRequest)
+	}
+}
+
+func TestDirectSearchReturnsToOpeningView(t *testing.T) {
+	tests := []struct {
+		name string
+		view view
+	}{
+		{name: "boards", view: viewBoards},
+		{name: "kanban", view: viewKanban},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.view = tt.view
+			m, cmd := updateModel(t, m, textKey("s"))
+			if cmd == nil || m.view != viewSearch || !m.searchEditing || m.searchReturn != tt.view {
+				t.Fatalf("direct search did not open from %v: view=%v editing=%v return=%v", tt.view, m.view, m.searchEditing, m.searchReturn)
+			}
+			m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+			if m.view != tt.view {
+				t.Fatalf("cancelled search returned to %v, want %v", m.view, tt.view)
+			}
+		})
+	}
+}
+
+func TestSearchRequestsIgnoreStaleSuccessAndFailure(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m, _ = startSearchModel(t, m, "first")
+	first := m.activeSearchRequest
+	m, _ = startSearchModel(t, m, "second")
+	second := m.activeSearchRequest
+	if second <= first {
+		t.Fatalf("second request %d did not supersede first %d", second, first)
+	}
+
+	m, _ = updateModel(t, m, searchMsg{
+		requestID: first,
+		issues:    []jira.Issue{{Key: "OLD-1", Fields: IssueFields("Old")}},
+		total:     1,
+	})
+	m, _ = updateModel(t, m, searchMsg{requestID: first, err: errors.New("stale failure")})
+	if !m.searchLoading || m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 0 {
+		t.Fatalf("stale search response altered active request: loading=%v completed=%v err=%v results=%d", m.searchLoading, m.searchCompleted, m.searchErr, len(m.searchResults))
+	}
+
+	fresh := []jira.Issue{{Key: "NEW-1", Fields: IssueFields("New")}, {Key: "NEW-2", Fields: IssueFields("Newer")}}
+	m, _ = updateModel(t, m, searchMsg{requestID: second, issues: fresh, total: 8})
+	if m.searchLoading || !m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 2 || m.searchTotal != 8 || m.searchCur != 0 {
+		t.Fatalf("active search response was not applied: %#v", m)
+	}
+}
+
+func TestSearchErrorEmptyAndResizeRendering(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  searchMsg
+		want string
+	}{
+		{name: "error", msg: searchMsg{err: errors.New("search unavailable")}, want: "Error: search unavailable"},
+		{name: "empty", msg: searchMsg{}, want: "No tickets found."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.width, m.height = 34, 8
+			m, _ = startSearchModel(t, m, "nothing")
+			tt.msg.requestID = m.activeSearchRequest
+			m, _ = updateModel(t, m, tt.msg)
+			output := m.View().Content
+			if !strings.Contains(ansi.Strip(output), tt.want) {
+				t.Fatalf("search state missing %q:\n%s", tt.want, output)
+			}
+			if lipgloss.Width(output) > m.width || lipgloss.Height(output) > m.height {
+				t.Fatalf("search output exceeds %dx%d: got %dx%d", m.width, m.height, lipgloss.Width(output), lipgloss.Height(output))
+			}
+			m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 24, Height: 5})
+			output = m.View().Content
+			if lipgloss.Width(output) > 24 || lipgloss.Height(output) > 5 {
+				t.Fatalf("resized search output exceeds 24x5: got %dx%d", lipgloss.Width(output), lipgloss.Height(output))
+			}
+		})
+	}
+}
+
+func TestSearchResultNavigationClampsAndNewSearchCancelKeepsResults(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m, _ = startSearchModel(t, m, "current")
+	requestID := m.activeSearchRequest
+	results := []jira.Issue{
+		{Key: "A-1", Fields: IssueFields("One")},
+		{Key: "A-2", Fields: IssueFields("Two")},
+		{Key: "A-3", Fields: IssueFields("Three")},
+	}
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 3})
+	for i := 0; i < 10; i++ {
+		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	}
+	if m.searchCur != 2 {
+		t.Fatalf("search cursor=%d, want last result", m.searchCur)
+	}
+	for i := 0; i < 10; i++ {
+		m, _ = updateModel(t, m, specialKey(tea.KeyUp))
+	}
+	if m.searchCur != 0 {
+		t.Fatalf("search cursor=%d, want first result", m.searchCur)
+	}
+
+	m, _ = updateModel(t, m, textKey("s"))
+	if !m.searchEditing {
+		t.Fatal("s did not reopen search input")
+	}
+	m.searchInput.SetValue("replacement")
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.searchEditing || len(m.searchResults) != 3 || m.searchInput.Value() != "current" {
+		t.Fatalf("cancelling edited query did not restore result context: editing=%v results=%d query=%q", m.searchEditing, len(m.searchResults), m.searchInput.Value())
+	}
+}
+
+func TestSearchResultDetailLoadsFullIssueAndReturnsToSameList(t *testing.T) {
+	var requested bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		if !strings.Contains(r.URL.Query().Get("fields"), "description") {
+			t.Errorf("detail request fields=%q, want full issue fields", r.URL.Query().Get("fields"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"key":"A-2","fields":{"summary":"Full result","description":{"type":"doc","version":1,"content":[]}}}`)
+	}))
+	defer srv.Close()
+
+	m := makeTestModel(1, 1)
+	m.client = jira.NewClient(srv.URL, "test@example.com", "token")
+	m, _ = startSearchModel(t, m, "result")
+	searchRequest := m.activeSearchRequest
+	results := []jira.Issue{{Key: "A-1", Fields: IssueFields("One")}, {Key: "A-2", Fields: IssueFields("Two")}}
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 2})
+	m.searchCur = 1
+
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil || m.view != viewDetail || !m.detailLoading || m.detailReturn != viewSearch || m.detailSearchRequest != searchRequest {
+		t.Fatalf("result detail did not open: view=%v loading=%v return=%v searchRequest=%d", m.view, m.detailLoading, m.detailReturn, m.detailSearchRequest)
+	}
+	commandResult := cmd()
+	detailResult, ok := commandResult.(detailMsg)
+	if !ok {
+		t.Fatalf("detail command returned %T, want detailMsg", commandResult)
+	}
+	if !requested || detailResult.issue == nil || detailResult.issue.Fields.Description == nil {
+		t.Fatalf("search detail did not load full issue: requested=%v result=%#v", requested, detailResult)
+	}
+
+	m, _ = updateModel(t, m, detailMsg{
+		issue:         detailResult.issue,
+		issueKey:      detailResult.issueKey,
+		searchRequest: searchRequest + 1,
+		detailRequest: m.activeDetailRequest,
+	})
+	if !m.detailLoading || m.detail != nil {
+		t.Fatal("detail response from a different search request was accepted")
+	}
+	m, _ = updateModel(t, m, detailResult)
+	if m.detailLoading || m.detail == nil || m.detail.Key != "A-2" {
+		t.Fatalf("matching full detail was not displayed: loading=%v detail=%v", m.detailLoading, m.detail)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewSearch || len(m.searchResults) != 2 || m.searchCur != 1 || m.searchInput.Value() != "result" {
+		t.Fatalf("closing detail lost result context: view=%v results=%d cursor=%d query=%q", m.view, len(m.searchResults), m.searchCur, m.searchInput.Value())
+	}
+}
+
+func TestSearchAndSprintActionsUseDistinctKeys(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 3
+
+	searched, searchCmd := updateModel(t, m, textKey("s"))
+	if searchCmd == nil || searched.view != viewSearch || !searched.searchEditing {
+		t.Fatalf("s did not open direct search: view=%v editing=%v", searched.view, searched.searchEditing)
+	}
+	added, addCmd := updateModel(t, m, textKey("a"))
+	if addCmd == nil || added.view != viewKanban {
+		t.Fatalf("a did not start active-sprint action: cmd=%v view=%v", addCmd != nil, added.view)
+	}
+
+	m.sprintID = 0
+	m, cmd := updateModel(t, m, textKey("a"))
+	if cmd == nil || m.toast != "No active sprint on this board" {
+		t.Fatalf("missing-sprint action did not provide feedback: cmd=%v toast=%q", cmd != nil, m.toast)
+	}
+}
+
+func TestSprintRefreshCompletesWhileSearchIsOpen(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 3
+
+	m, addCmd := updateModel(t, m, textKey("a"))
+	if addCmd == nil {
+		t.Fatal("a did not start active-sprint action")
+	}
+	m, _ = updateModel(t, m, textKey("s"))
+	if m.view != viewSearch || !m.searchEditing {
+		t.Fatalf("s did not open search while sprint action was pending: view=%v editing=%v", m.view, m.searchEditing)
+	}
+
+	m, refreshCmd := updateModel(t, m, sprintDoneMsg{issueKey: "TEST-1"})
+	if refreshCmd == nil || !m.boardLoading || m.activeBoardRequest == 0 {
+		t.Fatalf("sprint completion did not start board refresh: cmd=%v loading=%v request=%d", refreshCmd != nil, m.boardLoading, m.activeBoardRequest)
+	}
+	requestID := m.activeBoardRequest
+	m, _ = updateModel(t, m, boardResult(requestID, 1, "Refreshed Sprint", "TEST-1"))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+
+	if m.view != viewKanban || m.boardLoading || m.loadedBoardRequest != requestID {
+		t.Fatalf("return from search left board refresh stuck: view=%v loading=%v loaded=%d want=%d", m.view, m.boardLoading, m.loadedBoardRequest, requestID)
+	}
+	if len(m.columns) != 1 || len(m.columns[0].issues) != 1 || m.columns[0].issues[0].Key != "TEST-1" {
+		t.Fatalf("refreshed board was not available after search: %#v", m.columns)
+	}
+}
+
+func TestSprintRefreshSupersedesInFlightBoardDetail(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 3
+
+	m, addCmd := updateModel(t, m, textKey("a"))
+	if addCmd == nil {
+		t.Fatal("a did not start active-sprint action")
+	}
+	m, detailCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if detailCmd == nil || m.view != viewDetail || !m.detailLoading || m.detailReturn != viewKanban {
+		t.Fatalf("board detail did not open while sprint action was pending: view=%v loading=%v return=%v", m.view, m.detailLoading, m.detailReturn)
+	}
+	oldDetailRequest := m.activeDetailRequest
+
+	m, refreshCmd := updateModel(t, m, sprintDoneMsg{issueKey: "P0"})
+	if refreshCmd == nil || m.view != viewKanban || !m.boardLoading || m.detailLoading || m.activeDetailRequest != 0 {
+		t.Fatalf("board refresh did not supersede board detail safely: cmd=%v view=%v boardLoading=%v detailLoading=%v detailRequest=%d", refreshCmd != nil, m.view, m.boardLoading, m.detailLoading, m.activeDetailRequest)
+	}
+	boardRequest := m.activeBoardRequest
+	m, _ = updateModel(t, m, boardResult(boardRequest, 1, "Refreshed Sprint", "P0"))
+
+	staleIssue := testIssue("P0")
+	m, _ = updateModel(t, m, detailMsg{
+		issue:         &staleIssue,
+		issueKey:      staleIssue.Key,
+		boardRequest:  3,
+		detailRequest: oldDetailRequest,
+	})
+	if m.view != viewKanban || m.boardLoading || m.detailLoading || m.detail != nil || m.loadedBoardRequest != boardRequest {
+		t.Fatalf("stale detail disturbed refreshed board: view=%v boardLoading=%v detailLoading=%v detail=%v loaded=%d want=%d", m.view, m.boardLoading, m.detailLoading, m.detail, m.loadedBoardRequest, boardRequest)
+	}
+}
+
+func TestSprintRefreshPreservesInFlightSearchDetail(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 3
+
+	m, _ = updateModel(t, m, textKey("a"))
+	m, _ = updateModel(t, m, textKey("s"))
+	m.searchInput.SetValue("result")
+	m, searchCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if searchCmd == nil || !m.searchLoading {
+		t.Fatal("search did not start while sprint action was pending")
+	}
+	searchRequest := m.activeSearchRequest
+
+	m, _ = updateModel(t, m, sprintDoneMsg{issueKey: "TEST-1"})
+	boardRequest := m.activeBoardRequest
+	if m.activeSearchRequest != searchRequest {
+		t.Fatalf("board refresh invalidated active search: got=%d want=%d", m.activeSearchRequest, searchRequest)
+	}
+	results := []jira.Issue{{Key: "RESULT-1", Fields: IssueFields("Search result")}}
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 1})
+	m, detailCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if detailCmd == nil || m.view != viewDetail || !m.detailLoading {
+		t.Fatalf("search detail did not open during board refresh: view=%v loading=%v", m.view, m.detailLoading)
+	}
+	detailRequest := m.activeDetailRequest
+
+	m, _ = updateModel(t, m, boardResult(boardRequest, 1, "Refreshed Sprint", "TEST-1"))
+	issue := testIssue("RESULT-1")
+	m, _ = updateModel(t, m, detailMsg{
+		issue:         &issue,
+		issueKey:      issue.Key,
+		searchRequest: searchRequest,
+		detailRequest: detailRequest,
+	})
+	if m.detailLoading || m.detail == nil || m.detail.Key != "RESULT-1" {
+		t.Fatalf("board refresh invalidated search detail: loading=%v detail=%v", m.detailLoading, m.detail)
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.boardLoading || m.loadedBoardRequest != boardRequest {
+		t.Fatalf("search detail returned to stale board: view=%v loading=%v loaded=%d want=%d", m.view, m.boardLoading, m.loadedBoardRequest, boardRequest)
+	}
+}
+
 func TestBoardLoadRejectsObsoleteResponses(t *testing.T) {
 	boards := []jira.Board{{ID: 1, Name: "Board A"}, {ID: 2, Name: "Board B"}}
 	m := Model{view: viewBoards, boards: boards, width: 120, height: 30}
@@ -980,6 +1367,24 @@ func TestPasteRoutesToActiveFormInput(t *testing.T) {
 				return Model{view: viewWorklog, worklogInput: input}
 			}(),
 			wantValue: func(m Model) string { return m.worklogInput.Value() },
+		},
+		{
+			name: "local filter",
+			model: func() Model {
+				input := textinput.New()
+				input.Focus()
+				return Model{view: viewKanban, filterActive: true, filterInput: input}
+			}(),
+			wantValue: func(m Model) string { return m.filterInput.Value() },
+		},
+		{
+			name: "server search",
+			model: func() Model {
+				input := textinput.New()
+				input.Focus()
+				return Model{view: viewSearch, searchEditing: true, searchInput: input}
+			}(),
+			wantValue: func(m Model) string { return m.searchInput.Value() },
 		},
 	}
 

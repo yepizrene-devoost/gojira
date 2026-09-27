@@ -239,6 +239,14 @@ func (c *Client) GetProjects() ([]Project, error) {
 	return projects, nil
 }
 
+// SearchText searches Jira's text index while treating query as a JQL string
+// literal rather than executable JQL.
+func (c *Client) SearchText(query string, maxResults int) ([]Issue, int, error) {
+	escaped := strings.ReplaceAll(query, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return c.SearchJQL(fmt.Sprintf(`text ~ "%s"`, escaped), maxResults)
+}
+
 func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
 	if maxResults <= 0 {
 		maxResults = 50

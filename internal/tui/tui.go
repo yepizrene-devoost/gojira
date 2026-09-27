@@ -42,9 +42,11 @@ var kanbanHelp = []helpEntry{
 	{keys: "←/→ or h/l", action: "Move between columns"},
 	{keys: "↑/↓ or k/j", action: "Move within a column"},
 	{keys: "Enter", action: "Open ticket detail"},
+	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
+	{keys: "s", action: "Search all Jira tickets"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "n", action: "Create issue"},
-	{keys: "s", action: "Add ticket to active sprint"},
+	{keys: "a", action: "Add ticket to active sprint"},
 	{keys: "C", action: "Copy column as JSON"},
 	{keys: "Esc or q", action: "Back to boards"},
 	{keys: "Ctrl+C", action: "Quit"},
@@ -119,6 +121,7 @@ const (
 	viewTransition
 	viewWorklog
 	viewCreate
+	viewSearch
 )
 
 type column struct {
@@ -146,6 +149,8 @@ type Model struct {
 	detailLoading        bool
 	detailIssueKey       string
 	detailBoardRequest   uint64
+	detailSearchRequest  uint64
+	detailReturn         view
 	nextDetailRequest    uint64
 	activeDetailRequest  uint64
 	helpOpen             bool
@@ -159,7 +164,23 @@ type Model struct {
 	nextWorklogRequest   uint64
 	activeWorklogRequest uint64
 
-	// Active sprint of the current board (0 = none; used by create + "s")
+	filterInput  textinput.Model
+	filterActive bool
+
+	searchInput         textinput.Model
+	searchQuery         string
+	searchEditing       bool
+	searchResults       []jira.Issue
+	searchCur           int
+	searchTotal         int
+	searchLoading       bool
+	searchCompleted     bool
+	searchErr           error
+	searchReturn        view
+	nextSearchRequest   uint64
+	activeSearchRequest uint64
+
+	// Active sprint of the current board (0 = none; used by create + "a")
 	sprintID int
 
 	// Create-issue form (viewCreate)
@@ -196,8 +217,15 @@ type detailMsg struct {
 	issue         *jira.Issue
 	issueKey      string
 	boardRequest  uint64
+	searchRequest uint64
 	detailRequest uint64
 	err           error
+}
+type searchMsg struct {
+	requestID uint64
+	issues    []jira.Issue
+	total     int
+	err       error
 }
 type clipboardMsg struct {
 	text string
@@ -269,15 +297,23 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.sprintName = ""
 	m.sprintID = 0
 	m.err = nil
-	m.detail = nil
-	m.detailScroll = 0
-	m.detailLoading = false
-	m.detailIssueKey = ""
-	m.detailBoardRequest = 0
-	m.activeDetailRequest = 0
-	m.helpOpen = false
-	m.helpScroll = 0
-	m.activeWorklogRequest = 0
+	if m.view == viewKanban || (m.view == viewDetail && m.detailReturn != viewSearch) {
+		m.view = viewKanban
+		m.detail = nil
+		m.detailScroll = 0
+		m.detailLoading = false
+		m.detailIssueKey = ""
+		m.detailBoardRequest = 0
+		m.detailSearchRequest = 0
+		m.detailReturn = viewKanban
+		m.activeDetailRequest = 0
+		m.filterInput.SetValue("")
+		m.filterActive = false
+		m.activeSearchRequest = 0
+		m.helpOpen = false
+		m.helpScroll = 0
+		m.activeWorklogRequest = 0
+	}
 	m.colCur = 0
 	m.rowCur = 0
 
@@ -384,7 +420,7 @@ func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 	}
 
 	// Append the backlog as a trailing column so unsprinted tickets stay
-	// reachable: select one and press "s" to move it into the active sprint.
+	// reachable: select one and press "a" to move it into the active sprint.
 	if len(backlog) > 0 {
 		cols = append(cols, column{name: "Backlog", issues: backlog})
 	}
@@ -414,7 +450,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case boardLoadMsg:
-		if m.view != viewKanban || msg.requestID != m.activeBoardRequest || msg.boardID != m.loadingBoardID {
+		if m.view == viewBoards || msg.requestID != m.activeBoardRequest || msg.boardID != m.loadingBoardID {
 			return m, nil
 		}
 		m.activeBoardRequest = 0
@@ -437,10 +473,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailMsg:
-		if m.view != viewDetail || !m.detailLoading || msg.boardRequest == 0 ||
-			msg.boardRequest != m.loadedBoardRequest || msg.boardRequest != m.detailBoardRequest ||
+		if m.view != viewDetail || !m.detailLoading ||
 			msg.detailRequest == 0 || msg.detailRequest != m.activeDetailRequest ||
 			msg.issueKey == "" || msg.issueKey != m.detailIssueKey {
+			return m, nil
+		}
+		if m.detailReturn == viewSearch {
+			if msg.searchRequest == 0 || msg.searchRequest != m.detailSearchRequest || msg.searchRequest != m.activeSearchRequest {
+				return m, nil
+			}
+		} else if msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest || msg.boardRequest != m.detailBoardRequest {
 			return m, nil
 		}
 		m.detailLoading = false
@@ -454,6 +496,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.detail = msg.issue
 		m.detailScroll = 0
+		return m, nil
+
+	case searchMsg:
+		if m.view != viewSearch || msg.requestID == 0 || msg.requestID != m.activeSearchRequest {
+			return m, nil
+		}
+		m.searchLoading = false
+		m.searchCompleted = true
+		m.searchErr = msg.err
+		m.searchResults = msg.issues
+		m.searchTotal = msg.total
+		m.searchCur = 0
 		return m, nil
 
 	case errMsg:
@@ -576,6 +630,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWorklog(msg)
 		case viewCreate:
 			return m.updateCreate(msg)
+		case viewSearch:
+			return m.updateSearch(msg)
 		}
 
 	case tea.PasteMsg:
@@ -593,6 +649,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.createDesc, cmd = m.createDesc.Update(msg)
 			}
 			return m, cmd
+		case viewKanban:
+			if m.filterActive {
+				var cmd tea.Cmd
+				m.filterInput, cmd = m.filterInput.Update(msg)
+				m.colCur, m.rowCur = 0, 0
+				return m, cmd
+			}
+		case viewSearch:
+			if m.searchEditing {
+				var cmd tea.Cmd
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				return m, cmd
+			}
 		}
 	}
 	return m, nil
@@ -618,6 +687,8 @@ func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			loaded, cmd := m.startBoardLoad(board)
 			return loaded, cmd
 		}
+	case "s":
+		return m.openSearchInput()
 	}
 	return m, nil
 }
@@ -642,14 +713,47 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.filterActive {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.filterInput.Blur()
+			m.filterInput.SetValue("")
+			m.filterActive = false
+			m.colCur, m.rowCur = 0, 0
+			return m, nil
+		case "enter":
+			query := strings.TrimSpace(m.filterInput.Value())
+			if query == "" {
+				return m, nil
+			}
+			m.filterInput.Blur()
+			m.filterActive = false
+			return m.startSearch(query)
+		default:
+			var cmd tea.Cmd
+			m.filterInput, cmd = m.filterInput.Update(msg)
+			m.colCur, m.rowCur = 0, 0
+			return m, cmd
+		}
+	}
 	if m.boardLoading && key != "ctrl+c" && key != "q" && key != "esc" {
 		return m, nil
 	}
 
+	cols := m.visibleColumns()
 	switch key {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "q", "esc":
+	case "esc":
+		if strings.TrimSpace(m.filterInput.Value()) != "" {
+			m.filterInput.SetValue("")
+			m.colCur, m.rowCur = 0, 0
+			return m, nil
+		}
+		fallthrough
+	case "q":
 		m.view = viewBoards
 		m.colCur = 0
 		m.rowCur = 0
@@ -666,7 +770,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.rowCur = 0
 		}
 	case "right", "l":
-		if m.colCur < len(m.columns)-1 {
+		if m.colCur < len(cols)-1 {
 			m.colCur++
 			m.rowCur = 0
 		}
@@ -675,12 +779,12 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.rowCur--
 		}
 	case "down", "j":
-		if m.colCur < len(m.columns) && m.rowCur < len(m.columns[m.colCur].issues)-1 {
+		if m.colCur < len(cols) && m.rowCur < len(cols[m.colCur].issues)-1 {
 			m.rowCur++
 		}
 	case "enter":
-		if m.colCur < len(m.columns) {
-			issues := m.columns[m.colCur].issues
+		if m.colCur < len(cols) {
+			issues := cols[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
@@ -690,6 +794,8 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.detailLoading = true
 				m.detailIssueKey = key
 				m.detailBoardRequest = boardRequest
+				m.detailSearchRequest = 0
+				m.detailReturn = viewKanban
 				m.nextDetailRequest++
 				detailRequest := m.nextDetailRequest
 				m.activeDetailRequest = detailRequest
@@ -700,23 +806,35 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "/":
+		input := textinput.New()
+		input.Placeholder = "key or summary"
+		input.SetWidth(40)
+		input.SetValue(m.filterInput.Value())
+		input.Focus()
+		m.filterInput = input
+		m.filterActive = true
+		m.colCur, m.rowCur = 0, 0
+		return m, textinput.Blink
+	case "s":
+		return m.openSearchInput()
 	case "o":
-		if m.colCur < len(m.columns) {
-			issues := m.columns[m.colCur].issues
+		if m.colCur < len(cols) {
+			issues := cols[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				return m, openBrowser(issues[m.rowCur].Key, m.domain)
 			}
 		}
 	case "C":
-		if m.colCur < len(m.columns) {
-			col := m.columns[m.colCur]
+		if m.colCur < len(cols) {
+			col := cols[m.colCur]
 			tickets := jira.IssuesToTicketJSON(col.issues, m.domain)
 			b, _ := json.MarshalIndent(tickets, "", "  ")
 			return m, copyToClipboard(string(b))
 		}
 	case "t":
-		if m.colCur < len(m.columns) {
-			issues := m.columns[m.colCur].issues
+		if m.colCur < len(cols) {
+			issues := cols[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
@@ -728,11 +846,11 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n":
 		return m.enterCreate()
-	case "s":
-		if m.colCur >= len(m.columns) {
+	case "a":
+		if m.colCur >= len(cols) {
 			return m, nil
 		}
-		issues := m.columns[m.colCur].issues
+		issues := cols[m.colCur].issues
 		if m.rowCur < 0 || m.rowCur >= len(issues) {
 			return m, nil
 		}
@@ -764,12 +882,18 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "enter", "q":
-		m.view = viewKanban
+		returnView := m.detailReturn
+		if returnView != viewSearch {
+			returnView = viewKanban
+		}
+		m.view = returnView
 		m.detail = nil
 		m.detailScroll = 0
 		m.detailLoading = false
 		m.detailIssueKey = ""
 		m.detailBoardRequest = 0
+		m.detailSearchRequest = 0
+		m.detailReturn = viewKanban
 		m.activeDetailRequest = 0
 		m.err = nil
 		return m, nil
@@ -861,6 +985,165 @@ func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.worklogInput, cmd = m.worklogInput.Update(msg)
 		return m, cmd
 	}
+}
+
+// ─── Search ────────────────────────────────────────────────────────────
+
+func (m Model) visibleColumns() []column {
+	query := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
+	if query == "" {
+		return m.columns
+	}
+	cols := make([]column, len(m.columns))
+	for i, col := range m.columns {
+		cols[i].name = col.name
+		for _, issue := range col.issues {
+			if strings.Contains(strings.ToLower(issue.Key), query) || strings.Contains(strings.ToLower(issue.Fields.Summary), query) {
+				cols[i].issues = append(cols[i].issues, issue)
+			}
+		}
+	}
+	return cols
+}
+
+func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
+	returnView := m.view
+	if returnView != viewBoards {
+		returnView = viewKanban
+	}
+	input := textinput.New()
+	input.Placeholder = "Jira text search"
+	input.SetWidth(50)
+	input.Focus()
+	m.searchInput = input
+	m.searchQuery = ""
+	m.searchEditing = true
+	m.searchResults = nil
+	m.searchCur = 0
+	m.searchTotal = 0
+	m.searchLoading = false
+	m.searchCompleted = false
+	m.searchErr = nil
+	m.searchReturn = returnView
+	m.activeSearchRequest = 0
+	m.view = viewSearch
+	return m, textinput.Blink
+}
+
+func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
+	if m.view != viewSearch {
+		m.searchReturn = viewKanban
+	}
+	if m.searchInput.Value() != query {
+		input := textinput.New()
+		input.SetWidth(50)
+		input.SetValue(query)
+		m.searchInput = input
+	}
+	m.searchInput.Blur()
+	m.searchQuery = query
+	m.searchEditing = false
+	m.searchResults = nil
+	m.searchCur = 0
+	m.searchTotal = 0
+	m.searchLoading = true
+	m.searchCompleted = false
+	m.searchErr = nil
+	m.nextSearchRequest++
+	requestID := m.nextSearchRequest
+	m.activeSearchRequest = requestID
+	m.view = viewSearch
+	client := m.client
+	return m, func() tea.Msg {
+		issues, total, err := client.SearchText(query, 50)
+		return searchMsg{requestID: requestID, issues: issues, total: total, err: err}
+	}
+}
+
+func (m Model) exitSearch() Model {
+	m.searchInput.Blur()
+	m.searchEditing = false
+	m.searchLoading = false
+	m.activeSearchRequest = 0
+	if m.searchReturn == viewBoards {
+		m.view = viewBoards
+	} else {
+		m.view = viewKanban
+	}
+	return m
+}
+
+func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if m.searchEditing {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.searchInput.Blur()
+			m.searchEditing = false
+			if m.searchCompleted {
+				m.searchInput.SetValue(m.searchQuery)
+				return m, nil
+			}
+			m = m.exitSearch()
+			return m, nil
+		case "enter":
+			query := strings.TrimSpace(m.searchInput.Value())
+			if query == "" {
+				return m, nil
+			}
+			return m.startSearch(query)
+		default:
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	switch key {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q":
+		m = m.exitSearch()
+		return m, nil
+	case "s":
+		m.searchInput.Focus()
+		m.searchEditing = true
+		return m, textinput.Blink
+	case "up", "k":
+		if m.searchCur > 0 {
+			m.searchCur--
+		}
+	case "down", "j":
+		if m.searchCur < len(m.searchResults)-1 {
+			m.searchCur++
+		}
+	case "enter":
+		if m.searchLoading || m.searchCur < 0 || m.searchCur >= len(m.searchResults) {
+			return m, nil
+		}
+		key := m.searchResults[m.searchCur].Key
+		m.view = viewDetail
+		m.detail = nil
+		m.detailScroll = 0
+		m.detailLoading = true
+		m.detailIssueKey = key
+		m.detailBoardRequest = 0
+		m.detailSearchRequest = m.activeSearchRequest
+		m.detailReturn = viewSearch
+		m.nextDetailRequest++
+		detailRequest := m.nextDetailRequest
+		m.activeDetailRequest = detailRequest
+		m.err = nil
+		searchRequest := m.activeSearchRequest
+		client := m.client
+		return m, func() tea.Msg {
+			issue, err := client.GetIssueFull(key)
+			return detailMsg{issue: issue, issueKey: key, searchRequest: searchRequest, detailRequest: detailRequest, err: err}
+		}
+	}
+	return m, nil
 }
 
 // ─── Create issue ──────────────────────────────────────────────────────
@@ -1048,7 +1331,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [q] Quit"))
+		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"))
 
 	case viewKanban:
 		board := m.renderKanban()
@@ -1059,7 +1342,11 @@ func (m Model) View() tea.View {
 		}
 
 	case viewDetail:
-		b.WriteString(m.composeOverlay(m.renderKanban(), m.renderDetail()))
+		background := m.renderKanban()
+		if m.detailReturn == viewSearch {
+			background = m.renderSearch()
+		}
+		b.WriteString(m.composeOverlay(background, m.renderDetail()))
 
 	case viewTransition:
 		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))
@@ -1127,6 +1414,9 @@ func (m Model) View() tea.View {
 		}
 		b.WriteString("\n")
 		b.WriteString(subStyle.Render("[tab] Field  [←→] Type  [Enter] Create  [esc] Cancel"))
+
+	case viewSearch:
+		b.WriteString(m.renderSearch())
 	}
 
 	return altScreenView(m.renderToast(b.String()))
@@ -1159,8 +1449,73 @@ func (m Model) contentHeight() int {
 	return m.height
 }
 
+func (m Model) renderSearch() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("🔎 Jira Search"))
+	b.WriteString("\n\n")
+	b.WriteString("Query: ")
+	b.WriteString(m.searchInput.View())
+	b.WriteString("\n\n")
+
+	switch {
+	case m.searchEditing:
+		b.WriteString(subStyle.Render("Type a text query, then press Enter."))
+	case m.searchLoading:
+		b.WriteString(subStyle.Render("Searching Jira..."))
+	case m.searchErr != nil:
+		b.WriteString(errStyle.Render("Error: " + m.searchErr.Error()))
+	case m.searchCompleted && len(m.searchResults) == 0:
+		b.WriteString(subStyle.Render("No tickets found."))
+	default:
+		if m.searchCompleted {
+			_, _ = fmt.Fprintf(&b, "%d shown · %d total\n\n", len(m.searchResults), m.searchTotal)
+		}
+		visible := len(m.searchResults)
+		if m.contentHeight() > 0 {
+			visible = min(visible, max(m.contentHeight()-8, 1))
+		}
+		start := 0
+		if m.searchCur >= visible {
+			start = m.searchCur - visible + 1
+		}
+		for i := start; i < min(start+visible, len(m.searchResults)); i++ {
+			issue := m.searchResults[i]
+			status := ""
+			if issue.Fields.Status != nil {
+				status = " · " + issue.Fields.Status.Name
+			}
+			line := fmt.Sprintf("%s  %s%s", issue.Key, strings.ReplaceAll(issue.Fields.Summary, "\n", " "), status)
+			if m.width > 0 {
+				line = ansi.Truncate(line, max(m.width-4, 1), "…")
+			}
+			if i == m.searchCur {
+				b.WriteString(lipgloss.NewStyle().Background(selBg).Render("→ " + line))
+			} else {
+				b.WriteString("  " + line)
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	if m.searchEditing {
+		b.WriteString(subStyle.Render("[Enter] Search  [esc] Cancel  [ctrl+c] Quit"))
+	} else {
+		back := "Board"
+		if m.searchReturn == viewBoards {
+			back = "Boards"
+		}
+		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Detail  [s] New search  [esc] " + back))
+	}
+	content := b.String()
+	if m.width > 0 && m.contentHeight() > 0 {
+		return fitToBounds(content, m.width, m.contentHeight())
+	}
+	return content
+}
+
 func (m Model) renderKanban() string {
 	var b strings.Builder
+	cols := m.visibleColumns()
 	boardName := m.loadingBoardName
 	if !m.boardLoading && m.boardCur >= 0 && m.boardCur < len(m.boards) {
 		boardName = m.boards[m.boardCur].Name
@@ -1171,6 +1526,11 @@ func (m Model) renderKanban() string {
 		b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
 	}
 	b.WriteString("\n")
+	if m.filterActive || strings.TrimSpace(m.filterInput.Value()) != "" {
+		b.WriteString("Filter: ")
+		b.WriteString(m.filterInput.View())
+		b.WriteString("\n")
+	}
 
 	if m.boardLoading {
 		b.WriteString("\n")
@@ -1182,25 +1542,29 @@ func (m Model) renderKanban() string {
 		b.WriteString(errStyle.Render("Error: " + m.err.Error()))
 		return b.String()
 	}
-	if len(m.columns) == 0 {
+	if len(cols) == 0 {
 		b.WriteString(subStyle.Render("No board columns available."))
 		return b.String()
 	}
 
 	cpp := max(m.colsPerPage(), 1)
-	pageStart := visiblePageStart(m.colCur, cpp, len(m.columns))
-	pageEnd := min(pageStart+cpp, len(m.columns))
-	totalPages := (len(m.columns) + cpp - 1) / cpp
+	pageStart := visiblePageStart(m.colCur, cpp, len(cols))
+	pageEnd := min(pageStart+cpp, len(cols))
+	totalPages := (len(cols) + cpp - 1) / cpp
 	curPage := pageStart/cpp + 1
-	footer := m.kanbanFooter(curPage, totalPages)
+	footer := m.kanbanFooter(curPage, totalPages, len(cols))
 	footerHeight := lipgloss.Height(footer)
 	height := m.contentHeight()
-	colH := max(height-1-footerHeight-1, 1) // title, columns, spacer, footer
+	headerRows := 1
+	if m.filterActive || strings.TrimSpace(m.filterInput.Value()) != "" {
+		headerRows++
+	}
+	colH := max(height-headerRows-footerHeight-1, 1) // header, columns, spacer, footer
 	slots := max((colH-1)/4, 0)
 	cw := colWidth + colGap
 	colStrs := make([]string, 0, pageEnd-pageStart)
 	for i := pageStart; i < pageEnd; i++ {
-		colStrs = append(colStrs, m.renderColumn(m.columns[i], i == m.colCur, cw, colH, slots))
+		colStrs = append(colStrs, m.renderColumn(cols[i], i == m.colCur, cw, colH, slots))
 	}
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, colStrs...))
 	b.WriteString("\n\n")
@@ -1213,10 +1577,10 @@ func (m Model) renderKanban() string {
 	return content
 }
 
-func (m Model) kanbanFooter(curPage, totalPages int) string {
+func (m Model) kanbanFooter(curPage, totalPages, totalCols int) string {
 	full := fmt.Sprintf(
-		"[←→] Cols  [↑↓] Issues  [Enter] Detail  [?] Help  [t] Transition  [n] New  [s] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
-		m.colCur+1, len(m.columns), curPage, totalPages)
+		"[←→] Cols  [↑↓] Issues  [Enter] Detail  [/] Filter  [s] Search  [?] Help  [t] Transition  [n] New  [a] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
+		m.colCur+1, totalCols, curPage, totalPages)
 	if m.width <= 0 || ansi.StringWidth(full) <= m.width {
 		return full
 	}

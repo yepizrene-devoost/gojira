@@ -20,7 +20,7 @@
 
 - **Kanban board view** — columns, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
 - **Full ticket management** — view, transition status, add worklog, comment, create, assign, update — in CLI *and* TUI
-- **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `s`)
+- **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
 - **Secure auth** — API token in OS keychain (macOS/Linux/Windows) with encrypted-file fallback
 - **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
@@ -127,6 +127,7 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 |---|---|
 | `↑/↓` or `k/j` | Navigate boards |
 | `Enter` | Open board |
+| `s` | Search all Jira tickets |
 | `q` | Quit |
 
 ### Kanban view
@@ -136,10 +137,12 @@ All `--json` output is a stable, machine-readable contract: valid JSON on stdout
 | `←/→` or `h/l` | Move between columns (pages horizontally) |
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
 | `Enter` | Open ticket detail in a floating modal |
+| `/` | Filter loaded tickets by key or summary (case-insensitive); `Enter` searches Jira for the same text |
+| `s` | Search all Jira tickets directly |
 | `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
-| `s` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |
@@ -156,6 +159,13 @@ Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues
 created with `n` go directly into the active sprint.
 
+Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
+it, or press `Enter` with a nonempty filter to search Jira's text index. Search
+results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
+detail returns to the same query, result list, and cursor. Press `s` from a
+result list to edit the query, or `Esc` to return to the board or boards list
+where search started.
+
 ### Ticket detail
 
 | Key | Action |
@@ -164,7 +174,7 @@ created with `n` go directly into the active sprint.
 | `c` | Copy ticket as JSON to clipboard |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
-| `Esc` | Back to board |
+| `Esc` | Back to the board or search results |
 
 ## Project structure
 
