@@ -18,7 +18,7 @@
 
 ## Features
 
-- **Kanban board view** — columns, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
+- **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
 - **Full ticket management** — view, transition status, add worklog, comment, create, assign, update — in CLI *and* TUI
 - **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
@@ -153,7 +153,19 @@ the modal. Detail shows the ticket key and summary together in its header; a lon
 summary also remains available in the scrollable body. The current column
 and ticket remain selected after closing them. Overlay keys are isolated from
 the board: detail navigation scrolls its content without moving the board cursor.
-Transition, issue creation, and worklog entry remain full-screen flows.
+Transition, issue creation, and worklog entry remain full-screen flows. The
+transition flow shows bounded progress while loading choices and submitting a
+move; repeated keys cannot start duplicate requests. `Esc` explicitly dismisses
+pending transition UI and ignores its late reply, but cannot cancel an HTTP
+mutation already in flight, which may still complete in Jira. If a same-board
+sprint refresh dismisses the picker instead, the mutation remains owned: success
+shows a toast and starts a fresh board refresh, while failure remains visible
+after the sprint refresh. Switching boards rejects the old board's response.
+
+The Kanban status always identifies the board, sprint, selected column, and
+horizontal page. On narrower terminals it gives board and sprint separate space
+alongside compact column/page context, even when names are long or the shortcut
+footer collapses.
 
 Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues

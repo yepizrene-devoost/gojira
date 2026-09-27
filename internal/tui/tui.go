@@ -132,37 +132,47 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
-	client               *jira.Client
-	domain               string
-	view                 view
-	boards               []jira.Board
-	boardCur             int
-	columns              []column
-	colCur               int
-	rowCur               int
-	sprintName           string
-	width                int
-	height               int
-	err                  error
-	detail               *jira.Issue
-	detailScroll         int
-	detailLoading        bool
-	detailIssueKey       string
-	detailBoardRequest   uint64
-	detailSearchRequest  uint64
-	detailReturn         view
-	nextDetailRequest    uint64
-	activeDetailRequest  uint64
-	helpOpen             bool
-	helpScroll           int
-	toast                string
-	transitions          []jira.Transition
-	transCur             int
-	transIssue           string
-	worklogInput         textinput.Model
-	worklogIssue         string
-	nextWorklogRequest   uint64
-	activeWorklogRequest uint64
+	client                        *jira.Client
+	domain                        string
+	view                          view
+	boards                        []jira.Board
+	boardCur                      int
+	columns                       []column
+	colCur                        int
+	rowCur                        int
+	sprintName                    string
+	width                         int
+	height                        int
+	err                           error
+	detail                        *jira.Issue
+	detailScroll                  int
+	detailLoading                 bool
+	detailIssueKey                string
+	detailBoardRequest            uint64
+	detailSearchRequest           uint64
+	detailReturn                  view
+	nextDetailRequest             uint64
+	activeDetailRequest           uint64
+	helpOpen                      bool
+	helpScroll                    int
+	toast                         string
+	transitions                   []jira.Transition
+	transCur                      int
+	transIssue                    string
+	transitionLoading             bool
+	nextTransitionRequest         uint64
+	activeTransitionRequest       uint64
+	transitionSubmitting          bool
+	nextTransitionSubmitRequest   uint64
+	activeTransitionSubmitRequest uint64
+	transitionSubmitBoardRequest  uint64
+	transitionSubmitBoardID       int
+	transitionSubmitIssue         string
+	transitionResultErrBoardID    int
+	worklogInput                  textinput.Model
+	worklogIssue                  string
+	nextWorklogRequest            uint64
+	activeWorklogRequest          uint64
 
 	filterInput  textinput.Model
 	filterActive bool
@@ -233,14 +243,17 @@ type clipboardMsg struct {
 }
 type toastMsg struct{ text string }
 type transitionsMsg struct {
+	requestID    uint64
 	transitions  []jira.Transition
 	issueKey     string
 	boardRequest uint64
 	err          error
 }
 type transitionDoneMsg struct {
-	issueKey string
-	err      error
+	requestID    uint64
+	boardRequest uint64
+	issueKey     string
+	err          error
 }
 type worklogDoneMsg struct {
 	requestID uint64
@@ -286,6 +299,9 @@ func (m Model) loadBoards() tea.Msg {
 }
 
 func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
+	preserveTransitionSubmit := m.transitionSubmitting && m.transitionSubmitBoardID == board.ID
+	preserveTransitionError := m.transitionResultErrBoardID == board.ID
+
 	m.nextBoardRequest++
 	requestID := m.nextBoardRequest
 	m.activeBoardRequest = requestID
@@ -296,8 +312,11 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.columns = nil
 	m.sprintName = ""
 	m.sprintID = 0
-	m.err = nil
-	if m.view == viewKanban || (m.view == viewDetail && m.detailReturn != viewSearch) {
+	if !preserveTransitionError {
+		m.err = nil
+		m.transitionResultErrBoardID = 0
+	}
+	if m.view == viewKanban || m.view == viewTransition || (m.view == viewDetail && m.detailReturn != viewSearch) {
 		m.view = viewKanban
 		m.detail = nil
 		m.detailScroll = 0
@@ -314,6 +333,17 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 		m.helpScroll = 0
 		m.activeWorklogRequest = 0
 	}
+	m.transitionLoading = false
+	m.activeTransitionRequest = 0
+	if !preserveTransitionSubmit {
+		m.transitionSubmitting = false
+		m.activeTransitionSubmitRequest = 0
+		m.transitionSubmitBoardRequest = 0
+		m.transitionSubmitBoardID = 0
+		m.transitionSubmitIssue = ""
+	}
+	m.transitions = nil
+	m.transIssue = ""
 	m.colCur = 0
 	m.rowCur = 0
 
@@ -456,6 +486,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeBoardRequest = 0
 		m.boardLoading = false
 		if msg.err != nil {
+			m.transitionResultErrBoardID = 0
 			m.err = msg.err
 			return m, nil
 		}
@@ -463,7 +494,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.columns = msg.columns
 		m.sprintName = msg.sprintName
 		m.sprintID = msg.sprintID
-		m.err = nil
+		if m.transitionResultErrBoardID != msg.boardID {
+			m.err = nil
+		}
 		if m.focusIssue != "" {
 			if c, r, ok := findIssuePos(msg.columns, m.focusIssue); ok {
 				m.colCur, m.rowCur = c, r
@@ -531,34 +564,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case transitionsMsg:
-		if m.view != viewKanban || m.boardLoading || msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest {
+		if m.view != viewKanban || m.boardLoading || !m.transitionLoading ||
+			msg.requestID == 0 || msg.requestID != m.activeTransitionRequest ||
+			msg.issueKey == "" || msg.issueKey != m.transIssue ||
+			msg.boardRequest == 0 || msg.boardRequest != m.loadedBoardRequest {
 			return m, nil
 		}
+		m.transitionLoading = false
+		m.activeTransitionRequest = 0
 		if msg.err != nil {
+			m.transIssue = ""
 			m.err = msg.err
 			return m, nil
 		}
+		m.err = nil
 		m.transitions = msg.transitions
 		m.transCur = 0
-		m.transIssue = msg.issueKey
 		m.view = viewTransition
 		return m, nil
 
 	case transitionDoneMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.view = viewKanban
+		if !m.transitionSubmitting ||
+			msg.requestID == 0 || msg.requestID != m.activeTransitionSubmitRequest ||
+			msg.issueKey == "" || msg.issueKey != m.transitionSubmitIssue ||
+			msg.boardRequest == 0 || msg.boardRequest != m.transitionSubmitBoardRequest ||
+			m.transitionSubmitBoardID == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) ||
+			m.boards[m.boardCur].ID != m.transitionSubmitBoardID {
 			return m, nil
 		}
-		m.toast = fmt.Sprintf("Moved %s", msg.issueKey)
+		submitBoardID := m.transitionSubmitBoardID
+		m.transitionSubmitting = false
+		m.activeTransitionSubmitRequest = 0
+		m.transitionSubmitBoardRequest = 0
+		m.transitionSubmitBoardID = 0
+		m.transitionSubmitIssue = ""
+		m.transitions = nil
+		m.transIssue = ""
 		m.view = viewKanban
+		if msg.err != nil {
+			m.err = msg.err
+			m.transitionResultErrBoardID = submitBoardID
+			return m, nil
+		}
+		m.err = nil
+		m.transitionResultErrBoardID = 0
+		m.toast = fmt.Sprintf("Moved %s", msg.issueKey)
 		m.colCur = 0
 		m.rowCur = 0
-		if m.boardCur < len(m.boards) {
-			loaded, cmd := m.startBoardLoad(m.boards[m.boardCur])
-			return loaded, cmd
-		}
-		return m, nil
+		loaded, cmd := m.startBoardLoad(m.boards[m.boardCur])
+		return loaded, cmd
 
 	case worklogDoneMsg:
 		if m.view != viewWorklog || msg.requestID == 0 || msg.requestID != m.activeWorklogRequest ||
@@ -738,6 +792,23 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	}
+	if m.transitionLoading {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.transitionLoading = false
+			m.activeTransitionRequest = 0
+			m.transIssue = ""
+			return m, nil
+		case "q":
+			m.transitionLoading = false
+			m.activeTransitionRequest = 0
+			m.transIssue = ""
+		default:
+			return m, nil
+		}
+	}
 	if m.boardLoading && key != "ctrl+c" && key != "q" && key != "esc" {
 		return m, nil
 	}
@@ -760,6 +831,16 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.activeBoardRequest = 0
 		m.loadedBoardRequest = 0
 		m.boardLoading = false
+		m.transitionLoading = false
+		m.activeTransitionRequest = 0
+		m.transitionSubmitting = false
+		m.activeTransitionSubmitRequest = 0
+		m.transitionSubmitBoardRequest = 0
+		m.transitionSubmitBoardID = 0
+		m.transitionSubmitIssue = ""
+		m.transitionResultErrBoardID = 0
+		m.transitions = nil
+		m.transIssue = ""
 		return m, nil
 	case "?":
 		m.helpOpen = true
@@ -833,14 +914,25 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, copyToClipboard(string(b))
 		}
 	case "t":
+		if m.transitionSubmitting {
+			return m, nil
+		}
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
 			if m.rowCur >= 0 && m.rowCur < len(issues) {
 				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
+				m.nextTransitionRequest++
+				requestID := m.nextTransitionRequest
+				m.activeTransitionRequest = requestID
+				m.transitionLoading = true
+				m.transIssue = key
+				m.transitionResultErrBoardID = 0
+				m.err = nil
+				client := m.client
 				return m, func() tea.Msg {
-					tr, err := m.client.GetTransitions(key)
-					return transitionsMsg{transitions: tr, issueKey: key, boardRequest: boardRequest, err: err}
+					tr, err := client.GetTransitions(key)
+					return transitionsMsg{requestID: requestID, transitions: tr, issueKey: key, boardRequest: boardRequest, err: err}
 				}
 			}
 		}
@@ -933,8 +1025,30 @@ func (m Model) scrollDetail(steps int) Model {
 }
 
 func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	keyPress := msg.String()
+	if m.transitionSubmitting {
+		switch keyPress {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc", "q":
+			m.transitionSubmitting = false
+			m.activeTransitionSubmitRequest = 0
+			m.transitionSubmitBoardRequest = 0
+			m.transitionSubmitBoardID = 0
+			m.transitionSubmitIssue = ""
+			m.transitions = nil
+			m.transIssue = ""
+			m.view = viewKanban
+		}
+		return m, nil
+	}
+
+	switch keyPress {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc", "q":
+		m.transitions = nil
+		m.transIssue = ""
 		m.view = viewKanban
 		return m, nil
 	case "up", "k":
@@ -946,12 +1060,30 @@ func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.transCur++
 		}
 	case "enter":
-		if m.transCur < len(m.transitions) {
+		if m.transCur >= 0 && m.transCur < len(m.transitions) {
 			tr := m.transitions[m.transCur]
-			key := m.transIssue
+			issueKey := m.transIssue
+			boardRequest := m.loadedBoardRequest
+			boardID := 0
+			if m.boardCur >= 0 && m.boardCur < len(m.boards) {
+				boardID = m.boards[m.boardCur].ID
+			}
+			if boardRequest == 0 || boardID == 0 {
+				return m, nil
+			}
+			m.nextTransitionSubmitRequest++
+			requestID := m.nextTransitionSubmitRequest
+			m.activeTransitionSubmitRequest = requestID
+			m.transitionSubmitBoardRequest = boardRequest
+			m.transitionSubmitBoardID = boardID
+			m.transitionSubmitIssue = issueKey
+			m.transitionSubmitting = true
+			m.transitionResultErrBoardID = 0
+			m.err = nil
+			client := m.client
 			return m, func() tea.Msg {
-				err := m.client.TransitionIssue(key, tr.ID)
-				return transitionDoneMsg{issueKey: key, err: err}
+				err := client.TransitionIssue(issueKey, tr.ID)
+				return transitionDoneMsg{requestID: requestID, boardRequest: boardRequest, issueKey: issueKey, err: err}
 			}
 		}
 	}
@@ -1351,16 +1483,22 @@ func (m Model) View() tea.View {
 	case viewTransition:
 		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))
 		b.WriteString("\n\n")
-		for i, tr := range m.transitions {
-			if i == m.transCur {
-				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
-			} else {
-				b.WriteString("  " + tr.Name)
+		if m.transitionSubmitting && m.transCur >= 0 && m.transCur < len(m.transitions) {
+			b.WriteString(subStyle.Render(fmt.Sprintf("Moving %s to %s...", m.transIssue, m.transitions[m.transCur].Name)))
+			b.WriteString("\n")
+			b.WriteString(subStyle.Render("[esc] Cancel  [ctrl+c] Quit"))
+		} else {
+			for i, tr := range m.transitions {
+				if i == m.transCur {
+					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
+				} else {
+					b.WriteString("  " + tr.Name)
+				}
+				b.WriteString("\n")
 			}
 			b.WriteString("\n")
+			b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Confirm  [esc] Cancel"))
 		}
-		b.WriteString("\n")
-		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Confirm  [esc] Cancel"))
 
 	case viewWorklog:
 		b.WriteString(titleStyle.Render("⏱ Worklog: " + m.worklogIssue))
@@ -1419,7 +1557,11 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderSearch())
 	}
 
-	return altScreenView(m.renderToast(b.String()))
+	content := b.String()
+	if m.view == viewTransition && m.width > 0 && m.contentHeight() > 0 {
+		content = fitToBounds(content, m.width, m.contentHeight())
+	}
+	return altScreenView(m.renderToast(content))
 }
 
 func (m Model) renderToast(content string) string {
@@ -1520,46 +1662,55 @@ func (m Model) renderKanban() string {
 	if !m.boardLoading && m.boardCur >= 0 && m.boardCur < len(m.boards) {
 		boardName = m.boards[m.boardCur].Name
 	}
-	b.WriteString(titleStyle.Render(fmt.Sprintf("📋 %s", boardName)))
-	if !m.boardLoading {
-		b.WriteString(" ")
-		b.WriteString(subStyle.Render(fmt.Sprintf("Sprint: %s", m.sprintName)))
+	b.WriteString(titleStyle.Render("📋 Kanban"))
+	b.WriteString("\n")
+
+	if m.boardLoading {
+		b.WriteString(subStyle.Render(m.kanbanStatus(boardName, "Loading", 0, 0, 0, 0)))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("Loading " + boardName + "..."))
+		return m.boundKanban(b.String())
 	}
+
+	cpp := max(m.colsPerPage(), 1)
+	pageStart := visiblePageStart(m.colCur, cpp, len(cols))
+	pageEnd := min(pageStart+cpp, len(cols))
+	totalPages := max((len(cols)+cpp-1)/cpp, 1)
+	curPage := min(m.colCur/cpp+1, totalPages)
+	status := m.kanbanStatus(boardName, m.sprintName, m.colCur+1, len(cols), curPage, totalPages)
+	b.WriteString(subStyle.Render(status))
 	b.WriteString("\n")
 	if m.filterActive || strings.TrimSpace(m.filterInput.Value()) != "" {
 		b.WriteString("Filter: ")
 		b.WriteString(m.filterInput.View())
 		b.WriteString("\n")
 	}
-
-	if m.boardLoading {
+	if m.transitionLoading {
+		b.WriteString(subStyle.Render("Loading transitions for " + m.transIssue + "...  [esc] Cancel"))
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("Loading " + boardName + "..."))
-		return b.String()
 	}
+
 	if m.err != nil && m.view == viewKanban {
 		b.WriteString("\n")
 		b.WriteString(errStyle.Render("Error: " + m.err.Error()))
-		return b.String()
+		return m.boundKanban(b.String())
 	}
 	if len(cols) == 0 {
 		b.WriteString(subStyle.Render("No board columns available."))
-		return b.String()
+		return m.boundKanban(b.String())
 	}
 
-	cpp := max(m.colsPerPage(), 1)
-	pageStart := visiblePageStart(m.colCur, cpp, len(cols))
-	pageEnd := min(pageStart+cpp, len(cols))
-	totalPages := (len(cols) + cpp - 1) / cpp
-	curPage := pageStart/cpp + 1
 	footer := m.kanbanFooter(curPage, totalPages, len(cols))
 	footerHeight := lipgloss.Height(footer)
 	height := m.contentHeight()
-	headerRows := 1
+	headerRows := 1 + lipgloss.Height(status)
 	if m.filterActive || strings.TrimSpace(m.filterInput.Value()) != "" {
 		headerRows++
 	}
-	colH := max(height-headerRows-footerHeight-1, 1) // header, columns, spacer, footer
+	if m.transitionLoading {
+		headerRows++
+	}
+	colH := max(height-headerRows-footerHeight-1, 1)
 	slots := max((colH-1)/4, 0)
 	cw := colWidth + colGap
 	colStrs := make([]string, 0, pageEnd-pageStart)
@@ -1570,11 +1721,45 @@ func (m Model) renderKanban() string {
 	b.WriteString("\n\n")
 	b.WriteString(subStyle.Render(footer))
 
-	content := b.String()
-	if m.width > 0 && height > 0 {
-		return fitToBounds(content, m.width, height)
+	return m.boundKanban(b.String())
+}
+
+func (m Model) boundKanban(content string) string {
+	if m.width > 0 && m.contentHeight() > 0 {
+		return fitToBounds(content, m.width, m.contentHeight())
 	}
 	return content
+}
+
+func (m Model) kanbanStatus(boardName, sprintName string, col, totalCols, page, totalPages int) string {
+	if sprintName == "" {
+		sprintName = "All issues"
+	}
+	context := fmt.Sprintf("Board: %s  Sprint: %s", boardName, sprintName)
+	if totalCols == 0 {
+		return context
+	}
+	position := fmt.Sprintf("Column %d/%d  Page %d/%d", col, totalCols, page, totalPages)
+	full := context + "  " + position
+	if m.width <= 0 || (m.width >= 100 && ansi.StringWidth(full) <= m.width) {
+		return full
+	}
+
+	compactPosition := fmt.Sprintf("Col %d/%d  Page %d/%d", col, totalCols, page, totalPages)
+	boardLine := "Board: " + boardName
+	sprintPrefix := "Sprint: "
+	suffix := "  " + compactPosition
+	if m.width > 0 {
+		boardLine = ansi.Truncate(boardLine, m.width, "…")
+		sprintWidth := max(m.width-ansi.StringWidth(sprintPrefix)-ansi.StringWidth(suffix), 1)
+		sprintName = ansi.Truncate(sprintName, sprintWidth, "…")
+		compactPosition = ansi.Truncate(compactPosition, m.width, "")
+	}
+	sprintLine := sprintPrefix + sprintName + "  " + compactPosition
+	if m.width > 0 {
+		sprintLine = ansi.Truncate(sprintLine, m.width, "")
+	}
+	return boardLine + "\n" + sprintLine
 }
 
 func (m Model) kanbanFooter(curPage, totalPages, totalCols int) string {

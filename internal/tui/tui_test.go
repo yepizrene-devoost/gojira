@@ -289,6 +289,10 @@ func TestBoardScopedAsyncResponsesIgnoreStaleBoardContext(t *testing.T) {
 				t.Fatal("board action did not start its asynchronous request")
 			}
 			stale := tt.response(requestA)
+			if result, ok := stale.(transitionsMsg); ok {
+				result.requestID = m.activeTransitionRequest
+				stale = result
+			}
 
 			m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 			if m.view == viewKanban {
@@ -356,7 +360,12 @@ func TestBoardScopedAsyncResponsesOpenForCurrentBoard(t *testing.T) {
 			requestID := m.activeBoardRequest
 			m, _ = updateModel(t, m, boardResult(requestID, 1, "Sprint A", "A-1"))
 			m, _ = updateModel(t, m, tt.startKey)
-			m, _ = updateModel(t, m, tt.response(m.loadedBoardRequest))
+			response := tt.response(m.loadedBoardRequest)
+			if result, ok := response.(transitionsMsg); ok {
+				result.requestID = m.activeTransitionRequest
+				response = result
+			}
+			m, _ = updateModel(t, m, response)
 			if m.view != tt.wantView {
 				t.Fatalf("current-board response opened view %v, want %v", m.view, tt.wantView)
 			}
@@ -1125,6 +1134,43 @@ func TestSprintRefreshCompletesWhileSearchIsOpen(t *testing.T) {
 	}
 }
 
+func TestSprintRefreshSupersedesOpenTransitionPicker(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 3
+
+	m, addCmd := updateModel(t, m, textKey("a"))
+	if addCmd == nil {
+		t.Fatal("a did not start active-sprint action")
+	}
+	m, transitionCmd := updateModel(t, m, textKey("t"))
+	if transitionCmd == nil || !m.transitionLoading {
+		t.Fatalf("t did not start transition fetch: cmd=%v loading=%v", transitionCmd != nil, m.transitionLoading)
+	}
+	transitionRequest := m.activeTransitionRequest
+	m, _ = updateModel(t, m, transitionsMsg{
+		requestID:    transitionRequest,
+		transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
+		issueKey:     "P0",
+		boardRequest: 3,
+	})
+	if m.view != viewTransition || len(m.transitions) != 1 {
+		t.Fatalf("transition picker did not open: view=%v transitions=%d", m.view, len(m.transitions))
+	}
+
+	m, refreshCmd := updateModel(t, m, sprintDoneMsg{issueKey: "P0"})
+	if refreshCmd == nil || m.view != viewKanban || !m.boardLoading || m.activeBoardRequest == 0 {
+		t.Fatalf("sprint refresh did not return picker to loading board: cmd=%v view=%v loading=%v request=%d", refreshCmd != nil, m.view, m.boardLoading, m.activeBoardRequest)
+	}
+	if m.transitionLoading || m.activeTransitionRequest != 0 || len(m.transitions) != 0 || m.transIssue != "" {
+		t.Fatalf("sprint refresh retained obsolete transition picker: loading=%v request=%d transitions=%d issue=%q", m.transitionLoading, m.activeTransitionRequest, len(m.transitions), m.transIssue)
+	}
+	if m.toast != "Added P0 to Active Sprint" || m.focusIssue != "P0" {
+		t.Fatalf("sprint completion was hidden: toast=%q focus=%q", m.toast, m.focusIssue)
+	}
+}
+
 func TestSprintRefreshSupersedesInFlightBoardDetail(t *testing.T) {
 	m := makeTestModel(1, 1)
 	m.sprintID = 42
@@ -1290,7 +1336,6 @@ func TestBoardMutationsStartSameBoardRefresh(t *testing.T) {
 		wantFocus string
 	}{
 		{name: "create", msg: createdMsg{key: "NEW-1", sprintID: 10}, wantFocus: "NEW-1"},
-		{name: "transition", msg: transitionDoneMsg{issueKey: "MOVE-1"}},
 		{name: "sprint", msg: sprintDoneMsg{issueKey: "SPRINT-1"}, wantFocus: "SPRINT-1"},
 	}
 
@@ -1425,5 +1470,349 @@ func TestPasteOutsideFormsDoesNotAlterState(t *testing.T) {
 				t.Fatalf("paste outside a form altered model state: before=%#v after=%#v", before, after)
 			}
 		})
+	}
+}
+
+func TestKanbanStatusRemainsContextualAcrossWidthsResizeAndToast(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+		toast  string
+		wants  []string
+	}{
+		{
+			name:   "wide",
+			width:  190,
+			height: 32,
+			wants:  []string{"Board: Test Board", "Sprint: Sprint 24", "Column 2/5", "Page 1/1", "[←→] Cols"},
+		},
+		{
+			name:   "compact footer",
+			width:  60,
+			height: 14,
+			wants:  []string{"Board: Test Board", "Sprint: Sprint 24", "Col 2/5", "Page 1/3", "[?] Help", "[esc] Back"},
+		},
+		{
+			name:   "compact with toast",
+			width:  60,
+			height: 14,
+			toast:  "Board updated",
+			wants:  []string{"Board: Test Board", "Sprint: Sprint 24", "Col 2/5", "Page 1/3", "Board updated"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(5, 2)
+			m.width, m.height = tt.width, tt.height
+			m.colCur = 1
+			m.sprintName = "Sprint 24"
+			m.toast = tt.toast
+			output := ansi.Strip(m.View().Content)
+			for _, want := range tt.wants {
+				if !strings.Contains(output, want) {
+					t.Fatalf("status missing %q:\n%s", want, output)
+				}
+			}
+			if lipgloss.Width(m.View().Content) > tt.width || lipgloss.Height(m.View().Content) > tt.height {
+				t.Fatalf("status view exceeds %dx%d", tt.width, tt.height)
+			}
+		})
+	}
+
+	m := makeTestModel(5, 2)
+	m.sprintName = "Sprint 24"
+	m.colCur = 4
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 60, Height: 14})
+	output := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Board: Test Board", "Sprint: Sprint 24", "Col 5/5", "Page 3/3"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("resized status missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestKanbanCompactStatusPreservesLongBoardAndSprintContext(t *testing.T) {
+	m := makeTestModel(5, 2)
+	m.width, m.height = 60, 14
+	m.boards[0].Name = strings.Repeat("Board", 10)
+	m.sprintName = "Sprint 24"
+	m.colCur = 1
+
+	output := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Board: BoardBoardBoard", "Sprint: Sprint 24", "Col 2/5", "Page 1/3"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("compact status missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestKanbanLoadingStatusUsesTargetBoardWithoutStaleSprint(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.view = viewBoards
+	m.boards = []jira.Board{{ID: 1, Name: "Old Board"}, {ID: 2, Name: "Target Board"}}
+	m.boardCur = 1
+	m.sprintName = "Old Sprint"
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	output := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Board: Target Board", "Sprint: Loading", "Loading Target Board..."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("loading status missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "Old Sprint") || strings.Contains(output, "Old Board") {
+		t.Fatalf("loading status retained stale context:\n%s", output)
+	}
+}
+
+func TestTransitionFetchFeedbackDeduplicatesAndScopesReplies(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.loadedBoardRequest = 7
+
+	m, firstCmd := updateModel(t, m, textKey("t"))
+	firstRequest := m.activeTransitionRequest
+	if firstCmd == nil || !m.transitionLoading || firstRequest == 0 {
+		t.Fatalf("transition fetch did not start: cmd=%v loading=%v request=%d", firstCmd != nil, m.transitionLoading, firstRequest)
+	}
+	if output := ansi.Strip(m.View().Content); !strings.Contains(output, "Loading transitions for P0") {
+		t.Fatalf("fetch feedback is not visible:\n%s", output)
+	}
+	m, duplicateCmd := updateModel(t, m, textKey("t"))
+	if duplicateCmd != nil || m.activeTransitionRequest != firstRequest {
+		t.Fatalf("duplicate fetch started: cmd=%v request=%d", duplicateCmd != nil, m.activeTransitionRequest)
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.transitionLoading || m.activeTransitionRequest != 0 {
+		t.Fatalf("fetch cancel did not clear activity: view=%v loading=%v request=%d", m.view, m.transitionLoading, m.activeTransitionRequest)
+	}
+	m, _ = updateModel(t, m, textKey("t"))
+	secondRequest := m.activeTransitionRequest
+	m, _ = updateModel(t, m, transitionsMsg{
+		requestID:    firstRequest,
+		transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
+		issueKey:     "P0",
+		boardRequest: 7,
+	})
+	if !m.transitionLoading || m.activeTransitionRequest != secondRequest || m.view != viewKanban {
+		t.Fatal("late cancelled fetch replaced the active request")
+	}
+	m, _ = updateModel(t, m, transitionsMsg{
+		requestID:    secondRequest,
+		transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
+		issueKey:     "P0",
+		boardRequest: 7,
+	})
+	if m.transitionLoading || m.activeTransitionRequest != 0 || m.view != viewTransition {
+		t.Fatalf("matching fetch did not open picker: loading=%v request=%d view=%v", m.transitionLoading, m.activeTransitionRequest, m.view)
+	}
+}
+
+func TestTransitionFetchErrorClearsFeedback(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.loadedBoardRequest = 7
+	m, _ = updateModel(t, m, textKey("t"))
+	requestID := m.activeTransitionRequest
+	fetchErr := errors.New("transitions unavailable")
+	m, _ = updateModel(t, m, transitionsMsg{requestID: requestID, issueKey: "P0", boardRequest: 7, err: fetchErr})
+	if m.transitionLoading || m.activeTransitionRequest != 0 || !errors.Is(m.err, fetchErr) || m.view != viewKanban {
+		t.Fatalf("fetch error state not cleared: loading=%v request=%d err=%v view=%v", m.transitionLoading, m.activeTransitionRequest, m.err, m.view)
+	}
+}
+
+func TestTransitionSubmitFeedbackDeduplicatesCancelsAndIgnoresLateReplies(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.loadedBoardRequest = 7
+	m.view = viewTransition
+	m.transitions = []jira.Transition{{ID: "2", Name: "Done"}}
+	m.transIssue = "P0"
+
+	m, firstCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	firstRequest := m.activeTransitionSubmitRequest
+	if firstCmd == nil || !m.transitionSubmitting || firstRequest == 0 {
+		t.Fatalf("transition submit did not start: cmd=%v submitting=%v request=%d", firstCmd != nil, m.transitionSubmitting, firstRequest)
+	}
+	if output := ansi.Strip(m.View().Content); !strings.Contains(output, "Moving P0 to Done...") {
+		t.Fatalf("submit feedback is not visible:\n%s", output)
+	}
+	m.width, m.height = 24, 6
+	bounded := m.View().Content
+	if lipgloss.Width(bounded) > m.width || lipgloss.Height(bounded) > m.height || !strings.Contains(ansi.Strip(bounded), "Moving P0") {
+		t.Fatalf("submit feedback exceeds compact bounds or became invisible:\n%s", bounded)
+	}
+	m, duplicateCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if duplicateCmd != nil || m.activeTransitionSubmitRequest != firstRequest {
+		t.Fatalf("double Enter started a duplicate submit: cmd=%v request=%d", duplicateCmd != nil, m.activeTransitionSubmitRequest)
+	}
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewKanban || m.transitionSubmitting || m.activeTransitionSubmitRequest != 0 {
+		t.Fatalf("submit cancel did not clear activity: view=%v submitting=%v request=%d", m.view, m.transitionSubmitting, m.activeTransitionSubmitRequest)
+	}
+	m, _ = updateModel(t, m, transitionDoneMsg{requestID: firstRequest, boardRequest: 7, issueKey: "P0"})
+	if m.view != viewKanban || m.toast != "" || m.boardLoading {
+		t.Fatal("late cancelled submit changed the board")
+	}
+}
+
+func TestTransitionSubmitCompactShowsActivityAndCancelWithLongList(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.width, m.height = 60, 6
+	m.loadedBoardRequest = 7
+	m.view = viewTransition
+	m.transitions = []jira.Transition{
+		{ID: "2", Name: "In Progress"},
+		{ID: "3", Name: "Review"},
+		{ID: "4", Name: "Done"},
+	}
+	m.transCur = 2
+	m.transIssue = "P0"
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	output := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Moving P0 to Done...", "[esc] Cancel"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("compact submit missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestTransitionSubmitSuccessAndErrorClearActivity(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		err     error
+		wantErr bool
+	}{
+		{name: "success"},
+		{name: "error", err: errors.New("transition failed"), wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.loadedBoardRequest = 7
+			m.view = viewTransition
+			m.transitions = []jira.Transition{{ID: "2", Name: "Done"}}
+			m.transIssue = "P0"
+			m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+			requestID := m.activeTransitionSubmitRequest
+			m, cmd := updateModel(t, m, transitionDoneMsg{requestID: requestID, boardRequest: 7, issueKey: "P0", err: tt.err})
+			if m.transitionSubmitting || m.activeTransitionSubmitRequest != 0 || m.view != viewKanban {
+				t.Fatalf("completion did not clear submit state: submitting=%v request=%d view=%v", m.transitionSubmitting, m.activeTransitionSubmitRequest, m.view)
+			}
+			if tt.wantErr {
+				if cmd != nil || !errors.Is(m.err, tt.err) || m.boardLoading {
+					t.Fatalf("submit error changed behavior: cmd=%v err=%v loading=%v", cmd != nil, m.err, m.boardLoading)
+				}
+			} else if cmd == nil || m.toast != "Moved P0" || !m.boardLoading {
+				t.Fatalf("submit success did not refresh board: cmd=%v toast=%q loading=%v", cmd != nil, m.toast, m.boardLoading)
+			}
+		})
+	}
+}
+
+func TestTransitionSubmitCompletionSurvivesSameBoardSprintRefresh(t *testing.T) {
+	transitionErr := errors.New("transition failed after sprint refresh")
+	for _, tt := range []struct {
+		name                string
+		transitionErr       error
+		completeBoardBefore bool
+	}{
+		{name: "success before refreshed board"},
+		{name: "success after refreshed board", completeBoardBefore: true},
+		{name: "error before refreshed board", transitionErr: transitionErr},
+		{name: "error after refreshed board", transitionErr: transitionErr, completeBoardBefore: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.sprintID = 42
+			m.sprintName = "Active Sprint"
+			m.loadedBoardRequest = 7
+
+			m, addCmd := updateModel(t, m, textKey("a"))
+			if addCmd == nil {
+				t.Fatal("a did not start active-sprint action")
+			}
+			m, transitionCmd := updateModel(t, m, textKey("t"))
+			if transitionCmd == nil {
+				t.Fatal("t did not start transition fetch")
+			}
+			m, _ = updateModel(t, m, transitionsMsg{
+				requestID:    m.activeTransitionRequest,
+				transitions:  []jira.Transition{{ID: "2", Name: "Done"}},
+				issueKey:     "P0",
+				boardRequest: 7,
+			})
+			m, submitCmd := updateModel(t, m, specialKey(tea.KeyEnter))
+			if submitCmd == nil || !m.transitionSubmitting {
+				t.Fatal("Enter did not start transition mutation")
+			}
+			submitRequest := m.activeTransitionSubmitRequest
+
+			m, sprintRefreshCmd := updateModel(t, m, sprintDoneMsg{issueKey: "P0"})
+			if sprintRefreshCmd == nil || m.view != viewKanban || !m.boardLoading {
+				t.Fatalf("sprint completion did not dismiss picker and refresh board: cmd=%v view=%v loading=%v", sprintRefreshCmd != nil, m.view, m.boardLoading)
+			}
+			if !m.transitionSubmitting || m.activeTransitionSubmitRequest != submitRequest {
+				t.Fatalf("same-board refresh lost transition mutation identity: submitting=%v request=%d want=%d", m.transitionSubmitting, m.activeTransitionSubmitRequest, submitRequest)
+			}
+			sprintBoardRequest := m.activeBoardRequest
+			if tt.completeBoardBefore {
+				m, _ = updateModel(t, m, boardResult(sprintBoardRequest, 1, "Refreshed Sprint", "P0"))
+			}
+
+			m, transitionResultCmd := updateModel(t, m, transitionDoneMsg{
+				requestID:    submitRequest,
+				boardRequest: 7,
+				issueKey:     "P0",
+				err:          tt.transitionErr,
+			})
+			if m.transitionSubmitting || m.activeTransitionSubmitRequest != 0 || m.view != viewKanban || len(m.transitions) != 0 || m.transIssue != "" {
+				t.Fatalf("completion revived or retained picker state: submitting=%v request=%d view=%v transitions=%d issue=%q", m.transitionSubmitting, m.activeTransitionSubmitRequest, m.view, len(m.transitions), m.transIssue)
+			}
+
+			if tt.transitionErr == nil {
+				if transitionResultCmd == nil || m.toast != "Moved P0" || !m.boardLoading || m.activeBoardRequest == sprintBoardRequest {
+					t.Fatalf("success did not start a fresh scoped refresh: cmd=%v toast=%q loading=%v request=%d prior=%d", transitionResultCmd != nil, m.toast, m.boardLoading, m.activeBoardRequest, sprintBoardRequest)
+				}
+			} else {
+				if transitionResultCmd != nil || !errors.Is(m.err, tt.transitionErr) {
+					t.Fatalf("error was not surfaced: cmd=%v err=%v", transitionResultCmd != nil, m.err)
+				}
+				if !tt.completeBoardBefore {
+					m, _ = updateModel(t, m, boardResult(sprintBoardRequest, 1, "Refreshed Sprint", "P0"))
+					if !errors.Is(m.err, tt.transitionErr) || m.boardLoading {
+						t.Fatalf("board completion hid transition error: err=%v loading=%v", m.err, m.boardLoading)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTransitionSubmitCompletionIsRejectedAfterExplicitBoardSwitch(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.boards = append(m.boards, jira.Board{ID: 2, Name: "Other Board", Type: "scrum"})
+	m.sprintID = 42
+	m.sprintName = "Active Sprint"
+	m.loadedBoardRequest = 7
+	m.view = viewTransition
+	m.transitions = []jira.Transition{{ID: "2", Name: "Done"}}
+	m.transIssue = "P0"
+
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	submitRequest := m.activeTransitionSubmitRequest
+	m, _ = updateModel(t, m, sprintDoneMsg{issueKey: "P0"})
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	otherBoardRequest := m.activeBoardRequest
+	if m.loadingBoardID != 2 {
+		t.Fatalf("explicit board switch did not start Other Board load: board=%d", m.loadingBoardID)
+	}
+
+	m, cmd := updateModel(t, m, transitionDoneMsg{requestID: submitRequest, boardRequest: 7, issueKey: "P0"})
+	if cmd != nil || m.toast == "Moved P0" || m.activeBoardRequest != otherBoardRequest || m.loadingBoardID != 2 {
+		t.Fatalf("old-board mutation response affected new board: cmd=%v toast=%q request=%d board=%d", cmd != nil, m.toast, m.activeBoardRequest, m.loadingBoardID)
 	}
 }
