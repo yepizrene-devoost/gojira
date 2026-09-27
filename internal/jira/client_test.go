@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,39 @@ func TestGetBoardIssuesPaginates(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Fatalf("made %d requests, want 2", hits)
+	}
+}
+
+type errorReadCloser struct {
+	err error
+}
+
+func (b errorReadCloser) Read([]byte) (int, error) {
+	return 0, b.err
+}
+
+func (b errorReadCloser) Close() error {
+	return nil
+}
+
+func TestRequestReturnsResponseReadError(t *testing.T) {
+	wantErr := errors.New("response body read failed")
+	client := NewClient("https://jira.example", "e@x.com", "tok")
+	client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       errorReadCloser{err: wantErr},
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	body, err := client.request(http.MethodGet, "/rest/api/3/issue/A-1", nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want response body read error", err)
+	}
+	if body != nil {
+		t.Fatalf("response body = %q, want nil when reading response fails", body)
 	}
 }
 
