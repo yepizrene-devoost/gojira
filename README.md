@@ -28,16 +28,22 @@
 
 ## Installation
 
+Download the archive for your platform from [GitHub Releases](https://github.com/yepizrene-devoost/gojira/releases), verify it with `checksums.txt`, and place the `gojira` binary on your `PATH`.
+
+You can also install or build from source:
+
 ```bash
 go install github.com/yepizrene-devoost/gojira@latest
-```
 
-Or build from source:
-
-```bash
 git clone https://github.com/yepizrene-devoost/gojira.git
 cd gojira
 go build -o gojira .
+```
+
+Confirm the installed release and source revision:
+
+```bash
+gojira version --json
 ```
 
 ## Getting your Jira API token
@@ -201,4 +207,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome. Use the issue templates (bug / feature / chore) and open a PR.
+Contributions are welcome. Use the issue templates (bug / feature / chore) and open a PR. Maintainers should follow [RELEASING.md](RELEASING.md) for release promotion, dry-run, tagging, and artifact verification.

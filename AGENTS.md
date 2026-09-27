@@ -9,10 +9,18 @@ Repository instructions for coding agents working in this project.
   1. Read the recent memory context (`mem_context`, project `gojira`) and the
      latest session summary — that is where the previous session recorded
      decisions, discoveries and pending steps.
-  2. List the open backlog: `gh issue list --state open`.
-- Open the conversation with one line on where the last session left off and
-  the current backlog, then ask what to pick up. Do not start work without
+  2. List the open backlog and retrieve each issue description (for example,
+     `gh issue list --state open --json number,title,body,url`).
+- Open the conversation with a brief summary of where the last session left
+  off, followed by a Markdown table of every open issue with its number,
+  title, and concise description derived from its current issue body. Do not
+  show titles alone or use remembered descriptions. Then ask what to pick up,
+  unless the user has already selected an issue. Do not start work without
   that anchor.
+- When an issue is selected, present its observed implementation status in a
+  separate table (area, present behavior, pending work) rather than mixing it
+  into the backlog table. Distinguish verified repository facts from issue
+  proposals.
 
 ## Language
 
@@ -33,6 +41,12 @@ Repository instructions for coding agents working in this project.
 
 ## Branch Workflow
 
+- Before creating or modifying any repository file (including AGENTS.md,
+  tests, ODD tasks, or documentation), check the current Git branch and
+  working tree. If on `develop`, `main`, or another protected/base branch,
+  create and switch to an appropriate dflow work branch first. Never write
+  first and branch afterward. Do not discard pre-existing work to switch
+  branches; surface a blocker if a safe switch cannot be made.
 - Use `dflow` to manage branches, following `.dflow.yaml` and
   `.agents/workflows/dflow.md`.
 - `feature/*` and `release/*` branch from `develop`; `hotfix/*` from `main`.

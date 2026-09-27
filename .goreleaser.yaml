@@ -1,0 +1,45 @@
+version: 2
+
+project_name: gojira
+
+builds:
+  - id: gojira
+    main: .
+    binary: gojira
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ if .IsSnapshot }}v{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+
+archives:
+  - id: release
+    ids:
+      - gojira
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+release:
+  github:
+    owner: yepizrene-devoost
+    name: gojira
