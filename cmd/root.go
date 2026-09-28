@@ -13,7 +13,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "gojira",
-	Short: "Manage your Jira boards from the terminal",
+	Short: "Manage Jira from the command line or interactive TUI",
 	Long:  "GoJira — kanban boards, ticket transitions, worklog, and JSON export. All from your terminal.",
 }
 

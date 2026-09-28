@@ -112,11 +112,22 @@ When creating `config.yaml`, the fallback requests mode `0600`; rewriting an
 existing file does not correct a pre-existing broader mode. The YAML is not
 encrypted.
 
+Run `gojira` without arguments to see the available commands. To start the
+interactive board, invoke the TUI explicitly:
+
+```bash
+gojira tui
+```
+
+The bare command only prints help; it does not require configuration, open the
+setup wizard, or connect to Jira.
+
 ## CLI commands
 
 | Command | Description |
 |---|---|
-| `gojira` | Launch the interactive TUI |
+| `gojira` | Show available commands and usage |
+| `gojira tui` | Launch the interactive TUI (including first-run setup and connection checks) |
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
 | `gojira get <KEY>` | Full ticket details: project, labels, components, comments (`--json`) |
