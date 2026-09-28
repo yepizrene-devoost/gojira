@@ -6,45 +6,78 @@
 
 <p align="center">
   <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
-  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
+  <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
 </p>
 
 <p align="center">
-  A Bubble Tea TUI for daily board work and a Cobra CLI whose JSON output is
-  built for AI agents — every operation available both interactively and
-  programmatically.
+  A Bubble Tea TUI for daily board work and a Cobra CLI with machine-readable
+  output for automation and AI agents.
 </p>
 
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
-- **Full ticket management** — view, transition status, add worklog, comment, create, assign, update — in CLI *and* TUI
+- **Ticket workflows** — view, search, transition, log work, create, and manage sprint membership in the TUI; the CLI also supports comments, assignment, and field updates
 - **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
-- **Agent-ready JSON** — curated output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
-- **Secure auth** — API token in OS keychain (macOS/Linux/Windows) with encrypted-file fallback
+- **Agent-ready JSON** — curated ticket output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
+- **Credential storage** — API token in the OS keychain when available, with a YAML fallback that requests `0600` when the file is created
 - **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
 - **Keyboard-first TUI** — vim-like navigation, copy tickets as JSON (`c`/`C`), open in browser (`o`)
 
 ## Installation
 
-Download the archive for your platform from [GitHub Releases](https://github.com/yepizrene-devoost/gojira/releases), verify it with `checksums.txt`, and place the `gojira` binary on your `PATH`.
+> **Not available yet:** GoJira has no published release, so the commands below
+> cannot install GoJira until the first release separately publishes the installer,
+> archive, and checksum assets. (A shell pipeline may still exit successfully if the download fails.) There is currently no supported no-Go installation route.
 
-You can also install or build from source:
-
-```bash
-go install github.com/yepizrene-devoost/gojira@latest
-
-git clone https://github.com/yepizrene-devoost/gojira.git
-cd gojira
-go build -o gojira .
-```
-
-Confirm the installed release and source revision:
+After that release is published, Linux and macOS users can install without Go or
+a repository checkout:
 
 ```bash
-gojira version --json
+curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh | sh
 ```
+
+The default destination is `$HOME/.local/bin`. The installer does not modify
+`PATH`; if that directory is absent from `PATH`, it prints the shell-profile
+entry to add. Put overrides on the `sh` side of the pipeline to pin a release or
+choose another destination:
+
+```bash
+curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
+  | GOJIRA_VERSION=v1.2.3 GOJIRA_INSTALL_DIR="$HOME/bin" sh
+```
+
+After that release is published, Windows users can run this in PowerShell:
+
+```powershell
+irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
+```
+
+The Windows installer defaults to `%LOCALAPPDATA%\Programs\gojira` and adds that
+directory to the user `PATH`; open a new terminal afterward. Set overrides in
+the same PowerShell session before running the one-liner:
+
+```powershell
+$env:GOJIRA_VERSION = 'v1.2.3'
+$env:GOJIRA_INSTALL_DIR = "$HOME\bin"
+$env:GOJIRA_SKIP_PATH_UPDATE = '1'
+irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
+```
+
+Omit `GOJIRA_VERSION` to select the latest published release. Remove the override
+environment variables afterward if you do not want them to affect later runs.
+
+### Installer trust and integrity
+
+The one-line commands execute remotely downloaded code immediately. Review the
+installer URL before running it, or download the script first and inspect the
+local file if that trust model is not acceptable.
+
+The installer downloads a GoReleaser archive and `checksums.txt` from the same
+GitHub release. SHA-256 verification detects an archive that does not match that
+release's checksum entry. It does not independently prove who published either
+asset, and it does not remove the need to trust the installer script itself.
 
 ## Getting your Jira API token
 
@@ -75,6 +108,9 @@ export JIRA_DOMAIN="your-domain.atlassian.net"
 ```
 
 Credential resolution: **env vars > config file (keychain → YAML fallback)**.
+When creating `config.yaml`, the fallback requests mode `0600`; rewriting an
+existing file does not correct a pre-existing broader mode. The YAML is not
+encrypted.
 
 ## CLI commands
 
@@ -117,7 +153,15 @@ gojira create --project ARA --type Task --summary "Sprint work" --board 1
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
 ```
 
-All `--json` output is a stable, machine-readable contract: valid JSON on stdout, diagnostics on stderr.
+JSON modes write valid JSON to stdout, with diagnostics on stderr. The curated
+`TicketJSON` schema is used only by `get --json`, `search --json`, `export`, and
+TUI ticket/column copy. Board exports request basic issue fields, so fields such
+as description, labels, comments, and timestamps may be empty or omitted.
+`boards --json` and `projects --json` expose their own list shapes;
+`move --json` only lists transitions when `--to` is omitted, and `log --json`
+only lists worklogs with `--show`. `version --json` has its own
+`version`/`revision`/`dirty` schema. Mutation commands print human-readable
+confirmation rather than `TicketJSON`.
 
 ## TUI keyboard shortcuts
 
@@ -210,8 +254,10 @@ gojira/
 │   │   └── tui_test.go        # Render geometry tests
 │   └── config/                # XDG config + keychain token storage
 │       └── config.go
+├── scripts/                   # Linux/macOS and Windows release installers
+├── tests/                     # Installer contracts and Go test support
 ├── assets/                    # Logo (PNG + SVG)
-└── .github/ISSUE_TEMPLATE/    # Issue forms (bug, feature, chore)
+└── .github/                   # CI, release checks, and issue forms
 ```
 
 ## API surface
@@ -223,18 +269,41 @@ All endpoints live in `internal/jira/paths.go`. If Atlassian deprecates a path, 
 
 ## Development
 
+Source development requires Go 1.26.1 or newer. From an existing source tree:
+
 ```bash
 go build -o gojira .
+./gojira --help
+./gojira version --json
 go test ./...
 make lint
 ```
 
+Ordinary source builds generally report `dev` as their version; release builds
+receive the release tag. The version JSON also reports the embedded Git revision
+and whether the source tree was dirty when built.
+
+Run `make build-all` for optional local validation of all six release platforms:
+Linux, macOS, and Windows on amd64 and arm64. The cross-build uses
+`CGO_ENABLED=0`, writes explicitly named binaries under the overridable
+`BIN_DIR` (`bin/` by default), and adds `.exe` to Windows binaries. It consumes
+more CPU and disk than a single build and overwrites those six output names, but
+preserves other files in the directory. The default `bin/` directory is ignored
+by Git.
+
+Unlike `make release`, `make build-all` does not read `.env`, create tags,
+or invoke GoReleaser to publish anything. Go may still download missing modules
+or toolchains during a local build; run with `GOPROXY=off GOTOOLCHAIN=local` if
+network access must be prohibited. The installer one-liners above remain
+unavailable until the first release is published separately.
+
 `make lint` requires an already installed `golangci-lint` v2.11.4 and fails on a
 missing or different version; it does not install tools. The lint command covers
 every Go package through `./...`, while non-Go files need separate checks. CI
-runs lint as a standalone job only for the workflow's existing push and pull
-request events. Making that job a required check is separate branch protection
-configuration.
+builds, tests, vets, and lints the Go code. Separate release checks validate the
+GoReleaser configuration, POSIX and Windows installer contracts, and curated
+release-note extraction. Making any job a required check is separate branch
+protection configuration.
 
 Run the TUI in a real terminal (it needs a TTY):
 
@@ -252,11 +321,12 @@ Release notes are curated; generated history is only reference material.
 | `make release-notes VERSION=vX.Y.Z` | Extracts the body of the newest matching package section from `CHANGELOG.md` into ignored `RELEASE_NOTES.md`. |
 | `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, and publishes or replaces the GitHub release through GoReleaser. |
 
-`make release` is an explicit local publishing command, not a dry run. GitHub
-Actions only checks release configuration; pushing a tag does not start a CI
-publisher. Maintainers must follow [RELEASING.md](RELEASING.md) for the dflow
-promotion, tag-on-`main`, token permission, approval, rerun, and verification
-checklists.
+`make release` is the repository's only publisher and is an explicit local
+publishing command, not a dry run. GitHub Actions validates more than the
+GoReleaser configuration, but it does not publish; pushing a tag does not start
+a CI publisher. Maintainers must follow [RELEASING.md](RELEASING.md) for the
+dflow promotion, tag-on-`main`, token permission, approval, rerun, and
+verification checklists.
 
 ## License
 

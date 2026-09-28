@@ -38,6 +38,9 @@ jobs:
       - name: Check GoReleaser configuration
         run: goreleaser check
 
+      - name: Check POSIX installer contract
+        run: sh tests/installer-contract.sh
+
       - name: Check curated changelog contract
         shell: sh
         run: |
@@ -46,3 +49,18 @@ jobs:
           version=$(awk '$1 == "##" && $2 == "📦" { print $3; exit }' CHANGELOG.md)
           test -n "$version"
           make release-notes VERSION="$version" RELEASE_NOTES="$RUNNER_TEMP/RELEASE_NOTES.md"
+
+  windows-installer:
+    name: Validate Windows installer
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check Windows PowerShell 5.1 installer contract
+        shell: powershell
+        run: powershell -NoProfile -File tests/installer-contract.ps1
+
+      - name: Check PowerShell installer contract
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/installer-contract.ps1
