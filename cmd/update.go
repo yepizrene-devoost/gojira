@@ -16,6 +16,7 @@ var updateCmd = &cobra.Command{
 	Long: `Update one or more fields on an existing issue. Examples:
 
   gojira update ARA-1892 --summary "New summary text"
+  gojira update ARA-1892 --description "Updated context"
   gojira update ARA-1892 --priority High
   gojira update ARA-1892 --labels "frontend,urgent"
   gojira update ARA-1892 --summary "..." --priority Critical --labels "p0"`,
@@ -26,6 +27,14 @@ var updateCmd = &cobra.Command{
 
 		if s, _ := cmd.Flags().GetString("summary"); s != "" {
 			fields["summary"] = s
+		}
+		if cmd.Flags().Changed("description") {
+			description, _ := cmd.Flags().GetString("description")
+			if description == "" {
+				fields["description"] = nil
+			} else {
+				fields["description"] = jira.TextToADF(description)
+			}
 		}
 		if p, _ := cmd.Flags().GetString("priority"); p != "" {
 			fields["priority"] = map[string]string{"name": p}
@@ -39,7 +48,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		if len(fields) == 0 {
-			err := fmt.Errorf("specify at least one field to update (--summary, --priority, --labels)")
+			err := fmt.Errorf("specify at least one field to update (--summary, --description, --priority, --labels)")
 			return commandError(cmd, "validation_error", "at least one field must be specified", issueKey, jira.MutationNotApplied, err)
 		}
 
@@ -66,6 +75,7 @@ var updateCmd = &cobra.Command{
 
 func init() {
 	updateCmd.Flags().String("summary", "", "New summary")
+	updateCmd.Flags().String("description", "", "New description (plain text; explicitly empty clears it)")
 	updateCmd.Flags().String("priority", "", "New priority name (e.g. High, Critical)")
 	updateCmd.Flags().String("labels", "", "Labels (comma-separated, replaces existing)")
 	updateCmd.Flags().Bool("json", false, "Output the resulting issue as TicketJSON v1")

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1814,5 +1815,312 @@ func TestTransitionSubmitCompletionIsRejectedAfterExplicitBoardSwitch(t *testing
 	m, cmd := updateModel(t, m, transitionDoneMsg{requestID: submitRequest, boardRequest: 7, issueKey: "P0"})
 	if cmd != nil || m.toast == "Moved P0" || m.activeBoardRequest != otherBoardRequest || m.loadingBoardID != 2 {
 		t.Fatalf("old-board mutation response affected new board: cmd=%v toast=%q request=%d board=%d", cmd != nil, m.toast, m.activeBoardRequest, m.loadingBoardID)
+	}
+}
+
+func descriptionEditModel(description string) Model {
+	issue := testIssue("P0")
+	doc := jira.TextToADF(description)
+	issue.Fields.Description = &doc
+	m := makeTestModel(1, 1)
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 7
+	m.loadedBoardRequest = 7
+	m.width = 120
+	m.height = 35
+	return m
+}
+
+func TestDescriptionEditCancelPreservesDetailWithoutWriting(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, cmd := updateModel(t, m, textKey("e"))
+	if cmd == nil || m.view != viewDescriptionEdit || m.descriptionInput.Value() != "Original description" {
+		t.Fatalf("description editor did not open with current text: view=%v value=%q", m.view, m.descriptionInput.Value())
+	}
+	m, _ = updateModel(t, m, tea.PasteMsg{Content: "\nSecond line"})
+	if !strings.Contains(m.descriptionInput.Value(), "Second line") {
+		t.Fatalf("multiline paste was not retained: %q", m.descriptionInput.Value())
+	}
+	m, cmd = updateModel(t, m, specialKey(tea.KeyEsc))
+	if cmd != nil || m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatalf("cancel lost detail context: view=%v detail=%#v", m.view, m.detail)
+	}
+	if requests != 0 {
+		t.Fatalf("cancel made %d Jira requests, want 0", requests)
+	}
+}
+
+func TestDescriptionEditPreservesLongExistingTextAndUnchangedConfirmDoesNotWrite(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	longText := strings.Repeat("existing description text ", 1000) + "TAIL-MUST-REMAIN"
+	m := descriptionEditModel(longText)
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	originalDoc := m.detail.Fields.Description
+
+	m, _ = updateModel(t, m, textKey("e"))
+	if got := m.descriptionInput.Value(); got != longText || !strings.HasSuffix(got, "TAIL-MUST-REMAIN") {
+		t.Fatalf("editor truncated existing description: length=%d tail=%v", len(got), strings.HasSuffix(got, "TAIL-MUST-REMAIN"))
+	}
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.view != viewDetail {
+		t.Fatalf("unchanged confirm should return to detail without a command: cmd=%v view=%v", cmd != nil, m.view)
+	}
+	if requests != 0 {
+		t.Fatalf("unchanged confirm made %d Jira requests, want 0", requests)
+	}
+	if m.detail == nil || m.detail.Fields.Description != originalDoc || !strings.HasSuffix(m.detail.Fields.Description.Flatten(), "TAIL-MUST-REMAIN") {
+		t.Fatal("unchanged confirm replaced the original ADF document")
+	}
+}
+
+func TestDescriptionEditNormalizedPrefillIsUnchangedAndPreservesRichADF(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rich := &jira.ADFDoc{
+		Type:    "doc",
+		Version: 1,
+		Content: []jira.ADFNode{{
+			Type:    "codeBlock",
+			Content: []jira.ADFNode{{Type: "text", Text: "command\t--flag"}},
+		}},
+	}
+	m := descriptionEditModel("")
+	m.detail.Fields.Description = rich
+	m.client = jira.NewClient(srv.URL, "email", "token")
+
+	m, _ = updateModel(t, m, textKey("e"))
+	displayed := m.descriptionInput.Value()
+	if displayed == rich.Flatten() || !strings.Contains(displayed, "command    --flag") {
+		t.Fatalf("test requires textarea tab normalization, displayed=%q raw=%q", displayed, rich.Flatten())
+	}
+	if m.descriptionOriginal != displayed {
+		t.Fatalf("unchanged baseline=%q, want displayed value %q", m.descriptionOriginal, displayed)
+	}
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.view != viewDetail || requests != 0 {
+		t.Fatalf("normalized unchanged confirm wrote remotely: cmd=%v view=%v requests=%d", cmd != nil, m.view, requests)
+	}
+	if m.detail == nil || m.detail.Fields.Description != rich || m.detail.Fields.Description.Content[0].Type != "codeBlock" {
+		t.Fatal("normalized unchanged confirm replaced the original rich ADF")
+	}
+}
+
+func TestDescriptionEditConfirmUpdatesADFAndRefreshesDetail(t *testing.T) {
+	var updatedDescription *jira.ADFDoc
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalls++
+			var payload struct {
+				Fields struct {
+					Description *jira.ADFDoc `json:"description"`
+				} `json:"fields"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			updatedDescription = payload.Fields.Description
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			getCalls++
+			_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"First line"}]},{"type":"paragraph","content":[{"type":"text","text":"Second line"}]}]}}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.detailReturn = viewSearch
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("First line\nSecond line")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil || !m.descriptionSubmitting {
+		t.Fatal("confirm did not start description update")
+	}
+	result := cmd()
+	m, _ = updateModel(t, m, result)
+	if putCalls != 1 || getCalls != 1 {
+		t.Fatalf("requests = PUT %d GET %d, want one each", putCalls, getCalls)
+	}
+	if updatedDescription == nil || updatedDescription.Flatten() != "First line\nSecond line" {
+		t.Fatalf("updated ADF = %#v", updatedDescription)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "First line\nSecond line" {
+		t.Fatalf("success did not show refreshed detail: view=%v detail=%#v", m.view, m.detail)
+	}
+	if m.detailReturn != viewSearch || m.toast != "Description updated" || m.descriptionSubmitting {
+		t.Fatalf("success lost navigation or feedback: return=%v toast=%q submitting=%v", m.detailReturn, m.toast, m.descriptionSubmitting)
+	}
+}
+
+func TestDescriptionEditAppliedRefreshFailureRetriesGetWithoutRepeatingPut(t *testing.T) {
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalls++
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			getCalls++
+			if getCalls == 1 {
+				_, _ = fmt.Fprint(w, `not-json`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Applied replacement"}]}]}}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.detailReturn = viewSearch
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Applied replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if putCalls != 1 || getCalls != 1 || !m.descriptionApplied || m.descriptionErr == nil {
+		t.Fatalf("partial result = PUT %d GET %d applied=%v err=%v", putCalls, getCalls, m.descriptionApplied, m.descriptionErr)
+	}
+	if m.descriptionInput.Value() != "Applied replacement" || m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatal("applied-but-unrefreshed state lost editor or original detail context")
+	}
+	plain := ansi.Strip(m.View().Content)
+	for _, want := range []string{"updated in Jira", "Retry refresh only", "update remains applied"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("partial state missing %q:\n%s", want, plain)
+		}
+	}
+
+	m, retryCmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if retryCmd == nil || !m.descriptionSubmitting {
+		t.Fatal("retry did not start refresh-only request")
+	}
+	m, _ = updateModel(t, m, retryCmd())
+	if putCalls != 1 || getCalls != 2 {
+		t.Fatalf("retry requests = PUT %d GET %d, want one PUT and two GETs", putCalls, getCalls)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "Applied replacement" {
+		t.Fatalf("refresh retry did not restore detail: view=%v detail=%#v", m.view, m.detail)
+	}
+	if m.detailReturn != viewSearch || m.descriptionApplied || m.descriptionErr != nil {
+		t.Fatalf("refresh retry lost navigation or retained partial state: return=%v applied=%v err=%v", m.detailReturn, m.descriptionApplied, m.descriptionErr)
+	}
+}
+
+func TestDescriptionEditCancelAfterAppliedRefreshFailureDoesNotImplyRollback(t *testing.T) {
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			putCalls++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		getCalls++
+		_, _ = fmt.Fprint(w, `not-json`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Applied replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if !m.descriptionApplied {
+		t.Fatal("successful PUT plus failed refresh was not marked applied")
+	}
+	m, cancelCmd := updateModel(t, m, specialKey(tea.KeyEsc))
+	if cancelCmd == nil || m.view != viewDetail || m.toast != "Description updated; detail was not refreshed" {
+		t.Fatalf("close did not disclose applied update: cmd=%v view=%v toast=%q", cancelCmd != nil, m.view, m.toast)
+	}
+	if putCalls != 1 || getCalls != 1 {
+		t.Fatalf("close changed request counts: PUT %d GET %d", putCalls, getCalls)
+	}
+	if m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatal("close discarded the retained pre-refresh detail context")
+	}
+}
+
+func TestDescriptionEditErrorKeepsEditorAndOriginalDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"errorMessages":["update rejected"]}`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Attempted replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if m.view != viewDescriptionEdit || m.descriptionErr == nil || m.descriptionInput.Value() != "Attempted replacement" {
+		t.Fatalf("failure lost editable context: view=%v err=%v value=%q", m.view, m.descriptionErr, m.descriptionInput.Value())
+	}
+	if m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatalf("failure replaced original detail: %#v", m.detail)
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "Error:") {
+		t.Fatal("failure is not visible in description editor")
+	}
+}
+
+func TestDescriptionEditExplicitEmptySendsNullAndRefreshes(t *testing.T) {
+	var rawDescription json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var payload struct {
+				Fields map[string]json.RawMessage `json:"fields"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			rawDescription = payload.Fields["description"]
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":null}}`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if string(rawDescription) != "null" {
+		t.Fatalf("description payload = %s, want null", rawDescription)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description != nil {
+		t.Fatalf("empty update did not refresh cleared detail: view=%v detail=%#v", m.view, m.detail)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -122,6 +123,7 @@ const (
 	viewWorklog
 	viewCreate
 	viewSearch
+	viewDescriptionEdit
 )
 
 type column struct {
@@ -173,6 +175,13 @@ type Model struct {
 	worklogIssue                  string
 	nextWorklogRequest            uint64
 	activeWorklogRequest          uint64
+	descriptionInput              textarea.Model
+	descriptionOriginal           string
+	descriptionSubmitting         bool
+	descriptionApplied            bool
+	descriptionErr                error
+	nextDescriptionRequest        uint64
+	activeDescriptionRequest      uint64
 
 	filterInput  textinput.Model
 	filterActive bool
@@ -260,6 +269,13 @@ type worklogDoneMsg struct {
 	issueKey  string
 	err       error
 }
+type descriptionUpdatedMsg struct {
+	requestID uint64
+	issueKey  string
+	issue     *jira.Issue
+	applied   bool
+	err       error
+}
 type createTypesMsg struct {
 	types []string
 	err   error
@@ -316,7 +332,8 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 		m.err = nil
 		m.transitionResultErrBoardID = 0
 	}
-	if m.view == viewKanban || m.view == viewTransition || (m.view == viewDetail && m.detailReturn != viewSearch) {
+	if m.view == viewKanban || m.view == viewTransition ||
+		((m.view == viewDetail || m.view == viewDescriptionEdit) && m.detailReturn != viewSearch) {
 		m.view = viewKanban
 		m.detail = nil
 		m.detailScroll = 0
@@ -332,6 +349,10 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 		m.helpOpen = false
 		m.helpScroll = 0
 		m.activeWorklogRequest = 0
+		m.descriptionSubmitting = false
+		m.descriptionApplied = false
+		m.activeDescriptionRequest = 0
+		m.descriptionErr = nil
 	}
 	m.transitionLoading = false
 	m.activeTransitionRequest = 0
@@ -470,6 +491,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		if m.view == viewDetail {
 			m.detailScroll = min(m.detailScroll, m.detailMaxScroll())
+		} else if m.view == viewDescriptionEdit {
+			m.sizeDescriptionInput()
 		} else if m.helpOpen {
 			m.helpScroll = min(m.helpScroll, m.helpMaxScroll())
 		}
@@ -629,6 +652,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = "Worklog added"
 		return m, clearToastAfter(3 * time.Second)
 
+	case descriptionUpdatedMsg:
+		if m.view != viewDescriptionEdit || !m.descriptionSubmitting ||
+			msg.requestID == 0 || msg.requestID != m.activeDescriptionRequest ||
+			m.detail == nil || msg.issueKey == "" || msg.issueKey != m.detail.Key {
+			return m, nil
+		}
+		m.descriptionSubmitting = false
+		m.activeDescriptionRequest = 0
+		if msg.err != nil {
+			m.descriptionApplied = msg.applied
+			m.descriptionErr = msg.err
+			return m, nil
+		}
+		if msg.issue == nil || msg.issue.Key != msg.issueKey {
+			m.descriptionApplied = msg.applied
+			m.descriptionErr = fmt.Errorf("description was updated, but Jira returned no refreshed ticket")
+			return m, nil
+		}
+		m.descriptionApplied = false
+		m.descriptionErr = nil
+		m.err = nil
+		m.detail = msg.issue
+		m.detailScroll = 0
+		m.descriptionInput.Blur()
+		m.view = viewDetail
+		m.toast = "Description updated"
+		return m, clearToastAfter(3 * time.Second)
+
 	case createTypesMsg:
 		// The form already defaults to "Task"; richer types are a bonus.
 		if msg.err == nil && len(msg.types) > 0 {
@@ -686,6 +737,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewSearch:
 			return m.updateSearch(msg)
+		case viewDescriptionEdit:
+			return m.updateDescriptionEdit(msg)
 		}
 
 	case tea.PasteMsg:
@@ -714,6 +767,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.searchEditing {
 				var cmd tea.Cmd
 				m.searchInput, cmd = m.searchInput.Update(msg)
+				return m, cmd
+			}
+		case viewDescriptionEdit:
+			if !m.descriptionSubmitting && !m.descriptionApplied {
+				var cmd tea.Cmd
+				m.descriptionInput, cmd = m.descriptionInput.Update(msg)
 				return m, cmd
 			}
 		}
@@ -1012,8 +1071,133 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = viewWorklog
 			return m, textinput.Blink
 		}
+	case "e":
+		if m.detail != nil {
+			input := textarea.New()
+			input.Placeholder = "Ticket description (plain text)"
+			input.ShowLineNumbers = false
+			description := ""
+			if m.detail.Fields.Description != nil {
+				description = m.detail.Fields.Description.Flatten()
+				input.SetValue(description)
+			}
+			m.descriptionInput = input
+			m.descriptionOriginal = m.descriptionInput.Value()
+			m.sizeDescriptionInput()
+			m.descriptionSubmitting = false
+			m.descriptionApplied = false
+			m.descriptionErr = nil
+			m.activeDescriptionRequest = 0
+			m.err = nil
+			m.view = viewDescriptionEdit
+			return m, m.descriptionInput.Focus()
+		}
 	}
 	return m, nil
+}
+
+func (m *Model) sizeDescriptionInput() {
+	width := m.modalWidth() - 2
+	if width < 1 {
+		width = 1
+	}
+	height := m.modalHeight() - 10
+	if height < 3 {
+		height = 3
+	}
+	if height > 12 {
+		height = 12
+	}
+	m.descriptionInput.SetWidth(width)
+	m.descriptionInput.SetHeight(height)
+}
+
+func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.descriptionSubmitting {
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.descriptionInput.Blur()
+		m.descriptionErr = nil
+		m.activeDescriptionRequest = 0
+		m.view = viewDetail
+		if m.descriptionApplied {
+			m.descriptionApplied = false
+			m.toast = "Description updated; detail was not refreshed"
+			return m, clearToastAfter(4 * time.Second)
+		}
+		return m, nil
+	case "ctrl+s":
+		if m.detail == nil {
+			return m, nil
+		}
+		if m.descriptionApplied {
+			return m.startDescriptionRefresh()
+		}
+		if m.descriptionInput.Value() == m.descriptionOriginal {
+			m.descriptionInput.Blur()
+			m.descriptionErr = nil
+			m.view = viewDetail
+			return m, nil
+		}
+		return m.startDescriptionUpdate()
+	default:
+		if m.descriptionApplied {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.descriptionInput, cmd = m.descriptionInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Model) startDescriptionUpdate() (tea.Model, tea.Cmd) {
+	issueKey := m.detail.Key
+	text := m.descriptionInput.Value()
+	var description interface{}
+	if text != "" {
+		description = jira.TextToADF(text)
+	}
+	m.nextDescriptionRequest++
+	requestID := m.nextDescriptionRequest
+	m.activeDescriptionRequest = requestID
+	m.descriptionSubmitting = true
+	m.descriptionErr = nil
+	client := m.client
+	return m, func() tea.Msg {
+		if err := client.UpdateIssue(issueKey, map[string]interface{}{"description": description}); err != nil {
+			return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, err: err}
+		}
+		issue, err := client.GetIssueFull(issueKey)
+		if err != nil {
+			err = fmt.Errorf("description was updated, but detail refresh failed: %w", err)
+		}
+		return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, issue: issue, applied: true, err: err}
+	}
+}
+
+func (m Model) startDescriptionRefresh() (tea.Model, tea.Cmd) {
+	issueKey := m.detail.Key
+	m.nextDescriptionRequest++
+	requestID := m.nextDescriptionRequest
+	m.activeDescriptionRequest = requestID
+	m.descriptionSubmitting = true
+	m.descriptionErr = nil
+	client := m.client
+	return m, func() tea.Msg {
+		issue, err := client.GetIssueFull(issueKey)
+		if err != nil {
+			err = fmt.Errorf("description was updated, but detail refresh failed: %w", err)
+		}
+		return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, issue: issue, applied: true, err: err}
+	}
 }
 
 func (m Model) scrollDetail(steps int) Model {
@@ -1555,6 +1739,13 @@ func (m Model) View() tea.View {
 
 	case viewSearch:
 		b.WriteString(m.renderSearch())
+
+	case viewDescriptionEdit:
+		background := m.renderKanban()
+		if m.detailReturn == viewSearch {
+			background = m.renderSearch()
+		}
+		b.WriteString(m.composeOverlay(background, m.renderDescriptionEdit()))
 	}
 
 	content := b.String()
@@ -2016,6 +2207,38 @@ func (m Model) renderDetail() string {
 	return m.renderDetailModal(content, actions)
 }
 
+func (m Model) renderDescriptionEdit() string {
+	key := m.detailIssueKey
+	if m.detail != nil {
+		key = m.detail.Key
+	}
+	var b strings.Builder
+	b.WriteString(keyStyle.Render("✎ Edit description · " + key))
+	b.WriteString("\n\n")
+	b.WriteString(m.descriptionInput.View())
+	if m.descriptionApplied {
+		b.WriteString("\n")
+		b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed."))
+	}
+	if m.descriptionErr != nil {
+		b.WriteString("\n")
+		b.WriteString(errStyle.Render("Error: " + m.descriptionErr.Error()))
+	}
+	b.WriteString("\n\n")
+	if m.descriptionSubmitting {
+		if m.descriptionApplied {
+			b.WriteString(subStyle.Render("Refreshing ticket detail...  [ctrl+c] Quit"))
+		} else {
+			b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit"))
+		}
+	} else if m.descriptionApplied {
+		b.WriteString(subStyle.Render("[ctrl+s] Retry refresh only  [esc] Close (update remains applied)"))
+	} else {
+		b.WriteString(subStyle.Render("[ctrl+s] Confirm  [esc] Cancel"))
+	}
+	return m.modalStyle().Render(b.String())
+}
+
 func (m Model) detailContent() (string, string) {
 	var b strings.Builder
 	if m.detailLoading {
@@ -2078,5 +2301,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [w] Log  [o] Open  [esc] Close"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Edit description  [w] Log  [o] Open  [esc] Close"
 }

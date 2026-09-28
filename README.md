@@ -138,7 +138,7 @@ setup wizard, or connect to Jira.
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
-| `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` (`--json`) |
+| `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels` (`--json`; `--description=` clears the description) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
@@ -162,6 +162,9 @@ gojira create --project ARA --type Task --summary "Sprint work" --board 1
 
 # Comment and notify the PM
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
+
+# Replace a description using plain text converted to Jira ADF
+gojira update ARA-1892 --description $'First paragraph\n- checklist item'
 ```
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
@@ -303,9 +306,19 @@ where search started.
 |---|---|
 | `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
+| `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+The description editor accepts multiple lines and converts an actual plain-text
+edit to Jira ADF. Replacing a description this way may discard rich ADF formatting
+that plain text cannot represent; confirming unchanged text performs no write. A
+successful update refreshes the open ticket detail. If the update succeeds but
+refresh fails, the editor marks the update as already applied and `Ctrl+S` retries
+only the detail refresh; closing that state does not roll back the Jira update.
+Other failures keep the editor text and ticket context available for retry or
+cancel.
 
 ## Project structure
 
