@@ -14,9 +14,9 @@ var exportCmd = &cobra.Command{
 	Short: "Export tickets from a board/sprint as JSON",
 	Long:  "Export tickets for agent consumption. Example: gojira export --board 1",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, domain, err := BuildClient()
+		client, domain, err := buildClient()
 		if err != nil {
-			return err
+			return reportJSONError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
 		}
 
 		boardID, _ := cmd.Flags().GetInt("board")
@@ -25,10 +25,10 @@ var exportCmd = &cobra.Command{
 		if boardID == 0 {
 			boards, err := client.GetBoards()
 			if err != nil {
-				return err
+				return reportJSONError(cmd, "read_failed", "boards could not be read", "", jira.MutationNotApplied, err)
 			}
 			if len(boards) == 0 {
-				return fmt.Errorf("no boards found")
+				return reportJSONError(cmd, "validation_error", "no boards found", "", jira.MutationNotApplied, fmt.Errorf("no boards found"))
 			}
 			boardID = boards[0].ID
 			fmt.Fprintf(os.Stderr, "Using board: %s (id=%d)\n", boards[0].Name, boardID)
@@ -37,7 +37,7 @@ var exportCmd = &cobra.Command{
 		if sprintID == 0 {
 			sprints, err := client.GetSprints(boardID)
 			if err != nil {
-				return err
+				return reportJSONError(cmd, "read_failed", "sprints could not be read", "", jira.MutationNotApplied, err)
 			}
 			for _, s := range sprints {
 				if s.State == "active" {
@@ -50,10 +50,13 @@ var exportCmd = &cobra.Command{
 
 		issues, err := client.GetBoardIssues(boardID, sprintID)
 		if err != nil {
-			return err
+			return reportJSONError(cmd, "read_failed", "board issues could not be read", "", jira.MutationNotApplied, err)
 		}
 
-		return writeExportJSON(cmd, issues, domain)
+		if err := writeExportJSON(cmd, issues, domain); err != nil {
+			return reportJSONError(cmd, "output_failed", "export JSON could not be written", "", jira.MutationNotApplied, err)
+		}
+		return nil
 	},
 }
 

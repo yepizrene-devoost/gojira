@@ -263,14 +263,16 @@ live Jira Cloud compatibility has not been verified.
 `log --json --show` retains its worklog array. `version --json` has its own
 `version`/`revision`/`dirty` schema.
 
-For `get`, `search`, `boards`, and `projects` with `--json`, configuration
-failures report `configuration_error`, Jira read failures report `read_failed`,
-and result encoding/writer failures report `output_failed`. Each exits nonzero
-and writes one v1 error object to stderr with `mutationState: "not_applied"`;
-`get` includes the issue key. No success JSON is written before result encoding
-begins. An output writer can fail after a partial stdout write, so output is
-not guaranteed atomic. Invalid arguments retain the root command's
-`validation_error` behavior.
+For `get`, `search`, `boards`, and `projects` with `--json`, and for `export`
+(which is always JSON), configuration failures report `configuration_error`,
+Jira read failures report `read_failed`, and result encoding/writer failures
+report `output_failed`. Export with no boards reports `validation_error`.
+Each exits nonzero and writes one v1 error object to stderr with
+`mutationState: "not_applied"`; `get` includes the issue key. Automatic export
+board/sprint selection diagnostics remain on stderr. No success JSON is written
+before result encoding begins. An output writer can fail after a partial stdout
+write, so output is not guaranteed atomic. Invalid arguments retain the root
+command's `validation_error` behavior.
 
 For `update`, `--due-date` is validated as a real `YYYY-MM-DD` calendar date,
 and comma-separated component/version lists reject empty or duplicate names
