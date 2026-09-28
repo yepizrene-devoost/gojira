@@ -65,9 +65,26 @@ Preview dflow's targets:
 dflow finish --dry-run
 ```
 
-`main` is a manual target. Push the release branch and open a pull request to
-`main`; do not use `dflow finish` to merge that target. Handle the separate
-`develop` target according to the reported dflow plan.
+`main` is both GitHub's default branch and dflow's manual release target.
+`develop` remains dflow's automatic integration target. Push the release branch
+and open a pull request to `main`; do not use `dflow finish` to merge that
+target. Handle the separate `develop` target according to the reported dflow
+plan.
+
+### Choose the issue reference before merging
+
+Use the reference that matches the issue's remaining scope:
+
+| Issue scope | Pull request reference | Closure decision |
+| --- | --- | --- |
+| Release issue still tracking the tag, publication, or verification | `References #N` | Keep it open through those steps, then request separate explicit approval to close that exact issue. |
+| Promotion-only issue fully satisfied by the merge to `main` | `Closes #N` | Use only after separate explicit authorization to close that exact issue upon merge. |
+
+Before merging, inspect both the pull request description and every included
+commit message for `Closes`, `Fixes`, or `Resolves`. A merge into the default
+branch can close an issue from either location. Writing `References #N` in the
+pull request description does not neutralize a closing keyword embedded in a
+commit message.
 
 ## 2. Tag the reviewed commit on main
 

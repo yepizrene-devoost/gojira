@@ -109,5 +109,19 @@ release is always a standalone decision with its own explicit confirmation.
   "¿qué opinas?", "no sé"): tentative means ask, plainly and separately.
 - Never bundle a closure into the description of an option, a question, or
   another approval. Choosing "do X now" authorizes X only — not X plus close.
+- For a release issue that still tracks tagging, publication, or verification,
+  use `References #N` in the release PR. Close it only after every tracked step
+  is complete and separate explicit approval names that exact issue.
+- A promotion-only issue may use `Closes #N` only when merging to `main` fully
+  satisfies its scope and separate explicit authorization approves closing that
+  exact issue upon merge.
+- Before merging to the default branch, inspect both the PR description and all
+  included commit messages for `Closes`, `Fixes`, or `Resolves`; `References`
+  does not neutralize a closing keyword in a commit message.
 - The confirmation names the exact action and the state it changes ("cierro
   el issue #3 como completed"); execution waits for a plain, standalone yes.
+
+<!-- dflow:workflow-reference -->
+## dflow Workflow
+Read `.agents/workflows/dflow.md` for branch types, merge rules, and finish flow.
+<!-- /dflow:workflow-reference -->
