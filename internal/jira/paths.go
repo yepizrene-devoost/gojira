@@ -18,6 +18,7 @@ const (
 	pathProjects         = "/rest/api/3/project?maxResults=100"
 	pathIssue            = "/rest/api/3/issue/%s"
 	pathIssueCreate      = "/rest/api/3/issue"
+	pathIssueEditMeta    = "/rest/api/3/issue/%s/editmeta"
 	pathIssueTransitions = "/rest/api/3/issue/%s/transitions"
 	pathIssueWorklog     = "/rest/api/3/issue/%s/worklog"
 	pathIssueComment     = "/rest/api/3/issue/%s/comment"
@@ -42,7 +43,7 @@ const (
 // Issue fields for different contexts.
 const (
 	fieldsBasic  = "summary,status,priority,assignee,issuetype"
-	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
+	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog"
 	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
 	fieldsExport = "summary,status,priority,assignee,issuetype"
 )

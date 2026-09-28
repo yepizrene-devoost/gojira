@@ -61,6 +61,28 @@ func TestTruncateRunes(t *testing.T) {
 	}
 }
 
+func TestRenderIssueFullShowsDueDateComponentsAndFixVersionsWhenPresent(t *testing.T) {
+	dueDate := "2026-10-31"
+	issue := &jira.Issue{Key: "PROJ-1"}
+	issue.Fields.Components = []jira.ComponentField{{Name: "API"}, {Name: "Web"}}
+	issue.Fields.FixVersions = []jira.FixVersionField{{Name: "v1.0"}, {Name: "v1.1"}}
+	issue.Fields.DueDate = &dueDate
+
+	out := renderIssueFull(issue)
+	for _, want := range []string{"Components:", "API, Web", "Fix versions:", "v1.0, v1.1", "Due date:", "2026-10-31"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rendered output missing %q: %q", want, out)
+		}
+	}
+
+	sparse := renderIssueFull(&jira.Issue{Key: "PROJ-2"})
+	for _, absent := range []string{"Components:", "Fix versions:", "Due date:"} {
+		if strings.Contains(sparse, absent) {
+			t.Fatalf("sparse output unexpectedly contains %q: %q", absent, sparse)
+		}
+	}
+}
+
 func TestRenderIssueFullCommentCreatedValues(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -26,6 +26,7 @@ func TestIssueToTicketJSONRichFixture(t *testing.T) {
 	}
 	comment.Author.DisplayName = "Alex"
 
+	dueDate := "2026-10-31"
 	issue := Issue{Key: "ARA-42"}
 	issue.Fields = IssueFieldData{
 		Summary:     "Version ticket JSON",
@@ -37,6 +38,8 @@ func TestIssueToTicketJSONRichFixture(t *testing.T) {
 		Project:     &ProjectField{Key: "ARA", Name: "Agent Roadmap"},
 		Labels:      []string{"agent", "json"},
 		Components:  []ComponentField{{Name: "CLI"}, {Name: "TUI"}},
+		FixVersions: []FixVersionField{{Name: "v1.0"}, {Name: "v1.1"}},
+		DueDate:     &dueDate,
 		Description: &description,
 		Created:     "2026-09-22T20:12:41.934-0600",
 		Updated:     "2026-09-23T10:11:12.000Z",
@@ -58,6 +61,8 @@ func TestIssueToTicketJSONRichFixture(t *testing.T) {
 		Project:        "ARA",
 		Labels:         []string{"agent", "json"},
 		Components:     []string{"CLI", "TUI"},
+		FixVersions:    []string{"v1.0", "v1.1"},
+		DueDate:        &dueDate,
 		Description:    "## Acceptance\nPair with @Alex",
 		Created:        "2026-09-22T20:12:41-06:00",
 		Updated:        "2026-09-23T10:11:12Z",
@@ -98,12 +103,15 @@ func TestIssueToTicketJSONSparseFixturePreservesDefaultsAndOmissions(t *testing.
 	if err := json.Unmarshal(encoded, &object); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	for _, key := range []string{"schemaVersion", "key", "summary", "status", "priority", "assignee", "issueType", "description", "created", "updated"} {
+	for _, key := range []string{"schemaVersion", "key", "summary", "status", "priority", "assignee", "issueType", "dueDate", "description", "created", "updated"} {
 		if _, ok := object[key]; !ok {
 			t.Errorf("required field %q was omitted from %s", key, encoded)
 		}
 	}
-	for _, key := range []string{"url", "statusCategory", "reporter", "project", "labels", "components", "timeLogged", "comments"} {
+	if object["dueDate"] != nil {
+		t.Errorf("dueDate = %#v, want JSON null", object["dueDate"])
+	}
+	for _, key := range []string{"url", "statusCategory", "reporter", "project", "labels", "components", "fixVersions", "timeLogged", "comments"} {
 		if _, ok := object[key]; ok {
 			t.Errorf("omitempty field %q was present in %s", key, encoded)
 		}

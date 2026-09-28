@@ -120,6 +120,16 @@ func renderIssueFull(iss *jira.Issue) string {
 		}
 		rows = append(rows, [2]string{"Components", strings.Join(names, ", ")})
 	}
+	if len(iss.Fields.FixVersions) > 0 {
+		names := make([]string, len(iss.Fields.FixVersions))
+		for i, version := range iss.Fields.FixVersions {
+			names[i] = version.Name
+		}
+		rows = append(rows, [2]string{"Fix versions", strings.Join(names, ", ")})
+	}
+	if iss.Fields.DueDate != nil {
+		rows = append(rows, [2]string{"Due date", *iss.Fields.DueDate})
+	}
 	rows = append(rows, [2]string{"Created", iss.Fields.Created})
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 

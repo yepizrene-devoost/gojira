@@ -308,6 +308,18 @@ func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
 	return &iss, nil
 }
 
+func (c *Client) GetIssueEditMeta(issueKey string) (*EditMeta, error) {
+	b, err := c.get(issuePath(pathIssueEditMeta, issueKey))
+	if err != nil {
+		return nil, err
+	}
+	var meta EditMeta
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
 func (c *Client) GetProjects() ([]Project, error) {
 	b, err := c.get(pathProjects)
 	if err != nil {

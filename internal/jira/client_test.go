@@ -357,6 +357,48 @@ func TestIssueKeyPathEscapingAcrossEndpoints(t *testing.T) {
 	}
 }
 
+func TestGetIssueEditMetaUsesCentralizedEscapedPathAndPreservesAllowedValuesPresence(t *testing.T) {
+	const issueKey = "PROJ/13?part=1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.EscapedPath(), "/rest/api/3/issue/PROJ%2F13%3Fpart=1/editmeta"; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = fmt.Fprint(w, `{"fields":{"components":{"allowedValues":[{"name":"API"}]},"fixVersions":{}}}`)
+	}))
+	defer srv.Close()
+
+	meta, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueEditMeta(issueKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values := meta.Fields["components"].AllowedValues; values == nil || len(*values) != 1 || (*values)[0].Name != "API" {
+		t.Fatalf("component allowedValues = %#v", values)
+	}
+	if meta.Fields["fixVersions"].AllowedValues != nil {
+		t.Fatal("absent allowedValues must remain distinguishable from an empty list")
+	}
+}
+
+func TestGetIssueFullRequestsAndDecodesUpdateFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, field := range []string{"duedate", "components", "fixVersions"} {
+			if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
+				t.Errorf("fields query omitted %q: %q", field, r.URL.Query().Get("fields"))
+			}
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"duedate":"2026-10-31","components":[{"name":"API"}],"fixVersions":[{"name":"v1.0"}]}}`)
+	}))
+	defer srv.Close()
+
+	issue, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFull("A-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.Fields.DueDate == nil || *issue.Fields.DueDate != "2026-10-31" || len(issue.Fields.FixVersions) != 1 {
+		t.Fatalf("decoded fields = %#v", issue.Fields)
+	}
+}
+
 func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -436,6 +478,7 @@ func TestMalformedSuccessBodySurfacesDecodeError(t *testing.T) {
 		{"GetBoardIssues", func() error { _, err := client.GetBoardIssues(1, 0); return err }},
 		{"GetIssue", func() error { _, err := client.GetIssue("A-1"); return err }},
 		{"GetIssueFull", func() error { _, err := client.GetIssueFull("A-1"); return err }},
+		{"GetIssueEditMeta", func() error { _, err := client.GetIssueEditMeta("A-1"); return err }},
 		{"GetProjects", func() error { _, err := client.GetProjects(); return err }},
 		{"SearchJQL", func() error { _, _, err := client.SearchJQL("project = A", 10); return err }},
 		{"GetTransitions", func() error { _, err := client.GetTransitions("A-1"); return err }},

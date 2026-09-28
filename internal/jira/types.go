@@ -8,9 +8,9 @@ import (
 // ─── Board / Sprint ────────────────────────────────────────────────────
 
 type Board struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
 	Location *struct {
 		ProjectName string `json:"projectName"`
 		ProjectKey  string `json:"projectKey"`
@@ -189,6 +189,10 @@ type ComponentField struct {
 	Name string `json:"name"`
 }
 
+type FixVersionField struct {
+	Name string `json:"name"`
+}
+
 type DescriptionField = ADFDoc
 
 type Comment struct {
@@ -214,6 +218,8 @@ type IssueFieldData struct {
 	Project     *ProjectField     `json:"project,omitempty"`
 	Labels      []string          `json:"labels,omitempty"`
 	Components  []ComponentField  `json:"components,omitempty"`
+	FixVersions []FixVersionField `json:"fixVersions,omitempty"`
+	DueDate     *string           `json:"duedate"`
 	Created     string            `json:"created"`
 	Updated     string            `json:"updated"`
 	Description *DescriptionField `json:"description,omitempty"`
@@ -223,6 +229,18 @@ type IssueFieldData struct {
 type Issue struct {
 	Key    string         `json:"key"`
 	Fields IssueFieldData `json:"fields"`
+}
+
+type EditMeta struct {
+	Fields map[string]EditMetaField `json:"fields"`
+}
+
+type EditMetaField struct {
+	AllowedValues *[]NamedValue `json:"allowedValues"`
+}
+
+type NamedValue struct {
+	Name string `json:"name"`
 }
 
 // ─── Project ───────────────────────────────────────────────────────────
@@ -264,6 +282,8 @@ type TicketJSON struct {
 	Project        string        `json:"project,omitempty"`
 	Labels         []string      `json:"labels,omitempty"`
 	Components     []string      `json:"components,omitempty"`
+	FixVersions    []string      `json:"fixVersions,omitempty"`
+	DueDate        *string       `json:"dueDate"`
 	Description    string        `json:"description"`
 	Created        string        `json:"created"`
 	Updated        string        `json:"updated"`
@@ -402,6 +422,13 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 			t.Components[i] = c.Name
 		}
 	}
+	if len(iss.Fields.FixVersions) > 0 {
+		t.FixVersions = make([]string, len(iss.Fields.FixVersions))
+		for i, version := range iss.Fields.FixVersions {
+			t.FixVersions[i] = version.Name
+		}
+	}
+	t.DueDate = iss.Fields.DueDate
 	if iss.Fields.Description != nil {
 		t.Description = iss.Fields.Description.Flatten()
 	}
