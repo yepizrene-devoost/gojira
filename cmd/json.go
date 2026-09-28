@@ -79,7 +79,19 @@ func commandError(cmd *cobra.Command, code, message, issueKey string, state jira
 }
 
 func writeMutationResult(cmd *cobra.Command, client *jira.Client, domain, issueKey string) error {
-	issue, err := client.GetIssueFull(issueKey)
+	return writeMutationResultWithStoryPoints(cmd, client, domain, issueKey, "")
+}
+
+func writeMutationResultWithStoryPoints(cmd *cobra.Command, client *jira.Client, domain, issueKey, storyPointsField string) error {
+	var (
+		issue *jira.Issue
+		err   error
+	)
+	if storyPointsField == "" {
+		issue, err = client.GetIssueFull(issueKey)
+	} else {
+		issue, err = client.GetIssueFullWithStoryPoints(issueKey, storyPointsField)
+	}
 	if err != nil {
 		return reportJSONError(cmd, "refetch_failed", "mutation applied but the resulting issue could not be fetched", issueKey, jira.MutationApplied, err)
 	}

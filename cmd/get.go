@@ -48,13 +48,24 @@ var getCmd = &cobra.Command{
 	Long:  "Display complete ticket information including project, labels, components, reporter, comments, and more.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, domain, err := BuildClient()
+		storyPointsField, _ := cmd.Flags().GetString("story-points-field")
+		if cmd.Flags().Changed("story-points-field") {
+			if err := validateStoryPointsField(storyPointsField); err != nil {
+				return err
+			}
+		}
+		client, domain, err := buildClient()
 		if err != nil {
 			return err
 		}
 
 		issueKey := args[0]
-		iss, err := client.GetIssueFull(issueKey)
+		var iss *jira.Issue
+		if storyPointsField == "" {
+			iss, err = client.GetIssueFull(issueKey)
+		} else {
+			iss, err = client.GetIssueFullWithStoryPoints(issueKey, storyPointsField)
+		}
 		if err != nil {
 			return err
 		}
@@ -64,8 +75,8 @@ var getCmd = &cobra.Command{
 		}
 
 		// Render readable output
-		fmt.Println(renderIssueFull(iss))
-		return nil
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), renderIssueFull(iss))
+		return err
 	},
 }
 
@@ -130,6 +141,13 @@ func renderIssueFull(iss *jira.Issue) string {
 	if iss.Fields.DueDate != nil {
 		rows = append(rows, [2]string{"Due date", *iss.Fields.DueDate})
 	}
+	if iss.StoryPoints != nil {
+		value := "None"
+		if iss.StoryPoints.Value != nil {
+			value = iss.StoryPoints.Value.String()
+		}
+		rows = append(rows, [2]string{"Story points", value})
+	}
 	rows = append(rows, [2]string{"Created", iss.Fields.Created})
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 
@@ -164,5 +182,6 @@ func renderIssueFull(iss *jira.Issue) string {
 
 func init() {
 	getCmd.Flags().Bool("json", false, "Output as JSON")
+	getCmd.Flags().String("story-points-field", "", "Include story points from this Jira customfield_N ID")
 	rootCmd.AddCommand(getCmd)
 }

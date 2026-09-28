@@ -379,6 +379,97 @@ func TestGetIssueEditMetaUsesCentralizedEscapedPathAndPreservesAllowedValuesPres
 	}
 }
 
+func TestGetIssueFullWithStoryPointsRejectsInvalidSelectorBeforeRequest(t *testing.T) {
+	invalid := []string{
+		"",
+		"customfield_0",
+		"customfield_01",
+		"customfield_-1",
+		"customfield_10016,summary",
+		"customfield_10016&fields=summary",
+		"customfield_10016 ",
+		" customfield_10016",
+		"customfield_10016/extra",
+		"CUSTOMFIELD_10016",
+	}
+	for _, fieldID := range invalid {
+		t.Run(fmt.Sprintf("selector_%q", fieldID), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			_, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFullWithStoryPoints("A-1", fieldID)
+			if err == nil {
+				t.Fatal("invalid selector was accepted")
+			}
+			if requests != 0 {
+				t.Fatalf("invalid selector made %d requests, want zero", requests)
+			}
+		})
+	}
+}
+
+func TestGetIssueFullWithStoryPointsRequestsOnlySelectedCustomFieldAndDecodesTriState(t *testing.T) {
+	tests := []struct {
+		name      string
+		fields    string
+		wantValue string
+		wantNull  bool
+		wantErr   string
+	}{
+		{name: "number", fields: `{"summary":"Issue","customfield_10016":9007199254740993.125}`, wantValue: "9007199254740993.125"},
+		{name: "null", fields: `{"summary":"Issue","customfield_10016":null}`, wantNull: true},
+		{name: "missing", fields: `{"summary":"Issue"}`, wantErr: "missing"},
+		{name: "string", fields: `{"summary":"Issue","customfield_10016":"5"}`, wantErr: "not a number or null"},
+		{name: "boolean", fields: `{"summary":"Issue","customfield_10016":true}`, wantErr: "not a number or null"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requested := strings.Split(r.URL.Query().Get("fields"), ",")
+				customFields := 0
+				for _, field := range requested {
+					if strings.HasPrefix(field, "customfield_") {
+						customFields++
+						if field != "customfield_10016" {
+							t.Errorf("unexpected custom field %q", field)
+						}
+					}
+				}
+				if customFields != 1 {
+					t.Errorf("custom fields requested = %d, want exactly 1 in %q", customFields, r.URL.Query().Get("fields"))
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":%s}`, tc.fields)
+			}))
+			defer srv.Close()
+
+			issue, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFullWithStoryPoints("A-1", "customfield_10016")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issue.StoryPoints == nil {
+				t.Fatal("selected story points state is nil")
+			}
+			if tc.wantNull {
+				if issue.StoryPoints.Value != nil {
+					t.Fatalf("value = %v, want null", issue.StoryPoints.Value)
+				}
+			} else if issue.StoryPoints.Value == nil || issue.StoryPoints.Value.String() != tc.wantValue {
+				t.Fatalf("value = %v, want %s", issue.StoryPoints.Value, tc.wantValue)
+			}
+		})
+	}
+}
+
 func TestGetIssueFullRequestsAndDecodesUpdateFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, field := range []string{"duedate", "components", "fixVersions"} {

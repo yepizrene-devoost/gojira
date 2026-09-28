@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"math/big"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,7 +23,9 @@ var updateCmd = &cobra.Command{
   gojira update ARA-1892 --description "Updated context"
   gojira update ARA-1892 --due-date 2026-10-31
   gojira update ARA-1892 --components "Web,API" --fix-versions "v1.0,v1.1"
+  gojira update ARA-1892 --story-points 5.5 --story-points-field customfield_10016
   gojira update ARA-1892 --due-date= --components= --fix-versions=
+  gojira update ARA-1892 --story-points= --story-points-field customfield_10016
   gojira update ARA-1892 --priority High
   gojira update ARA-1892 --labels "frontend,urgent"`,
 	Args: cobra.ExactArgs(1),
@@ -28,6 +33,25 @@ var updateCmd = &cobra.Command{
 		issueKey := args[0]
 		fields := map[string]interface{}{}
 		metadataFields := map[string][]string{}
+		storyPointsChanged := cmd.Flags().Changed("story-points")
+		storyPointsFieldChanged := cmd.Flags().Changed("story-points-field")
+		if storyPointsChanged != storyPointsFieldChanged {
+			err := fmt.Errorf("--story-points and --story-points-field must be provided together")
+			return commandError(cmd, "validation_error", "story points flags must be paired", issueKey, jira.MutationNotApplied, err)
+		}
+		storyPointsField := ""
+		if storyPointsChanged {
+			storyPointsField, _ = cmd.Flags().GetString("story-points-field")
+			if err := validateStoryPointsField(storyPointsField); err != nil {
+				return commandError(cmd, "validation_error", "invalid story points field", issueKey, jira.MutationNotApplied, err)
+			}
+			raw, _ := cmd.Flags().GetString("story-points")
+			points, err := parseStoryPoints(raw)
+			if err != nil {
+				return commandError(cmd, "validation_error", "invalid story points", issueKey, jira.MutationNotApplied, err)
+			}
+			fields[storyPointsField] = points
+		}
 
 		if s, _ := cmd.Flags().GetString("summary"); s != "" {
 			fields["summary"] = s
@@ -87,7 +111,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		if len(fields) == 0 {
-			err := fmt.Errorf("specify at least one field to update (--summary, --description, --priority, --labels, --due-date, --components, --fix-versions)")
+			err := fmt.Errorf("specify at least one field to update (--summary, --description, --priority, --labels, --due-date, --components, --fix-versions, --story-points with --story-points-field)")
 			return commandError(cmd, "validation_error", "at least one field must be specified", issueKey, jira.MutationNotApplied, err)
 		}
 
@@ -95,7 +119,7 @@ var updateCmd = &cobra.Command{
 		if err != nil {
 			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", issueKey, jira.MutationNotApplied, err)
 		}
-		if len(metadataFields) > 0 {
+		if len(metadataFields) > 0 || storyPointsChanged {
 			meta, err := client.GetIssueEditMeta(issueKey)
 			if err != nil {
 				return commandError(cmd, "metadata_failed", "issue edit metadata is unavailable", issueKey, jira.MutationNotApplied, err)
@@ -103,12 +127,17 @@ var updateCmd = &cobra.Command{
 			if err := validateEditMeta(meta, metadataFields); err != nil {
 				return commandError(cmd, "validation_error", "requested field update is not allowed", issueKey, jira.MutationNotApplied, err)
 			}
+			if storyPointsChanged {
+				if err := validateStoryPointsEditMeta(meta, storyPointsField); err != nil {
+					return commandError(cmd, "validation_error", "story points field is not editable", issueKey, jira.MutationNotApplied, err)
+				}
+			}
 		}
 		if err := client.UpdateIssue(issueKey, fields); err != nil {
 			return commandError(cmd, "mutation_failed", "issue update failed", issueKey, jira.MutationStateOf(err), err)
 		}
 		if wantsJSON(cmd) {
-			return writeMutationResult(cmd, client, domain, issueKey)
+			return writeMutationResultWithStoryPoints(cmd, client, domain, issueKey, storyPointsField)
 		}
 
 		updated := make([]string, 0, len(fields))
@@ -119,6 +148,44 @@ var updateCmd = &cobra.Command{
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "✓ Updated %s: %s\n", issueKey, strings.Join(updated, ", "))
 		return nil
 	},
+}
+
+var storyPointsValuePattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
+
+func validateStoryPointsField(value string) error {
+	return jira.ValidateCustomFieldID(value)
+}
+
+func parseStoryPoints(value string) (any, error) {
+	if value == "" {
+		return nil, nil
+	}
+	if !storyPointsValuePattern.MatchString(value) {
+		return nil, fmt.Errorf("--story-points must be a finite decimal number or explicitly empty")
+	}
+	if _, ok := new(big.Rat).SetString(value); !ok {
+		return nil, fmt.Errorf("--story-points must be a finite decimal number or explicitly empty")
+	}
+	return json.Number(value), nil
+}
+
+func validateStoryPointsEditMeta(meta *jira.EditMeta, field string) error {
+	if meta == nil {
+		return fmt.Errorf("Jira returned empty edit metadata")
+	}
+	fieldMeta, present := meta.Fields[field]
+	if !present {
+		return fmt.Errorf("field %q is not editable for this issue", field)
+	}
+	if fieldMeta.Schema.Type != "number" {
+		return fmt.Errorf("field %q has schema type %q, want number", field, fieldMeta.Schema.Type)
+	}
+	for _, operation := range fieldMeta.Operations {
+		if operation == "set" {
+			return nil
+		}
+	}
+	return fmt.Errorf("field %q does not support the set operation", field)
 }
 
 func validateDueDate(value string) error {
@@ -187,6 +254,8 @@ func init() {
 	updateCmd.Flags().String("due-date", "", "Due date in YYYY-MM-DD format (explicitly empty clears it)")
 	updateCmd.Flags().String("components", "", "Component names (comma-separated, replaces existing; explicitly empty clears)")
 	updateCmd.Flags().String("fix-versions", "", "Fix version names (comma-separated, replaces existing; explicitly empty clears)")
+	updateCmd.Flags().String("story-points", "", "Story points decimal (requires --story-points-field; explicitly empty clears)")
+	updateCmd.Flags().String("story-points-field", "", "Jira story points field ID such as customfield_10016 (requires --story-points)")
 	updateCmd.Flags().Bool("json", false, "Output the resulting issue as TicketJSON v1")
 	rootCmd.AddCommand(updateCmd)
 }

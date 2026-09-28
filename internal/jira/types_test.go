@@ -3,6 +3,7 @@ package jira
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,42 @@ func TestIssueToTicketJSONSparseFixturePreservesDefaultsAndOmissions(t *testing.
 		if _, ok := object[key]; ok {
 			t.Errorf("omitempty field %q was present in %s", key, encoded)
 		}
+	}
+}
+
+func TestIssueToTicketJSONStoryPointsTriState(t *testing.T) {
+	number := json.Number("9007199254740993.125")
+	tests := []struct {
+		name        string
+		points      *NullableNumber
+		wantPresent bool
+		wantValue   any
+	}{
+		{name: "selector omitted", points: nil, wantPresent: false},
+		{name: "selected null", points: &NullableNumber{}, wantPresent: true, wantValue: nil},
+		{name: "selected number preserves precision", points: &NullableNumber{Value: &number}, wantPresent: true, wantValue: json.Number("9007199254740993.125")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := Issue{Key: "A-1", StoryPoints: tc.points}
+			encoded, err := json.Marshal(IssueToTicketJSON(issue, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+			decoder.UseNumber()
+			var object map[string]any
+			if err := decoder.Decode(&object); err != nil {
+				t.Fatal(err)
+			}
+			value, present := object["storyPoints"]
+			if present != tc.wantPresent {
+				t.Fatalf("storyPoints presence = %v, want %v in %s", present, tc.wantPresent, encoded)
+			}
+			if tc.wantPresent && !reflect.DeepEqual(value, tc.wantValue) {
+				t.Fatalf("storyPoints = %#v, want %#v", value, tc.wantValue)
+			}
+		})
 	}
 }
 

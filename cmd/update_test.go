@@ -290,6 +290,166 @@ func TestUpdateFailsSafelyWhenEditMetadataRejectsRequestedFields(t *testing.T) {
 	}
 }
 
+func TestUpdateStoryPointsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "value without field", args: []string{"--story-points", "5"}},
+		{name: "field without value", args: []string{"--story-points-field", "customfield_10016"}},
+		{name: "malformed field", args: []string{"--story-points", "5", "--story-points-field", "story_points"}},
+		{name: "empty field", args: []string{"--story-points=", "--story-points-field="}},
+		{name: "NaN", args: []string{"--story-points", "NaN", "--story-points-field", "customfield_10016"}},
+		{name: "infinity", args: []string{"--story-points", "Inf", "--story-points-field", "customfield_10016"}},
+		{name: "exponent is not a decimal literal", args: []string{"--story-points", "1e3", "--story-points-field", "customfield_10016"}},
+		{name: "leading plus is not JSON numeric syntax", args: []string{"--story-points", "+5", "--story-points-field", "customfield_10016"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+			args := append([]string{"update", "A-1"}, tc.args...)
+			args = append(args, "--json")
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
+			if code != 1 || stdout != "" || requests != 0 {
+				t.Fatalf("exit = %d, stdout = %q, requests = %d", code, stdout, requests)
+			}
+			envelope := decodeMutationError(t, stderr)
+			if envelope.Code != "validation_error" || envelope.MutationState != jira.MutationNotApplied {
+				t.Fatalf("envelope = %#v", envelope)
+			}
+		})
+	}
+}
+
+func TestUpdateStoryPointsRequiresNumericSettableEditMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+	}{
+		{name: "field missing", metadata: `{"fields":{}}`},
+		{name: "schema not number", metadata: `{"fields":{"customfield_10016":{"schema":{"type":"string"},"operations":["set"]}}}`},
+		{name: "set operation missing", metadata: `{"fields":{"customfield_10016":{"schema":{"type":"number"},"operations":["add"]}}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			puts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPut {
+					puts++
+				}
+				_, _ = fmt.Fprint(w, tc.metadata)
+			}))
+			defer srv.Close()
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"),
+				"update", "A-1", "--story-points", "5", "--story-points-field", "customfield_10016", "--json")
+			if code != 1 || stdout != "" || puts != 0 {
+				t.Fatalf("exit = %d, stdout = %q, puts = %d", code, stdout, puts)
+			}
+			envelope := decodeMutationError(t, stderr)
+			if envelope.Code != "validation_error" || envelope.MutationState != jira.MutationNotApplied {
+				t.Fatalf("envelope = %#v", envelope)
+			}
+		})
+	}
+}
+
+func TestUpdateStoryPointsUsesMetadataPutRefetchOrderAndPreservesPrecision(t *testing.T) {
+	var sequence []string
+	var points json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sequence = append(sequence, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/editmeta"):
+			_, _ = fmt.Fprint(w, `{"fields":{"customfield_10016":{"schema":{"type":"number"},"operations":["set"]}}}`)
+		case r.Method == http.MethodPut:
+			var payload struct {
+				Fields map[string]json.RawMessage `json:"fields"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			points = payload.Fields["customfield_10016"]
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			if got := r.URL.Query().Get("fields"); !strings.Contains(","+got+",", ",customfield_10016,") {
+				t.Errorf("refetch fields = %q", got)
+			}
+			_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Updated","customfield_10016":9007199254740993.125}}`)
+		}
+	}))
+	defer srv.Close()
+
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"),
+		"update", "A-1", "--story-points", "9007199254740993.125", "--story-points-field", "customfield_10016", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	wantSequence := []string{"GET /rest/api/3/issue/A-1/editmeta", "PUT /rest/api/3/issue/A-1", "GET /rest/api/3/issue/A-1"}
+	if fmt.Sprint(sequence) != fmt.Sprint(wantSequence) {
+		t.Fatalf("sequence = %v, want %v", sequence, wantSequence)
+	}
+	if string(points) != "9007199254740993.125" {
+		t.Fatalf("story points payload = %s", points)
+	}
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.UseNumber()
+	var result map[string]any
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if got := result["storyPoints"]; got != json.Number("9007199254740993.125") {
+		t.Fatalf("storyPoints = %#v", got)
+	}
+}
+
+func TestUpdateStoryPointsExplicitEmptySendsNull(t *testing.T) {
+	var points json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"fields":{"customfield_10016":{"schema":{"type":"number"},"operations":["set"]}}}`)
+			return
+		}
+		var payload struct {
+			Fields map[string]json.RawMessage `json:"fields"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		points = payload.Fields["customfield_10016"]
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	code, _, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"),
+		"update", "A-1", "--story-points=", "--story-points-field", "customfield_10016")
+	if code != 0 || stderr != "" || string(points) != "null" {
+		t.Fatalf("exit = %d, stderr = %q, payload = %s", code, stderr, points)
+	}
+}
+
+func TestUpdateStoryPointsPostWriteMissingFieldReportsAppliedReadFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/editmeta"):
+			_, _ = fmt.Fprint(w, `{"fields":{"customfield_10016":{"schema":{"type":"number"},"operations":["set"]}}}`)
+		case r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Updated"}}`)
+		}
+	}))
+	defer srv.Close()
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"),
+		"update", "A-1", "--story-points", "5", "--story-points-field", "customfield_10016", "--json")
+	if code != 1 || stdout != "" {
+		t.Fatalf("exit = %d, stdout = %q", code, stdout)
+	}
+	envelope := decodeMutationError(t, stderr)
+	if envelope.Code != "refetch_failed" || envelope.MutationState != jira.MutationApplied {
+		t.Fatalf("envelope = %#v", envelope)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(value)

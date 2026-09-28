@@ -3,6 +3,7 @@ package jira
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 )
 
 // API path constants — all endpoints live here.
@@ -47,6 +48,17 @@ const (
 	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
 	fieldsExport = "summary,status,priority,assignee,issuetype"
 )
+
+var customFieldIDPattern = regexp.MustCompile(`^customfield_[1-9][0-9]*$`)
+
+// ValidateCustomFieldID accepts only Jira's canonical customfield_N form.
+// Callers must validate before interpolating a selected field into a query.
+func ValidateCustomFieldID(fieldID string) error {
+	if !customFieldIDPattern.MatchString(fieldID) {
+		return fmt.Errorf("custom field ID must match customfield_N with a positive numeric ID")
+	}
+	return nil
+}
 
 func issuePath(path, key string) string {
 	return fmt.Sprintf(path, url.PathEscape(key))

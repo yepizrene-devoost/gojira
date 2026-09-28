@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -227,8 +228,22 @@ type IssueFieldData struct {
 }
 
 type Issue struct {
-	Key    string         `json:"key"`
-	Fields IssueFieldData `json:"fields"`
+	Key         string          `json:"key"`
+	Fields      IssueFieldData  `json:"fields"`
+	StoryPoints *NullableNumber `json:"-"`
+}
+
+// NullableNumber represents a selected Jira numeric field. A nil Value is an
+// explicit Jira null; a nil *NullableNumber means that no field was selected.
+type NullableNumber struct {
+	Value *json.Number
+}
+
+func (n NullableNumber) MarshalJSON() ([]byte, error) {
+	if n.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Value)
 }
 
 type EditMeta struct {
@@ -236,7 +251,13 @@ type EditMeta struct {
 }
 
 type EditMetaField struct {
-	AllowedValues *[]NamedValue `json:"allowedValues"`
+	AllowedValues *[]NamedValue  `json:"allowedValues"`
+	Schema        EditMetaSchema `json:"schema"`
+	Operations    []string       `json:"operations"`
+}
+
+type EditMetaSchema struct {
+	Type string `json:"type"`
 }
 
 type NamedValue struct {
@@ -269,26 +290,27 @@ type Worklog struct {
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
 
 type TicketJSON struct {
-	SchemaVersion  string        `json:"schemaVersion"`
-	Key            string        `json:"key"`
-	URL            string        `json:"url,omitempty"`
-	Summary        string        `json:"summary"`
-	Status         string        `json:"status"`
-	StatusCategory string        `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
-	Priority       string        `json:"priority"`
-	Assignee       string        `json:"assignee"`
-	Reporter       string        `json:"reporter,omitempty"`
-	IssueType      string        `json:"issueType"`
-	Project        string        `json:"project,omitempty"`
-	Labels         []string      `json:"labels,omitempty"`
-	Components     []string      `json:"components,omitempty"`
-	FixVersions    []string      `json:"fixVersions,omitempty"`
-	DueDate        *string       `json:"dueDate"`
-	Description    string        `json:"description"`
-	Created        string        `json:"created"`
-	Updated        string        `json:"updated"`
-	TimeLogged     string        `json:"timeLogged,omitempty"`
-	Comments       []CommentJSON `json:"comments,omitempty"`
+	SchemaVersion  string          `json:"schemaVersion"`
+	Key            string          `json:"key"`
+	URL            string          `json:"url,omitempty"`
+	Summary        string          `json:"summary"`
+	Status         string          `json:"status"`
+	StatusCategory string          `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
+	Priority       string          `json:"priority"`
+	Assignee       string          `json:"assignee"`
+	Reporter       string          `json:"reporter,omitempty"`
+	IssueType      string          `json:"issueType"`
+	Project        string          `json:"project,omitempty"`
+	Labels         []string        `json:"labels,omitempty"`
+	Components     []string        `json:"components,omitempty"`
+	FixVersions    []string        `json:"fixVersions,omitempty"`
+	DueDate        *string         `json:"dueDate"`
+	StoryPoints    *NullableNumber `json:"storyPoints,omitempty"`
+	Description    string          `json:"description"`
+	Created        string          `json:"created"`
+	Updated        string          `json:"updated"`
+	TimeLogged     string          `json:"timeLogged,omitempty"`
+	Comments       []CommentJSON   `json:"comments,omitempty"`
 }
 
 type CommentJSON struct {
@@ -429,6 +451,7 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 		}
 	}
 	t.DueDate = iss.Fields.DueDate
+	t.StoryPoints = iss.StoryPoints
 	if iss.Fields.Description != nil {
 		t.Description = iss.Fields.Description.Flatten()
 	}

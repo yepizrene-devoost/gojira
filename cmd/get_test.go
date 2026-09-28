@@ -2,6 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -81,6 +85,100 @@ func TestRenderIssueFullShowsDueDateComponentsAndFixVersionsWhenPresent(t *testi
 			t.Fatalf("sparse output unexpectedly contains %q: %q", absent, sparse)
 		}
 	}
+}
+
+func TestGetStoryPointsSelectorJSONAndHumanOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		json     bool
+		want     string
+		wantNull bool
+	}{
+		{name: "JSON number", value: "5.5", json: true, want: "5.5"},
+		{name: "JSON null", value: "null", json: true, wantNull: true},
+		{name: "human number", value: "8", want: "Story points:"},
+		{name: "human null", value: "null", want: "None"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("fields"); !strings.Contains(","+got+",", ",customfield_10016,") {
+					t.Errorf("fields query = %q", got)
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Issue","customfield_10016":%s}}`, tc.value)
+			}))
+			defer srv.Close()
+			args := []string{"get", "A-1", "--story-points-field", "customfield_10016"}
+			if tc.json {
+				args = append(args, "--json")
+			}
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if tc.json {
+				decoder := json.NewDecoder(strings.NewReader(stdout))
+				decoder.UseNumber()
+				var result map[string]any
+				if err := decoder.Decode(&result); err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantNull {
+					if result["storyPoints"] != nil {
+						t.Fatalf("storyPoints = %#v, want null", result["storyPoints"])
+					}
+				} else if result["storyPoints"] != json.Number(tc.want) {
+					t.Fatalf("storyPoints = %#v, want %s", result["storyPoints"], tc.want)
+				}
+			} else if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("human output missing %q: %q", tc.want, stdout)
+			}
+		})
+	}
+}
+
+func TestGetWithoutStoryPointsSelectorPreservesOmission(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Query().Get("fields"), "customfield_") {
+			t.Errorf("unexpected custom field query %q", r.URL.Query().Get("fields"))
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Issue"}}`)
+	}))
+	defer srv.Close()
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := result["storyPoints"]; present {
+		t.Fatalf("storyPoints unexpectedly present: %s", stdout)
+	}
+}
+
+func TestGetStoryPointsRejectsMalformedSelectorAndMissingResponse(t *testing.T) {
+	t.Run("malformed selector makes no request", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
+		defer srv.Close()
+		code, _, _ := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--story-points-field", "points")
+		if code != 1 || requests != 0 {
+			t.Fatalf("exit = %d, requests = %d", code, requests)
+		}
+	})
+	t.Run("missing selected field fails", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Issue"}}`)
+		}))
+		defer srv.Close()
+		code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--story-points-field", "customfield_10016", "--json")
+		if code != 1 || stdout != "" || stderr == "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+	})
 }
 
 func TestRenderIssueFullCommentCreatedValues(t *testing.T) {

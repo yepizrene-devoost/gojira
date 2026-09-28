@@ -297,7 +297,24 @@ func (c *Client) GetIssue(issueKey string) (*Issue, error) {
 }
 
 func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
-	b, err := c.get(pathIssueWithFields(issueKey, fieldsFull))
+	return c.getIssueFull(issueKey, "")
+}
+
+// GetIssueFullWithStoryPoints requests the normal full field set plus exactly
+// one caller-selected custom field and strictly decodes its number/null value.
+func (c *Client) GetIssueFullWithStoryPoints(issueKey, fieldID string) (*Issue, error) {
+	if err := ValidateCustomFieldID(fieldID); err != nil {
+		return nil, fmt.Errorf("invalid story points field ID: %w", err)
+	}
+	return c.getIssueFull(issueKey, fieldID)
+}
+
+func (c *Client) getIssueFull(issueKey, storyPointsField string) (*Issue, error) {
+	fields := fieldsFull
+	if storyPointsField != "" {
+		fields += "," + storyPointsField
+	}
+	b, err := c.get(pathIssueWithFields(issueKey, fields))
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +322,34 @@ func (c *Client) GetIssueFull(issueKey string) (*Issue, error) {
 	if err := json.Unmarshal(b, &iss); err != nil {
 		return nil, err
 	}
+	if storyPointsField == "" {
+		return &iss, nil
+	}
+	var envelope struct {
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		return nil, err
+	}
+	raw, present := envelope.Fields[storyPointsField]
+	if !present {
+		return nil, fmt.Errorf("selected story points field %q is missing from Jira response", storyPointsField)
+	}
+	if string(raw) == "null" {
+		iss.StoryPoints = &NullableNumber{}
+		return &iss, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("selected story points field %q is not a number or null: %w", storyPointsField, err)
+	}
+	number, ok := value.(json.Number)
+	if !ok {
+		return nil, fmt.Errorf("selected story points field %q is not a number or null", storyPointsField)
+	}
+	iss.StoryPoints = &NullableNumber{Value: &number}
 	return &iss, nil
 }
 

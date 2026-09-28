@@ -130,7 +130,7 @@ setup wizard, or connect to Jira.
 | `gojira tui` | Launch the interactive TUI (including first-run setup and connection checks) |
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
-| `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments (`--json`) |
+| `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments (`--json`); add `--story-points-field customfield_N` to include that numeric field |
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
@@ -138,7 +138,7 @@ setup wizard, or connect to Jira.
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
-| `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions` (`--json`; empty `--description=`, `--due-date=`, `--components=`, or `--fix-versions=` clears that field) |
+| `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
@@ -171,6 +171,13 @@ gojira update ARA-1892 --due-date 2026-10-31 --components "API,Web" --fix-versio
 
 # Clear these fields explicitly (omitting a flag leaves its field unchanged)
 gojira update ARA-1892 --due-date= --components= --fix-versions=
+
+# Set or explicitly clear the site's selected numeric story-points field
+gojira update ARA-1892 --story-points 5.5 --story-points-field customfield_10016
+gojira update ARA-1892 --story-points= --story-points-field customfield_10016
+
+# Include the same selected field in human or JSON reads
+gojira get ARA-1892 --story-points-field customfield_10016 --json
 ```
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
@@ -208,6 +215,7 @@ date formats are preserved verbatim.
 | `components` | array of strings | Omitted when empty; component display names. |
 | `fixVersions` | array of strings | Omitted when empty; fix-version display names. |
 | `dueDate` | string or null | Always; Jira calendar date in `YYYY-MM-DD` form, or `null` when unset or unavailable. |
+| `storyPoints` | number or null | Present only when a validated `--story-points-field customfield_N` selector is supplied to `get`, or when `update --json` writes that selected field; the exact Jira number or `null`. |
 | `description` | string | Always; flattened ADF text, or empty string when unavailable. |
 | `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
@@ -218,8 +226,11 @@ Read surfaces can only populate fields requested and returned by their Jira
 endpoint. In particular, board-backed export and TUI column copy request basic
 issue fields, so description, comments, and timestamps may be empty or omitted.
 Sparse Jira responses preserve the required empty-string fields and the
-`"Unassigned"` default described above. `dueDate` is the one nullable TicketJSON
-v1 field and is always present as either a `YYYY-MM-DD` string or `null`.
+`"Unassigned"` default described above. `dueDate` is always present as either a
+`YYYY-MM-DD` string or `null`. `storyPoints` is omitted unless a field selector
+was supplied; with a selector it is always a JSON number or `null`. A selected
+field missing from Jira's response, or returned as another JSON type, is a read
+error rather than an omitted property.
 
 `boards --json` and `projects --json` expose their own list shapes.
 `move --json` without `--to` retains its transition array, and
@@ -234,6 +245,14 @@ not editable. Component and fix-version names are checked locally when Jira
 supplies `allowedValues`; otherwise Jira's write rejection remains visible.
 The metadata read never causes a write retry, and the PUT is still dispatched
 at most once.
+
+Story points use no field-name heuristics. `--story-points` and
+`--story-points-field customfield_N` must be supplied together; malformed IDs,
+non-decimal values, and non-finite values are rejected before any Jira request.
+An explicitly empty `--story-points=` sends JSON `null`. Before the PUT, edit
+metadata must contain the selected field with `schema.type: "number"` and a
+`set` operation. Selector-aware reads request the normal full fields plus only
+the selected custom field, and preserve decimal precision in JSON output.
 
 A failed JSON mutation exits with status 1, writes no stdout before result
 encoding begins, and writes one error object to stderr:
