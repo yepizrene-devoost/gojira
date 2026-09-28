@@ -1,17 +1,18 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 var boardsCmd = &cobra.Command{
 	Use:   "boards",
 	Short: "List your Jira boards",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
+		client, _, err := buildClient()
 		if err != nil {
 			return err
 		}
@@ -22,8 +23,10 @@ var boardsCmd = &cobra.Command{
 		}
 
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			b, _ := json.MarshalIndent(boards, "", "  ")
-			fmt.Println(string(b))
+			if boards == nil {
+				boards = []jira.Board{}
+			}
+			return writeJSON(cmd, boards)
 		} else {
 			for _, b := range boards {
 				project := ""
