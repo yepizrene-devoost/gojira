@@ -87,6 +87,56 @@ func TestRenderIssueFullShowsDueDateComponentsAndFixVersionsWhenPresent(t *testi
 	}
 }
 
+func TestGetHierarchyJSONAndHumanFromSingleGET(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				for _, field := range []string{"parent", "subtasks"} {
+					if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
+						t.Errorf("missing %s", field)
+					}
+				}
+				_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Main","parent":{"key":"A-0","fields":{"summary":"Root","status":{"name":"Open"}}},"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Shipped","statusCategory":{"key":"DONE"}}}},{"key":"A-3","fields":{"summary":"Other","status":{"name":"Review","statusCategory":{"key":"indeterminate"}}}}]}}`)
+			}))
+			defer srv.Close()
+			args := []string{"get", "A-1"}
+			if jsonOutput {
+				args = append(args, "--json")
+			}
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
+			if code != 0 || stderr != "" || calls != 1 {
+				t.Fatalf("exit=%d stderr=%q calls=%d", code, stderr, calls)
+			}
+			if jsonOutput {
+				var ticket jira.TicketJSON
+				assertSingleJSONDocument(t, []byte(stdout), &ticket)
+				if ticket.Parent == nil || ticket.Parent.Key != "A-0" || ticket.Parent.Summary != "Root" || ticket.Parent.Status != "Open" || ticket.Subtasks == nil || len(*ticket.Subtasks) != 2 || ticket.SubtaskProgress == nil || ticket.SubtaskProgress.Done != 1 || ticket.SubtaskProgress.Total != 2 {
+					t.Fatalf("hierarchy = %+v", ticket)
+				}
+			} else {
+				for _, want := range []string{"Parent:", "A-0 Root (Open)", "A-2 Child (Shipped)", "A-3 Other (Review)", "Progress: 1/2 done"} {
+					if !strings.Contains(stdout, want) {
+						t.Errorf("missing %q in %s", want, stdout)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRenderIssueFullOmitsUnverifiedProgress(t *testing.T) {
+	var issue jira.Issue
+	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Done"}}}]}}`), &issue); err != nil {
+		t.Fatal(err)
+	}
+	out := renderIssueFull(&issue)
+	if !strings.Contains(out, "A-2 Child (Done)") || strings.Contains(out, "Progress:") {
+		t.Fatalf("unverified progress should be omitted, child retained: %s", out)
+	}
+}
+
 func TestGetStoryPointsSelectorJSONAndHumanOutput(t *testing.T) {
 	tests := []struct {
 		name     string

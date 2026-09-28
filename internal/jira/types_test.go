@@ -139,6 +139,61 @@ func TestIssueToTicketJSONSparseFixturePreservesDefaultsAndOmissions(t *testing.
 	}
 }
 
+func TestIssueHierarchyPresenceAndProgress(t *testing.T) {
+	cases := []struct {
+		name, fields               string
+		wantChildren, wantProgress bool
+		wantDone, wantTotal        int
+	}{
+		{"absent", `{}`, false, false, 0, 0},
+		{"null", `{"parent":null,"subtasks":null}`, false, false, 0, 0},
+		{"empty", `{"subtasks":[]}`, true, true, 0, 0},
+		{"mixed categories", `{"subtasks":[{"key":"A-2","fields":{"summary":"First","status":{"name":"Complete","statusCategory":{"key":"Done"}}}},{"key":"A-3","fields":{"summary":"Second","status":{"name":"Done","statusCategory":{"key":"indeterminate"}}}}]}`, true, true, 1, 2},
+		{"unknown category", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done","statusCategory":{"key":"custom"}}}}]}`, true, false, 0, 0},
+		{"missing category", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done"}}}]}`, true, false, 0, 0},
+		{"missing key", `{"subtasks":[{"fields":{"status":{"statusCategory":{"key":"done"}}}}]}`, true, false, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var issue Issue
+			if err := json.Unmarshal([]byte(`{"key":"A-1","fields":`+tc.fields+`}`), &issue); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(IssueToTicketJSON(issue, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &object); err != nil {
+				t.Fatal(err)
+			}
+			if _, present := object["parent"]; present {
+				t.Fatalf("unexpected parent for absent/null input: %s", encoded)
+			}
+			children, present := object["subtasks"]
+			if present != tc.wantChildren {
+				t.Fatalf("subtasks presence = %v, want %v: %s", present, tc.wantChildren, encoded)
+			}
+			if tc.name == "empty" && string(children) != "[]" {
+				t.Fatalf("empty subtasks = %s, want []", children)
+			}
+			progress, present := object["subtaskProgress"]
+			if present != tc.wantProgress {
+				t.Fatalf("progress presence = %v, want %v: %s", present, tc.wantProgress, encoded)
+			}
+			if present {
+				var counts SubtaskProgressJSON
+				if err := json.Unmarshal(progress, &counts); err != nil {
+					t.Fatal(err)
+				}
+				if counts.Done != tc.wantDone || counts.Total != tc.wantTotal {
+					t.Fatalf("progress = %+v, want %d/%d", counts, tc.wantDone, tc.wantTotal)
+				}
+			}
+		})
+	}
+}
+
 func TestIssueToTicketJSONStoryPointsTriState(t *testing.T) {
 	number := json.Number("9007199254740993.125")
 	tests := []struct {

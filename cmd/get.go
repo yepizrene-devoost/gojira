@@ -93,6 +93,7 @@ func writef(b *strings.Builder, format string, args ...any) {
 
 func renderIssueFull(iss *jira.Issue) string {
 	var b strings.Builder
+	ticket := jira.IssueToTicketJSON(*iss, "")
 
 	b.WriteString(keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key)))
 	b.WriteString("\n\n")
@@ -120,6 +121,9 @@ func renderIssueFull(iss *jira.Issue) string {
 	}
 	if iss.Fields.Project != nil {
 		rows = append(rows, [2]string{"Project", fmt.Sprintf("%s (%s)", iss.Fields.Project.Key, iss.Fields.Project.Name)})
+	}
+	if parent := ticket.Parent; parent != nil {
+		rows = append(rows, [2]string{"Parent", fmt.Sprintf("%s %s (%s)", parent.Key, parent.Summary, parent.Status)})
 	}
 	if len(iss.Fields.Labels) > 0 {
 		rows = append(rows, [2]string{"Labels", strings.Join(iss.Fields.Labels, ", ")})
@@ -153,6 +157,17 @@ func renderIssueFull(iss *jira.Issue) string {
 
 	for _, row := range rows {
 		writef(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
+	}
+
+	// Hierarchy is read from the same issue response; no per-child requests.
+	if ticket.Subtasks != nil {
+		b.WriteString("\n── Subtasks ──\n")
+		for _, child := range *ticket.Subtasks {
+			writef(&b, "  %s %s (%s)\n", child.Key, child.Summary, child.Status)
+		}
+		if ticket.SubtaskProgress != nil {
+			writef(&b, "  Progress: %d/%d done\n", ticket.SubtaskProgress.Done, ticket.SubtaskProgress.Total)
+		}
 	}
 
 	// Description

@@ -130,7 +130,7 @@ setup wizard, or connect to Jira.
 | `gojira tui` | Launch the interactive TUI (including first-run setup and connection checks) |
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
-| `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments (`--json`); add `--story-points-field customfield_N` to include that numeric field |
+| `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments, parent and subtasks when returned (`--json`); add `--story-points-field customfield_N` to include that numeric field |
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
@@ -230,6 +230,9 @@ date formats are preserved verbatim.
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
+| `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
+| `subtasks` | array of objects | `get` children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
+| `subtaskProgress` | object | `get` only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
 
 Read surfaces can only populate fields requested and returned by their Jira
 endpoint. In particular, board-backed export and TUI column copy request basic
@@ -239,7 +242,10 @@ Sparse Jira responses preserve the required empty-string fields and the
 `YYYY-MM-DD` string or `null`. `storyPoints` is omitted unless a field selector
 was supplied; with a selector it is always a JSON number or `null`. A selected
 field missing from Jira's response, or returned as another JSON type, is a read
-error rather than an omitted property.
+error rather than an omitted property. Hierarchy is requested by the full issue
+GET used by `get`, not by board/export/TUI reads; availability of nested child
+status categories depends on Jira's response. Synthetic tests cover this shape;
+live Jira Cloud compatibility has not been verified.
 
 `boards --json` and `projects --json` expose their own list shapes.
 `move --json` without `--to` retains its transition array, and

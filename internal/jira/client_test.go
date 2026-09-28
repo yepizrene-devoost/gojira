@@ -520,6 +520,49 @@ func TestGetIssueFullWithStoryPointsRequestsOnlySelectedCustomFieldAndDecodesTri
 	}
 }
 
+func TestGetIssueFullHierarchyFromSingleResponse(t *testing.T) {
+	for _, selected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("story points selected=%t", selected), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodGet || r.URL.Path != "/rest/api/3/issue/A-1" {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				fields := "," + r.URL.Query().Get("fields") + ","
+				for _, name := range []string{"parent", "subtasks"} {
+					if !strings.Contains(fields, ","+name+",") {
+						t.Errorf("missing %s in %s", name, fields)
+					}
+				}
+				if selected != strings.Contains(fields, ",customfield_10016,") {
+					t.Errorf("story-points selector mismatch: %s", fields)
+				}
+				points := ""
+				if selected {
+					points = `,"customfield_10016":5.5`
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":{"parent":{"key":"A-0","fields":{"summary":"Parent","status":{"name":"Open","statusCategory":{"key":"new"}}}},"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Complete","statusCategory":{"key":"done"}}}}]%s}}`, points)
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			var issue *Issue
+			var err error
+			if selected {
+				issue, err = client.GetIssueFullWithStoryPoints("A-1", "customfield_10016")
+			} else {
+				issue, err = client.GetIssueFull("A-1")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || issue.Fields.Parent == nil || issue.Fields.Parent.Key != "A-0" || issue.Fields.Subtasks == nil || len(*issue.Fields.Subtasks) != 1 {
+				t.Fatalf("calls=%d hierarchy=%+v", calls, issue.Fields)
+			}
+		})
+	}
+}
+
 func TestGetIssueFullRequestsAndDecodesUpdateFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, field := range []string{"duedate", "components", "fixVersions"} {
