@@ -1,0 +1,19 @@
+# CI lint regression after issue #9 merge
+
+## Objective
+Restore the CI lint job on `develop` after merge commit `bad3cac6e4a6ca0187bc285aec1387c8b77c2d97`, without weakening linters or altering Jira behavior. Branch: `bugfix/ci-lint-issue-9-merge` from `develop` via `dflow start --no-push`. This work does not itself authorize a push, merge, or closing issue #9; those require separate decisions.
+
+## Evidence and scope
+GitHub Actions CI run [36389646848](https://github.com/yepizrene-devoost/gojira/actions/runs/36389646848) failed only in `Lint`; Build, Test, Vet and separate Release checks passed. The repository's `.github/workflows/ci.yml` runs golangci-lint v2.11.4 and `.golangci.yml` enables `errcheck` and `staticcheck`. The remote run reported 11 diagnostics: two unchecked pipe `Close` calls in `cmd/boards_test.go`, six unchecked `fmt.Fprint/Fprintf` calls in `internal/tui/tui_test.go`, and three ST1005 capitalized `Jira returned...` error strings in `cmd/update.go` and `internal/tui/tui.go`. A local run of golangci-lint v2.11.4 after the first scoped patch additionally reported three unchecked test-response writes in `internal/tui/tui_test.go` (then at lines 199, 240, 375); the fix must include those in the same file before CI can be claimed green. The four-file edit boundary is unchanged. No real Jira requests are needed.
+
+## Checklist
+- [x] Map the exact CI run, all 11 diagnostics, and the pipe EOF/handler error-reporting constraints before writing source.
+- [x] Corrected only the four affected Go files, including the three additional local `errcheck` findings in the same TUI test file. `cmd/boards_test.go` checks both pipe closes, keeps writer close before `io.ReadAll` EOF and avoids duplicate cleanup; TUI test handlers report nine write failures with nonfatal `t.Errorf`; three `Jira returned...` Go errors now start with lowercase `jira`. No Jira behavior or lint configuration change, no blanket suppression and no whole-file formatting churn.
+- [x] Writer and independent high-risk verifier each observed golangci-lint v2.11.4 `golangci-lint run --timeout=5m` pass with `0 issues`, `go test ./cmd ./internal/tui -count=1` pass, `go test ./... -count=1` pass and `git diff --check` pass. The independent verifier confirmed no new gofmt violations relative to HEAD, despite pre-existing unformatted lines in two files; the new ODD file has no trailing whitespace and ends in newline. Native risk ASSESS was unassessable while this task file was untracked, so a separate independent verifier ran. Runtime boundary: local CLI/TUI tests and lint, no live GitHub CI rerun or real Jira request. All checks for this local candidate passed; remote CI remains to be verified only after separately authorized delivery.
+- [ ] Record the user-authorized work-unit commit SHA in a short `docs(odd)` identity follow-up before any native committed-range review. A declaration states review expectation, not verdict.
+
+## Review declaration
+This work unit is expected to enter a native committed-range review after its identity record is committed. This declaration is not a verdict or approval; no review lineage or target ID can be known before freeze. Any correction after review requires a new candidate.
+
+## Delivery boundary
+The rollback scope is this unit's hunks in `cmd/boards_test.go`, `internal/tui/tui_test.go`, `cmd/update.go`, `internal/tui/tui.go`, and this task file. `dflow finish` publishes and merges to `develop` asynchronously relative to CI, so it must not be inferred from a local passing run or executed without standalone approval. Closing #9 as completed remains a separate exact confirmation after verifying the target state.
