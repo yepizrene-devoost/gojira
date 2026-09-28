@@ -47,15 +47,25 @@ func captureListStdout(t *testing.T, run func() (int, string)) (int, string, str
 	if err != nil {
 		t.Fatalf("create stdout pipe: %v", err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close stdout reader: %v", err)
+		}
+	}()
 	original := os.Stdout
 	os.Stdout = writer
+	writerOpen := true
 	defer func() {
 		os.Stdout = original
-		writer.Close()
+		if writerOpen {
+			if err := writer.Close(); err != nil {
+				t.Errorf("close stdout writer: %v", err)
+			}
+		}
 	}()
 	code, stderr := run()
 	os.Stdout = original
+	writerOpen = false
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close stdout writer: %v", err)
 	}

@@ -26,7 +26,9 @@ func fieldEditorServer(t *testing.T, failRefresh bool) (*httptest.Server, *[]str
 		*calls = append(*calls, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/editmeta"):
-			fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"components":{"schema":{"type":"array","items":"component"},"operations":["set"],"allowedValues":[{"name":"Web"},{"name":"API"}]},"fixVersions":{"schema":{"type":"array","items":"version"},"operations":["set"],"allowedValues":[{"name":"v1"}]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`)
+			if _, err := fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"components":{"schema":{"type":"array","items":"component"},"operations":["set"],"allowedValues":[{"name":"Web"},{"name":"API"}]},"fixVersions":{"schema":{"type":"array","items":"version"},"operations":["set"],"allowedValues":[{"name":"v1"}]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`); err != nil {
+				t.Errorf("write edit metadata: %v", err)
+			}
 		case r.Method == "PUT":
 			var err error
 			*payload, err = io.ReadAll(r.Body)
@@ -34,7 +36,9 @@ func fieldEditorServer(t *testing.T, failRefresh bool) (*httptest.Server, *[]str
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET":
 			if failRefresh && len(*payload)>0 { http.Error(w,"refresh failed",500); return }
-			fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":null}}`)
+			if _, err := fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":null}}`); err != nil {
+				t.Errorf("write issue: %v", err)
+			}
 		default: http.Error(w,"unexpected request",500)
 		}
 	}))
@@ -86,14 +90,18 @@ func TestFieldEditorLongPrefillChangedOnly(t *testing.T) {
 				calls = append(calls, r.Method+" "+r.URL.Path)
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/editmeta"):
-					fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`)
+					if _, err := fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`); err != nil {
+						t.Errorf("write edit metadata: %v", err)
+					}
 				case r.Method == http.MethodPut:
 					var err error
 					payload, err = io.ReadAll(r.Body)
 					if err != nil { t.Errorf("read payload: %v", err) }
 					w.WriteHeader(http.StatusNoContent)
 				default:
-					fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, points)
+					if _, err := fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, points); err != nil {
+						t.Errorf("write issue: %v", err)
+					}
 				}
 			}))
 			defer srv.Close()
@@ -188,7 +196,9 @@ func TestFieldEditorAmbiguousWriteRetainsFormWithoutRetry(t *testing.T) {
 		switch r.Method {
 		case http.MethodGet:
 			gets++
-			fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`)
+			if _, err := fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`); err != nil {
+				t.Errorf("write edit metadata: %v", err)
+			}
 		case http.MethodPut:
 			puts++
 			http.Error(w, "uncertain outcome", http.StatusInternalServerError)
@@ -229,12 +239,16 @@ func TestFieldEditorManualSelectorLoadsBeforeCombinedSave(t *testing.T) {
 				calls = append(calls, r.Method+" "+r.URL.Path)
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/editmeta"):
-					fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`)
+					if _, err := fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`); err != nil {
+						t.Errorf("write edit metadata: %v", err)
+					}
 				case r.Method == http.MethodPut:
 					payload, _ = io.ReadAll(r.Body)
 					w.WriteHeader(http.StatusNoContent)
 				default:
-					fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, tc.initial)
+					if _, err := fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, tc.initial); err != nil {
+						t.Errorf("write issue: %v", err)
+					}
 				}
 			}))
 			defer srv.Close()
@@ -271,7 +285,9 @@ func TestFieldEditorManualSelectorFailureBlocksEvenTouchedPoints(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls = append(calls, r.Method)
 				w.WriteHeader(tc.status)
-				fmt.Fprintf(w, `{"key":"A-1","fields":%s}`, tc.field)
+				if _, err := fmt.Fprintf(w, `{"key":"A-1","fields":%s}`, tc.field); err != nil {
+					t.Errorf("write issue: %v", err)
+				}
 			}))
 			defer srv.Close()
 			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
@@ -360,7 +376,9 @@ func TestFieldEditorEditMetaFailClosed(t *testing.T) {
 					if tc.allowed != "" { fields += fmt.Sprintf(`,"allowedValues":%s`, tc.allowed) }
 					fields += "}"
 				}
-				fmt.Fprintf(w, `{"fields":{%s}}`, fields)
+				if _, err := fmt.Fprintf(w, `{"fields":{%s}}`, fields); err != nil {
+					t.Errorf("write edit metadata: %v", err)
+				}
 			}))
 			defer srv.Close()
 			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})

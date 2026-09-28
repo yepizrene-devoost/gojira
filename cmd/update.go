@@ -171,7 +171,7 @@ func parseStoryPoints(value string) (any, error) {
 
 func validateStoryPointsEditMeta(meta *jira.EditMeta, field string) error {
 	if meta == nil {
-		return fmt.Errorf("Jira returned empty edit metadata")
+		return fmt.Errorf("jira returned empty edit metadata")
 	}
 	fieldMeta, present := meta.Fields[field]
 	if !present {
@@ -223,7 +223,7 @@ func parseCommaNames(value, flag string) ([]string, error) {
 
 func validateEditMeta(meta *jira.EditMeta, requested map[string][]string) error {
 	if meta == nil {
-		return fmt.Errorf("Jira returned empty edit metadata")
+		return fmt.Errorf("jira returned empty edit metadata")
 	}
 	for field, names := range requested {
 		fieldMeta, editable := meta.Fields[field]

@@ -1313,7 +1313,7 @@ func (m Model) fieldChanges() (map[string]interface{}, map[string][]string, erro
 }
 
 func validateFieldMeta(meta *jira.EditMeta, fields map[string]interface{}, lists map[string][]string) error {
-	if meta == nil { return fmt.Errorf("Jira returned no edit metadata") }
+	if meta == nil { return fmt.Errorf("jira returned no edit metadata") }
 	for key := range fields {
 		f, ok := meta.Fields[key]
 		if !ok { return fmt.Errorf("%s is not editable for this issue", key) }
