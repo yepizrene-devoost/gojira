@@ -135,7 +135,7 @@ setup wizard, or connect to Jira.
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
-| `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
+| `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
 | `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
@@ -156,6 +156,9 @@ gojira get ARA-1892 --json
 
 # Create a ticket from a markdown requirement file
 gojira create --project ARA --type Task --summary "Add export" --description-file req.md
+
+# Create a sub-task beneath an existing issue (defaults to --type Sub-task)
+gojira create --project ARA --parent ARA-1892 --summary "Verify export" --json
 
 # Create a ticket straight into the active sprint (skip the backlog)
 gojira create --project ARA --type Task --summary "Sprint work" --board 1
@@ -179,6 +182,12 @@ gojira update ARA-1892 --story-points= --story-points-field customfield_10016
 # Include the same selected field in human or JSON reads
 gojira get ARA-1892 --story-points-field customfield_10016 --json
 ```
+
+`create --parent KEY` accepts a canonical Jira issue key and requires type
+`Sub-task` when `--type` is explicit. It cannot be combined with `--board`:
+child sprint membership is not established by this command. Without `--parent`,
+the default remains `Task`. GoJira validates the flag combination locally but
+Jira decides whether the parent exists and permits child creation.
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
 The curated `TicketJSON` schema is used by `get --json`, `search --json`,

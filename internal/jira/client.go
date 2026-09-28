@@ -454,6 +454,15 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 
 // CreateIssue creates a new issue and returns its key.
 func (c *Client) CreateIssue(projectKey, issueType, summary string, description *ADFDoc) (string, error) {
+	return c.createIssue(projectKey, issueType, summary, description, "")
+}
+
+// CreateIssueWithParent creates a child issue using the same write semantics as CreateIssue.
+func (c *Client) CreateIssueWithParent(projectKey, issueType, summary string, description *ADFDoc, parentKey string) (string, error) {
+	return c.createIssue(projectKey, issueType, summary, description, parentKey)
+}
+
+func (c *Client) createIssue(projectKey, issueType, summary string, description *ADFDoc, parentKey string) (string, error) {
 	fields := map[string]interface{}{
 		"project":   map[string]string{"key": projectKey},
 		"issuetype": map[string]string{"name": issueType},
@@ -461,6 +470,9 @@ func (c *Client) CreateIssue(projectKey, issueType, summary string, description 
 	}
 	if description != nil && len(description.Content) > 0 {
 		fields["description"] = description
+	}
+	if parentKey != "" {
+		fields["parent"] = map[string]string{"key": parentKey}
 	}
 	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
 	b, err := c.mutate(http.MethodPost, pathIssueCreate, payload)

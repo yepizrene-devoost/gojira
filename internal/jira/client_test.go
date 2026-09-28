@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,55 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestCreateIssueWithParentKeepsLegacyPayloadSeparate(t *testing.T) {
+	for _, tc := range []struct {
+		name, parent string
+	}{
+		{"legacy create", ""},
+		{"subtask create", "ARA-4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method != http.MethodPost || r.URL.Path != pathIssueCreate {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				var body struct {
+					Fields map[string]json.RawMessage `json:"fields"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode: %v", err)
+				}
+				parent, present := body.Fields["parent"]
+				if present != (tc.parent != "") {
+					t.Errorf("parent presence = %v", present)
+				}
+				if present && string(parent) != `{"key":"ARA-4"}` {
+					t.Errorf("parent = %s", parent)
+				}
+				if len(body.Fields["description"]) == 0 {
+					t.Error("description omitted")
+				}
+				_, _ = fmt.Fprint(w, `{"key":"ARA-5"}`)
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			description := TextToADF("context")
+			var key string
+			var err error
+			if tc.parent == "" {
+				key, err = client.CreateIssue("ARA", "Task", "summary", &description)
+			} else {
+				key, err = client.CreateIssueWithParent("ARA", "Sub-task", "summary", &description, tc.parent)
+			}
+			if key != "ARA-5" || err != nil || requests != 1 {
+				t.Fatalf("key=%q err=%v requests=%d", key, err, requests)
+			}
+		})
+	}
+}
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 

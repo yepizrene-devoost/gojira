@@ -3,11 +3,14 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+var parentIssueKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]*-[1-9][0-9]*$`)
 
 var createCmd = &cobra.Command{
 	Use:   "create",
@@ -17,7 +20,9 @@ var createCmd = &cobra.Command{
   gojira create --project ARA --type Task --summary "Fix login bug"
   gojira create --project ARA --type Bug --summary "Crash on load" --description-file report.md
   gojira create --project ARA --type Task --summary "New sprint work" --board 1
+  gojira create --project ARA --parent ARA-123 --summary "Follow up"
 
+With --parent, the issue type defaults to Sub-task and --board is not supported.
 With --board, the new issue is also added to that board's active sprint;
 without it, sprint-board issues land in the backlog.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -26,12 +31,27 @@ without it, sprint-board issues land in the backlog.`,
 		summary, _ := cmd.Flags().GetString("summary")
 		descRaw, _ := cmd.Flags().GetString("description")
 		descFile, _ := cmd.Flags().GetString("description-file")
+		parent, _ := cmd.Flags().GetString("parent")
 
 		if project == "" || summary == "" {
 			err := fmt.Errorf("--project and --summary are required")
 			return commandError(cmd, "validation_error", "project and summary are required", "", jira.MutationNotApplied, err)
 		}
-		if issueType == "" {
+		if cmd.Flags().Changed("parent") {
+			if !parentIssueKey.MatchString(parent) {
+				err := fmt.Errorf("--parent must be a Jira issue key (e.g. ARA-123)")
+				return commandError(cmd, "validation_error", "parent issue key is invalid", "", jira.MutationNotApplied, err)
+			}
+			if cmd.Flags().Changed("board") {
+				err := fmt.Errorf("--parent cannot be combined with --board")
+				return commandError(cmd, "validation_error", "parent and board cannot be combined", "", jira.MutationNotApplied, err)
+			}
+			if cmd.Flags().Changed("type") && issueType != "Sub-task" {
+				err := fmt.Errorf("--parent requires --type Sub-task")
+				return commandError(cmd, "validation_error", "parent requires issue type Sub-task", "", jira.MutationNotApplied, err)
+			}
+			issueType = "Sub-task"
+		} else if issueType == "" {
 			issueType = "Task"
 		}
 
@@ -55,7 +75,12 @@ without it, sprint-board issues land in the backlog.`,
 			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
 		}
 
-		key, err := client.CreateIssue(project, issueType, summary, desc)
+		var key string
+		if parent != "" {
+			key, err = client.CreateIssueWithParent(project, issueType, summary, desc, parent)
+		} else {
+			key, err = client.CreateIssue(project, issueType, summary, desc)
+		}
 		if err != nil {
 			return commandError(cmd, "mutation_failed", "issue creation failed", key, jira.MutationStateOf(err), err)
 		}
@@ -99,7 +124,8 @@ without it, sprint-board issues land in the backlog.`,
 
 func init() {
 	createCmd.Flags().String("project", "", "Project key (e.g. ARA)")
-	createCmd.Flags().String("type", "", "Issue type (default: Task)")
+	createCmd.Flags().String("type", "", "Issue type (default: Task, or Sub-task with --parent)")
+	createCmd.Flags().String("parent", "", "Parent issue key for a Sub-task (cannot be used with --board)")
 	createCmd.Flags().String("summary", "", "Issue summary")
 	createCmd.Flags().String("description", "", "Description text")
 	createCmd.Flags().String("description-file", "", "Path to description file (markdown)")
