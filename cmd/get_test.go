@@ -1,12 +1,120 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/spf13/cobra"
+
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+// runReadCLI isolates the client seam and Cobra streams for read-command errors.
+func runReadCLI(t *testing.T, args []string, builder func() (*jira.Client, string, error), writer io.Writer) (int, string) {
+	t.Helper()
+	restoreFlagDefaults(rootCmd)
+	var stderr bytes.Buffer
+	oldBuilder := buildClient
+	oldOut := rootCmd.OutOrStdout()
+	oldErr := rootCmd.ErrOrStderr()
+	buildClient = builder
+	rootCmd.SetOut(writer)
+	rootCmd.SetErr(&stderr)
+	defer func() {
+		buildClient = oldBuilder
+		rootCmd.SetOut(oldOut)
+		rootCmd.SetErr(oldErr)
+		rootCmd.SetArgs(nil)
+		restoreFlagDefaults(rootCmd)
+	}()
+	return runRootCommand(rootCmd, args), stderr.String()
+}
+
+func TestGetJSONErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, wantCode  string
+		status                    int
+		builderError, writerError error
+	}{
+		{name: "configuration", wantCode: "configuration_error", builderError: errors.New("client unavailable")},
+		{name: "HTTP 4xx", wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "HTTP 5xx", wantCode: "read_failed", status: http.StatusInternalServerError},
+		{name: "invalid response", wantCode: "read_failed", response: `{broken`},
+		{name: "writer", wantCode: "output_failed", response: `{"key":"A-1","fields":{"summary":"Issue"}}`, writerError: errors.New("output unavailable")},
+	} {
+		for _, before := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json-before=%t", tc.name, before), func(t *testing.T) {
+				requests := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					if r.Method != http.MethodGet {
+						t.Errorf("method = %s", r.Method)
+					}
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
+					}
+					_, _ = fmt.Fprint(w, tc.response)
+				}))
+				defer srv.Close()
+				args := []string{"get", "A-1", "--json"}
+				if before {
+					args = []string{"get", "--json", "A-1"}
+				}
+				var stdout bytes.Buffer
+				var writer io.Writer = &stdout
+				if tc.writerError != nil {
+					writer = failingWriter{err: tc.writerError}
+				}
+				code, stderr := runReadCLI(t, args, func() (*jira.Client, string, error) {
+					if tc.builderError != nil {
+						return nil, "", tc.builderError
+					}
+					return jira.NewClient(srv.URL, "email", "token"), "jira.example", nil
+				}, writer)
+				if code != 1 || stdout.Len() != 0 {
+					t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr)
+				}
+				wantRequests := 1
+				if tc.builderError != nil {
+					wantRequests = 0
+				}
+				if (tc.status == http.StatusInternalServerError && requests < 1) || (tc.status != http.StatusInternalServerError && requests != wantRequests) {
+					t.Fatalf("requests=%d, want %d (5xx may retry)", requests, wantRequests)
+				}
+				got := decodeMutationError(t, stderr)
+				if got.Code != tc.wantCode || got.MutationState != jira.MutationNotApplied || got.IssueKey != "A-1" {
+					t.Fatalf("error=%+v, want %s/not_applied/A-1", got, tc.wantCode)
+				}
+			})
+		}
+	}
+}
+
+func TestWriteGetJSONUsesCobraOutputAsSingleDocument(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	issue := jira.Issue{Key: "ARA-9"}
+	issue.Fields.Summary = "Agent JSON"
+
+	if err := writeGetJSON(cmd, issue, "example.atlassian.net"); err != nil {
+		t.Fatalf("writeGetJSON() error = %v", err)
+	}
+
+	var ticket jira.TicketJSON
+	assertSingleJSONDocument(t, stdout.Bytes(), &ticket)
+	if ticket.SchemaVersion != "v1" || ticket.Key != "ARA-9" {
+		t.Fatalf("ticket = %#v, want v1 ARA-9", ticket)
+	}
+}
 
 // Comment previews are cut on rune boundaries: Jira bodies in this workspace
 // carry accented Spanish, and a byte slice used to split those characters.
@@ -38,6 +146,172 @@ func TestTruncateRunes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRenderIssueFullShowsDueDateComponentsAndFixVersionsWhenPresent(t *testing.T) {
+	dueDate := "2026-10-31"
+	issue := &jira.Issue{Key: "PROJ-1"}
+	issue.Fields.Components = []jira.ComponentField{{Name: "API"}, {Name: "Web"}}
+	issue.Fields.FixVersions = []jira.FixVersionField{{Name: "v1.0"}, {Name: "v1.1"}}
+	issue.Fields.DueDate = &dueDate
+
+	out := renderIssueFull(issue)
+	for _, want := range []string{"Components:", "API, Web", "Fix versions:", "v1.0, v1.1", "Due date:", "2026-10-31"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rendered output missing %q: %q", want, out)
+		}
+	}
+
+	sparse := renderIssueFull(&jira.Issue{Key: "PROJ-2"})
+	for _, absent := range []string{"Components:", "Fix versions:", "Due date:"} {
+		if strings.Contains(sparse, absent) {
+			t.Fatalf("sparse output unexpectedly contains %q: %q", absent, sparse)
+		}
+	}
+}
+
+func TestGetHierarchyJSONAndHumanFromSingleGET(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				for _, field := range []string{"parent", "subtasks"} {
+					if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
+						t.Errorf("missing %s", field)
+					}
+				}
+				_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Main","parent":{"key":"A-0","fields":{"summary":"Root","status":{"name":"Open"}}},"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Shipped","statusCategory":{"key":"DONE"}}}},{"key":"A-3","fields":{"summary":"Other","status":{"name":"Review","statusCategory":{"key":"indeterminate"}}}}]}}`)
+			}))
+			defer srv.Close()
+			args := []string{"get", "A-1"}
+			if jsonOutput {
+				args = append(args, "--json")
+			}
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
+			if code != 0 || stderr != "" || calls != 1 {
+				t.Fatalf("exit=%d stderr=%q calls=%d", code, stderr, calls)
+			}
+			if jsonOutput {
+				var ticket jira.TicketJSON
+				assertSingleJSONDocument(t, []byte(stdout), &ticket)
+				if ticket.Parent == nil || ticket.Parent.Key != "A-0" || ticket.Parent.Summary != "Root" || ticket.Parent.Status != "Open" || ticket.Subtasks == nil || len(*ticket.Subtasks) != 2 || ticket.SubtaskProgress == nil || ticket.SubtaskProgress.Done != 1 || ticket.SubtaskProgress.Total != 2 {
+					t.Fatalf("hierarchy = %+v", ticket)
+				}
+			} else {
+				for _, want := range []string{"Parent:", "A-0 Root (Open)", "A-2 Child (Shipped)", "A-3 Other (Review)", "Progress: 1/2 done"} {
+					if !strings.Contains(stdout, want) {
+						t.Errorf("missing %q in %s", want, stdout)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRenderIssueFullOmitsUnverifiedProgress(t *testing.T) {
+	var issue jira.Issue
+	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Done"}}}]}}`), &issue); err != nil {
+		t.Fatal(err)
+	}
+	out := renderIssueFull(&issue)
+	if !strings.Contains(out, "A-2 Child (Done)") || strings.Contains(out, "Progress:") {
+		t.Fatalf("unverified progress should be omitted, child retained: %s", out)
+	}
+}
+
+func TestGetStoryPointsSelectorJSONAndHumanOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		json     bool
+		want     string
+		wantNull bool
+	}{
+		{name: "JSON number", value: "5.5", json: true, want: "5.5"},
+		{name: "JSON null", value: "null", json: true, wantNull: true},
+		{name: "human number", value: "8", want: "Story points:"},
+		{name: "human null", value: "null", want: "None"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("fields"); !strings.Contains(","+got+",", ",customfield_10016,") {
+					t.Errorf("fields query = %q", got)
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Issue","customfield_10016":%s}}`, tc.value)
+			}))
+			defer srv.Close()
+			args := []string{"get", "A-1", "--story-points-field", "customfield_10016"}
+			if tc.json {
+				args = append(args, "--json")
+			}
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if tc.json {
+				decoder := json.NewDecoder(strings.NewReader(stdout))
+				decoder.UseNumber()
+				var result map[string]any
+				if err := decoder.Decode(&result); err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantNull {
+					if result["storyPoints"] != nil {
+						t.Fatalf("storyPoints = %#v, want null", result["storyPoints"])
+					}
+				} else if result["storyPoints"] != json.Number(tc.want) {
+					t.Fatalf("storyPoints = %#v, want %s", result["storyPoints"], tc.want)
+				}
+			} else if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("human output missing %q: %q", tc.want, stdout)
+			}
+		})
+	}
+}
+
+func TestGetWithoutStoryPointsSelectorPreservesOmission(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Query().Get("fields"), "customfield_") {
+			t.Errorf("unexpected custom field query %q", r.URL.Query().Get("fields"))
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Issue"}}`)
+	}))
+	defer srv.Close()
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := result["storyPoints"]; present {
+		t.Fatalf("storyPoints unexpectedly present: %s", stdout)
+	}
+}
+
+func TestGetStoryPointsRejectsMalformedSelectorAndMissingResponse(t *testing.T) {
+	t.Run("malformed selector makes no request", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
+		defer srv.Close()
+		code, _, _ := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--story-points-field", "points")
+		if code != 1 || requests != 0 {
+			t.Fatalf("exit = %d, requests = %d", code, requests)
+		}
+	})
+	t.Run("missing selected field fails", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Issue"}}`)
+		}))
+		defer srv.Close()
+		code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--story-points-field", "customfield_10016", "--json")
+		if code != 1 || stdout != "" || stderr == "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+	})
 }
 
 func TestRenderIssueFullCommentCreatedValues(t *testing.T) {

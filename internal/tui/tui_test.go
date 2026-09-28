@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,6 +17,395 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+func fieldEditorServer(t *testing.T, failRefresh bool) (*httptest.Server, *[]string, *[]byte) {
+	t.Helper()
+	calls := &[]string{}
+	payload := &[]byte{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls = append(*calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/editmeta"):
+			fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"components":{"schema":{"type":"array","items":"component"},"operations":["set"],"allowedValues":[{"name":"Web"},{"name":"API"}]},"fixVersions":{"schema":{"type":"array","items":"version"},"operations":["set"],"allowedValues":[{"name":"v1"}]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`)
+		case r.Method == "PUT":
+			var err error
+			*payload, err = io.ReadAll(r.Body)
+			if err != nil { t.Errorf("read payload: %v", err) }
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "GET":
+			if failRefresh && len(*payload)>0 { http.Error(w,"refresh failed",500); return }
+			fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":null}}`)
+		default: http.Error(w,"unexpected request",500)
+		}
+	}))
+	return srv,calls,payload
+}
+
+func editorModel(t *testing.T, srv *httptest.Server, boardField string) Model {
+	t.Helper()
+	m := makeTestModel(1,1)
+	m.client = jira.NewClient(srv.URL,"e@x.com","tok")
+	m.view = viewDetail
+	issue := testIssue("A-1")
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.loadedBoardRequest = 8
+	m.detailBoardRequest = 8
+	m.boardPointsField = boardField
+	return m
+}
+
+func TestFieldEditorBoardSelectionAndCombinedUpdate(t *testing.T) {
+	srv,calls,payload := fieldEditorServer(t,false); defer srv.Close()
+	m, cmd := updateModel(t,editorModel(t,srv,"customfield_10002"),tea.KeyPressMsg{Code:'E',Text:"E"})
+	if m.view != viewFieldsEdit || cmd == nil { t.Fatal("field shortcut did not open editor") }
+	m,_ = updateModel(t,m,cmd())
+	if !m.fieldSelected || m.fieldInputs[4].Value() != "customfield_10002" { t.Fatalf("board field was not selected: selected=%v id=%q err=%v calls=%v",m.fieldSelected,m.fieldInputs[4].Value(),m.fieldErr,*calls) }
+	m.fieldInputs[0].SetValue("2026-12-31")
+	m.fieldInputs[1].SetValue("Web,API")
+	m.fieldInputs[2].SetValue("v1")
+	m.fieldInputs[3].SetValue("2.5")
+	m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	if cmd == nil { t.Fatal("save did not start") }
+	m,_ = updateModel(t,m,cmd())
+	if m.view != viewDetail || len(*calls)!=4 || (*calls)[0]!="GET /rest/api/3/issue/A-1" || (*calls)[1]!="GET /rest/api/3/issue/A-1/editmeta" || (*calls)[2]!="PUT /rest/api/3/issue/A-1" { t.Fatalf("unexpected state or request order: %v, %v",m.view,*calls) }
+	var body struct { Fields map[string]json.RawMessage `json:"fields"` }
+	if err := json.Unmarshal(*payload,&body); err != nil { t.Fatal(err) }
+	if len(body.Fields)!=4 || string(body.Fields["customfield_10002"])!="2.5" { t.Fatalf("unexpected changed-only payload: %s",*payload) }
+}
+
+func TestFieldEditorLongPrefillChangedOnly(t *testing.T) {
+	component := strings.Repeat("界", 520)
+	version := strings.Repeat("é", 521)
+	points := strings.Repeat("7", 513)
+	for _, tc := range []struct{ name, date string }{{"no-op", ""}, {"due date only", "2026-10-10"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			var payload []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/editmeta"):
+					fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`)
+				case r.Method == http.MethodPut:
+					var err error
+					payload, err = io.ReadAll(r.Body)
+					if err != nil { t.Errorf("read payload: %v", err) }
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, points)
+				}
+			}))
+			defer srv.Close()
+			m := editorModel(t, srv, "customfield_10002")
+			m.detail.Fields.Components = []jira.ComponentField{{Name: component}}
+			m.detail.Fields.FixVersions = []jira.FixVersionField{{Name: version}}
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 'E', Text: "E"})
+			if cmd == nil { t.Fatal("board selection did not start") }
+			m, _ = updateModel(t, m, cmd())
+			if m.fieldErr != nil || !m.fieldSelected { t.Fatalf("selection failed: %v", m.fieldErr) }
+			for i, want := range map[int]string{1: component, 2: version, 3: points} {
+				if got := m.fieldInputs[i].Value(); got != want { t.Fatalf("field %d prefill: %d runes, want %d", i, len([]rune(got)), len([]rune(want))) }
+			}
+			if tc.date != "" { m.fieldInputs[0].SetValue(tc.date) }
+			m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if tc.date == "" {
+				if cmd != nil || m.view != viewDetail || len(calls) != 1 { t.Fatalf("no-op sent requests: %v", calls) }
+				return
+			}
+			if cmd == nil { t.Fatal("due date save did not start") }
+			m, _ = updateModel(t, m, cmd())
+			wantCalls := []string{"GET /rest/api/3/issue/A-1", "GET /rest/api/3/issue/A-1/editmeta", "PUT /rest/api/3/issue/A-1", "GET /rest/api/3/issue/A-1"}
+			if m.view != viewDetail || !reflect.DeepEqual(calls, wantCalls) { t.Fatalf("save state=%v err=%v calls=%v", m.view, m.fieldErr, calls) }
+			var body struct{ Fields map[string]json.RawMessage `json:"fields"` }
+			if err := json.Unmarshal(payload, &body); err != nil { t.Fatal(err) }
+			if len(body.Fields) != 1 || string(body.Fields["duedate"]) != `"2026-10-10"` { t.Fatalf("unexpected payload: %s", payload) }
+		})
+	}
+}
+
+func TestFieldEditorLocalValidationAndCancel(t *testing.T) {
+	for _,tc := range []struct{name string; field int; value string}{
+		{"invalid date",0,"2026-02-30"}, {"duplicate list",1,"Web,web"}, {"invalid decimal",3,"NaN"}, {"missing selector",3,"4"},
+	} { t.Run(tc.name,func(t *testing.T){
+		srv,calls,_ := fieldEditorServer(t,false); defer srv.Close()
+		m,_ := updateModel(t,editorModel(t,srv,""),tea.KeyPressMsg{Code:'E',Text:"E"})
+		m.fieldInputs[tc.field].SetValue(tc.value)
+		m,cmd := updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+		if cmd!=nil || m.fieldErr==nil || len(*calls)!=0 { t.Fatalf("invalid input triggered request: %v %v",m.fieldErr,*calls) }
+		m,_ = updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEscape})
+		if m.view!=viewDetail { t.Fatal("cancel did not return to detail") }
+	}) }
+}
+
+func TestFieldEditorClearAndAppliedRefreshRetry(t *testing.T) {
+	srv,calls,payload := fieldEditorServer(t,true); defer srv.Close()
+	m,_ := updateModel(t,editorModel(t,srv,""),tea.KeyPressMsg{Code:'E',Text:"E"})
+	m.fieldInputs[0].SetValue("2026-01-01"); m.fieldInputs[0].SetValue(""); m.fieldTouched[0]=true
+	m.fieldInputs[1].SetValue("Web"); m.fieldInputs[1].SetValue(""); m.fieldTouched[1]=true
+	m.fieldInputs[4].SetValue("customfield_10002")
+	m,cmd := updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	if cmd == nil { t.Fatal("manual selector did not start selected GET") }
+	m,_ = updateModel(t,m,cmd())
+	m.fieldTouched[3]=true
+	m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	m,_ = updateModel(t,m,cmd())
+	if !m.fieldApplied || m.view!=viewFieldsEdit { t.Fatalf("refresh failure lost applied state: %v %v",m.fieldApplied,m.fieldErr) }
+	var body struct { Fields map[string]json.RawMessage `json:"fields"` }; if err:=json.Unmarshal(*payload,&body); err!=nil {t.Fatal(err)}
+	if string(body.Fields["duedate"])!="null" || string(body.Fields["components"])!="[]" || string(body.Fields["customfield_10002"])!="null" {t.Fatalf("clear payload: %s",*payload)}
+	m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	m,_ = updateModel(t,m,cmd())
+	for _, call := range *calls { if strings.HasPrefix(call,"PUT") && strings.Count(strings.Join(*calls,"|"),"PUT")!=1 { t.Fatalf("duplicate PUT: %v",*calls) } }
+}
+
+func TestFieldEditorMetadataRejectsBeforePut(t *testing.T) {
+	srv,calls,_ := fieldEditorServer(t,false); defer srv.Close()
+	m,_ := updateModel(t,editorModel(t,srv,""),tea.KeyPressMsg{Code:'E',Text:"E"})
+	m.fieldInputs[1].SetValue("Unknown")
+	m,cmd := updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	m,_ = updateModel(t,m,cmd())
+	if m.fieldErr==nil || len(*calls)!=1 || !strings.HasSuffix((*calls)[0],"editmeta") { t.Fatalf("metadata rejection did not stop PUT: %v %v",m.fieldErr,*calls) }
+}
+
+func TestFieldEditorNoOpAndStaleResponse(t *testing.T) {
+	srv,calls,_ := fieldEditorServer(t,false); defer srv.Close()
+	m,_ := updateModel(t,editorModel(t,srv,""),tea.KeyPressMsg{Code:'E',Text:"E"})
+	m,cmd := updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	if cmd!=nil || m.view!=viewDetail || len(*calls)!=0 { t.Fatalf("no-op wrote: %v",*calls) }
+	m,_ = updateModel(t,m,tea.KeyPressMsg{Code:'E',Text:"E"})
+	m.fieldInputs[0].SetValue("2026-10-10")
+	m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	oldID := m.activeFieldRequest
+	m.view = viewDetail // navigation invalidates the pending editor response
+	m,_ = updateModel(t,m,fieldUpdatedMsg{requestID:oldID,issueKey:"A-1",boardRequest:8,issue:&jira.Issue{Key:"STALE"},applied:true})
+	if m.detail.Key!="A-1" || m.view!=viewDetail { t.Fatal("stale response overwrote detail") }
+	_ = cmd // asynchronous mutation cannot be cancelled once dispatched
+}
+
+func TestFieldEditorAmbiguousWriteRetainsFormWithoutRetry(t *testing.T) {
+	var puts, gets int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			gets++
+			fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`)
+		case http.MethodPut:
+			puts++
+			http.Error(w, "uncertain outcome", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	m,_ := updateModel(t,editorModel(t,srv,""),tea.KeyPressMsg{Code:'E',Text:"E"})
+	m.fieldInputs[0].SetValue("2026-10-10")
+	m,cmd := updateModel(t,m,tea.KeyPressMsg{Code:'s',Mod:tea.ModCtrl})
+	m,_ = updateModel(t,m,cmd())
+	if puts!=1 || gets!=1 || m.view!=viewFieldsEdit || m.fieldApplied || m.fieldErr==nil || m.fieldInputs[0].Value()!="2026-10-10" {
+		t.Fatalf("ambiguous write not retained safely: puts=%d gets=%d state=%v err=%v",puts,gets,m.view,m.fieldErr)
+	}
+	m,_ = updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEscape})
+	if puts!=1 || m.view!=viewDetail { t.Fatal("cancel retried uncertain write") }
+}
+
+func TestFieldEditorInvalidManualSelectorBlocksOtherChanges(t *testing.T) {
+	srv, calls, _ := fieldEditorServer(t, false)
+	defer srv.Close()
+	m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+	m.fieldInputs[0].SetValue("2026-10-10")
+	m.fieldInputs[4].SetValue("not-a-field")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.fieldErr == nil || len(*calls) != 0 {
+		t.Fatalf("invalid selector reached network: cmd=%v err=%v calls=%v", cmd != nil, m.fieldErr, *calls)
+	}
+}
+
+func TestFieldEditorManualSelectorLoadsBeforeCombinedSave(t *testing.T) {
+	for _, tc := range []struct{ name, initial, update string }{
+		{"number", "3.5", "4.5"}, {"null", "null", "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			var payload []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/editmeta"):
+					fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]},"customfield_10002":{"schema":{"type":"number"},"operations":["set"]}}}`)
+				case r.Method == http.MethodPut:
+					payload, _ = io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, tc.initial)
+				}
+			}))
+			defer srv.Close()
+			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+			m.fieldInputs[0].SetValue("2026-10-10")
+			m.fieldInputs[4].SetValue("customfield_10002")
+			m.fieldCur = 4
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+			if cmd == nil || !m.fieldLoading { t.Fatal("selector did not start a guarded GET") }
+			m, _ = updateModel(t, m, cmd())
+			want := tc.initial
+			if want == "null" { want = "" }
+			if !m.fieldSelected || m.fieldInputs[3].Value() != want || len(calls) != 1 { t.Fatalf("selected value=%q, err=%v, calls=%v", m.fieldInputs[3].Value(), m.fieldErr, calls) }
+			m.fieldInputs[3].SetValue(tc.update)
+			m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if cmd == nil { t.Fatal("save did not start") }
+			m, _ = updateModel(t, m, cmd())
+			if m.view != viewDetail || len(calls) != 4 || !strings.HasPrefix(calls[1], "GET") || !strings.HasPrefix(calls[2], "PUT") {
+				t.Fatalf("unexpected save sequence or state: %v, %v, %v", calls, m.view, m.fieldErr)
+			}
+			var body struct{ Fields map[string]json.RawMessage `json:"fields"` }
+			if err := json.Unmarshal(payload, &body); err != nil { t.Fatal(err) }
+			if len(body.Fields) != 2 || string(body.Fields["customfield_10002"]) != tc.update || string(body.Fields["duedate"]) != `"2026-10-10"` { t.Fatalf("combined payload: %s", payload) }
+		})
+	}
+}
+
+func TestFieldEditorManualSelectorFailureBlocksEvenTouchedPoints(t *testing.T) {
+	for _, tc := range []struct{ name, field string; status int }{
+		{"missing", `{}`, 200}, {"wrong type", `{"customfield_10002":"bad"}`, 200}, {"request error", ``, 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method)
+				w.WriteHeader(tc.status)
+				fmt.Fprintf(w, `{"key":"A-1","fields":%s}`, tc.field)
+			}))
+			defer srv.Close()
+			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+			m.fieldInputs[4].SetValue("customfield_10002")
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			m, _ = updateModel(t, m, cmd())
+			if m.fieldErr == nil || m.fieldSelected { t.Fatal("bad selected response was accepted") }
+			m.fieldInputs[0].SetValue("2026-10-10")
+			m.fieldInputs[3].SetValue("5")
+			m.fieldTouched[3] = true
+			m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if cmd == nil || !m.fieldLoading { t.Fatal("failed selector must retry GET before any save") }
+			m, _ = updateModel(t, m, cmd())
+			if len(calls) < 2 { t.Fatalf("selected value was not retried: %v", calls) }
+			for _, call := range calls { if call != "GET" { t.Fatalf("write despite invalid selected value: %v", calls) } }
+		})
+	}
+}
+
+func TestFieldEditorChangingBoardSelectorDiscardsOldPoints(t *testing.T) {
+	srv, _, _ := fieldEditorServer(t, false)
+	defer srv.Close()
+	m, cmd := updateModel(t, editorModel(t, srv, "customfield_10002"), tea.KeyPressMsg{Code: 'E', Text: "E"})
+	m, _ = updateModel(t, m, cmd())
+	m.fieldInputs[3].SetValue("7")
+	m.fieldInputs[4].SetValue("customfield_10003")
+	m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.fieldInputs[3].Value() != "" || m.fieldTouched[3] || !m.fieldLoading || cmd == nil {
+		t.Fatal("selector change retained prior board-selected points or started a write")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if m.fieldErr == nil || m.fieldSelected { t.Fatal("missing newly selected value was accepted") }
+}
+
+func TestFieldEditorStaleManualLoadAfterCancel(t *testing.T) {
+	srv, _, _ := fieldEditorServer(t, false)
+	defer srv.Close()
+	m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+	m.fieldInputs[4].SetValue("customfield_10002")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	other := testIssue("B-2")
+	m.detail = &other
+	m, _ = updateModel(t, m, cmd())
+	if m.view != viewDetail || m.detail.Key != "B-2" || m.fieldSelected { t.Fatal("stale selected GET changed new detail") }
+}
+
+func TestFieldEditorManualLoadRejectsNewIssueAndBoard(t *testing.T) {
+	for _, tc := range []string{"new issue", "new board"} {
+		t.Run(tc, func(t *testing.T) {
+			srv, _, _ := fieldEditorServer(t, false)
+			defer srv.Close()
+			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+			m.fieldInputs[4].SetValue("customfield_10002")
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if tc == "new issue" {
+				issue := testIssue("B-2")
+				m.detail = &issue
+			} else {
+				m.loadedBoardRequest++
+			}
+			m, _ = updateModel(t, m, cmd())
+			if m.fieldSelected || m.detail.StoryPoints != nil { t.Fatalf("stale %s GET modified editor", tc) }
+		})
+	}
+}
+
+func TestFieldEditorEditMetaFailClosed(t *testing.T) {
+	for _, tc := range []struct{ name, field, schema, operations, allowed string; valueIndex int; value string }{
+		{"date missing", "", "", "", "", 0, "2026-10-10"},
+		{"date wrong type", "duedate", `{"type":"string"}`, `["set"]`, "", 0, "2026-10-10"},
+		{"date no set", "duedate", `{"type":"date"}`, `["add"]`, "", 0, "2026-10-10"},
+		{"components wrong items", "components", `{"type":"array","items":"version"}`, `["set"]`, `[{"name":"Web"}]`, 1, "Web"},
+		{"components absent allowlist", "components", `{"type":"array","items":"component"}`, `["set"]`, "", 1, "Web"},
+		{"components empty allowlist", "components", `{"type":"array","items":"component"}`, `["set"]`, `[]`, 1, "Web"},
+		{"versions no set", "fixVersions", `{"type":"array","items":"version"}`, `[]`, `[{"name":"v1"}]`, 2, "v1"},
+		{"versions wrong schema", "fixVersions", `{"type":"string"}`, `["set"]`, `[{"name":"v1"}]`, 2, "v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				fields := ""
+				if tc.field != "" {
+					fields = fmt.Sprintf(`%q:{"schema":%s,"operations":%s`, tc.field, tc.schema, tc.operations)
+					if tc.allowed != "" { fields += fmt.Sprintf(`,"allowedValues":%s`, tc.allowed) }
+					fields += "}"
+				}
+				fmt.Fprintf(w, `{"fields":{%s}}`, fields)
+			}))
+			defer srv.Close()
+			m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+			m.fieldInputs[tc.valueIndex].SetValue(tc.value)
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if cmd == nil { t.Fatal("expected metadata request") }
+			m, _ = updateModel(t, m, cmd())
+			if m.fieldErr == nil || len(calls) != 1 || !strings.HasSuffix(calls[0], "/editmeta") {
+				t.Fatalf("invalid metadata reached PUT: err=%v calls=%v", m.fieldErr, calls)
+			}
+		})
+	}
+}
+
+func TestFieldEditorEmptyListClearNeedsSchemaButNotAllowlist(t *testing.T) {
+	meta := &jira.EditMeta{Fields: map[string]jira.EditMetaField{
+		"components": {Schema: jira.EditMetaSchema{Type: "array", Items: "component"}, Operations: []string{"set"}},
+	}}
+	if err := validateFieldMeta(meta, map[string]interface{}{"components": []map[string]string{}}, map[string][]string{"components": {}}); err != nil {
+		t.Fatalf("empty clear unexpectedly requires allowed values: %v", err)
+	}
+}
+
+func TestFieldEditorManualSelectionNoOp(t *testing.T) {
+	srv, calls, _ := fieldEditorServer(t, false)
+	defer srv.Close()
+	m, _ := updateModel(t, editorModel(t, srv, ""), tea.KeyPressMsg{Code: 'E', Text: "E"})
+	m.fieldInputs[4].SetValue("customfield_10002")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.view != viewDetail || len(*calls) != 1 { t.Fatalf("manual selection no-op issued mutation: %v", *calls) }
+}
+
+func TestFieldEditorBoardEstimationSelection(t *testing.T) {
+	for _,tc := range []struct{boardType,estimateType,id,want string}{
+		{"scrum","field","customfield_10002","customfield_10002"},
+		{"scrum","field","Story Points",""}, {"scrum","issueCount","customfield_10002",""},
+		{"kanban","field","customfield_10002",""},
+	} { t.Run(tc.boardType+tc.estimateType+tc.id,func(t *testing.T){
+		cfg := jira.BoardConfig{}
+		if err := json.Unmarshal([]byte(fmt.Sprintf(`{"estimation":{"type":%q,"field":{"fieldId":%q,"displayName":"Story Points"}}}`,tc.estimateType,tc.id)),&cfg); err!=nil {t.Fatal(err)}
+		if got:=boardEstimationField(jira.Board{Type:tc.boardType},cfg); got!=tc.want {t.Fatalf("field=%q want %q",got,tc.want)}
+	}) }
+}
 
 func testIssue(key string) jira.Issue {
 	return jira.Issue{
@@ -1814,5 +2205,312 @@ func TestTransitionSubmitCompletionIsRejectedAfterExplicitBoardSwitch(t *testing
 	m, cmd := updateModel(t, m, transitionDoneMsg{requestID: submitRequest, boardRequest: 7, issueKey: "P0"})
 	if cmd != nil || m.toast == "Moved P0" || m.activeBoardRequest != otherBoardRequest || m.loadingBoardID != 2 {
 		t.Fatalf("old-board mutation response affected new board: cmd=%v toast=%q request=%d board=%d", cmd != nil, m.toast, m.activeBoardRequest, m.loadingBoardID)
+	}
+}
+
+func descriptionEditModel(description string) Model {
+	issue := testIssue("P0")
+	doc := jira.TextToADF(description)
+	issue.Fields.Description = &doc
+	m := makeTestModel(1, 1)
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 7
+	m.loadedBoardRequest = 7
+	m.width = 120
+	m.height = 35
+	return m
+}
+
+func TestDescriptionEditCancelPreservesDetailWithoutWriting(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, cmd := updateModel(t, m, textKey("e"))
+	if cmd == nil || m.view != viewDescriptionEdit || m.descriptionInput.Value() != "Original description" {
+		t.Fatalf("description editor did not open with current text: view=%v value=%q", m.view, m.descriptionInput.Value())
+	}
+	m, _ = updateModel(t, m, tea.PasteMsg{Content: "\nSecond line"})
+	if !strings.Contains(m.descriptionInput.Value(), "Second line") {
+		t.Fatalf("multiline paste was not retained: %q", m.descriptionInput.Value())
+	}
+	m, cmd = updateModel(t, m, specialKey(tea.KeyEsc))
+	if cmd != nil || m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatalf("cancel lost detail context: view=%v detail=%#v", m.view, m.detail)
+	}
+	if requests != 0 {
+		t.Fatalf("cancel made %d Jira requests, want 0", requests)
+	}
+}
+
+func TestDescriptionEditPreservesLongExistingTextAndUnchangedConfirmDoesNotWrite(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	longText := strings.Repeat("existing description text ", 1000) + "TAIL-MUST-REMAIN"
+	m := descriptionEditModel(longText)
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	originalDoc := m.detail.Fields.Description
+
+	m, _ = updateModel(t, m, textKey("e"))
+	if got := m.descriptionInput.Value(); got != longText || !strings.HasSuffix(got, "TAIL-MUST-REMAIN") {
+		t.Fatalf("editor truncated existing description: length=%d tail=%v", len(got), strings.HasSuffix(got, "TAIL-MUST-REMAIN"))
+	}
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.view != viewDetail {
+		t.Fatalf("unchanged confirm should return to detail without a command: cmd=%v view=%v", cmd != nil, m.view)
+	}
+	if requests != 0 {
+		t.Fatalf("unchanged confirm made %d Jira requests, want 0", requests)
+	}
+	if m.detail == nil || m.detail.Fields.Description != originalDoc || !strings.HasSuffix(m.detail.Fields.Description.Flatten(), "TAIL-MUST-REMAIN") {
+		t.Fatal("unchanged confirm replaced the original ADF document")
+	}
+}
+
+func TestDescriptionEditNormalizedPrefillIsUnchangedAndPreservesRichADF(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rich := &jira.ADFDoc{
+		Type:    "doc",
+		Version: 1,
+		Content: []jira.ADFNode{{
+			Type:    "codeBlock",
+			Content: []jira.ADFNode{{Type: "text", Text: "command\t--flag"}},
+		}},
+	}
+	m := descriptionEditModel("")
+	m.detail.Fields.Description = rich
+	m.client = jira.NewClient(srv.URL, "email", "token")
+
+	m, _ = updateModel(t, m, textKey("e"))
+	displayed := m.descriptionInput.Value()
+	if displayed == rich.Flatten() || !strings.Contains(displayed, "command    --flag") {
+		t.Fatalf("test requires textarea tab normalization, displayed=%q raw=%q", displayed, rich.Flatten())
+	}
+	if m.descriptionOriginal != displayed {
+		t.Fatalf("unchanged baseline=%q, want displayed value %q", m.descriptionOriginal, displayed)
+	}
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil || m.view != viewDetail || requests != 0 {
+		t.Fatalf("normalized unchanged confirm wrote remotely: cmd=%v view=%v requests=%d", cmd != nil, m.view, requests)
+	}
+	if m.detail == nil || m.detail.Fields.Description != rich || m.detail.Fields.Description.Content[0].Type != "codeBlock" {
+		t.Fatal("normalized unchanged confirm replaced the original rich ADF")
+	}
+}
+
+func TestDescriptionEditConfirmUpdatesADFAndRefreshesDetail(t *testing.T) {
+	var updatedDescription *jira.ADFDoc
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalls++
+			var payload struct {
+				Fields struct {
+					Description *jira.ADFDoc `json:"description"`
+				} `json:"fields"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			updatedDescription = payload.Fields.Description
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			getCalls++
+			_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"First line"}]},{"type":"paragraph","content":[{"type":"text","text":"Second line"}]}]}}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.detailReturn = viewSearch
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("First line\nSecond line")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil || !m.descriptionSubmitting {
+		t.Fatal("confirm did not start description update")
+	}
+	result := cmd()
+	m, _ = updateModel(t, m, result)
+	if putCalls != 1 || getCalls != 1 {
+		t.Fatalf("requests = PUT %d GET %d, want one each", putCalls, getCalls)
+	}
+	if updatedDescription == nil || updatedDescription.Flatten() != "First line\nSecond line" {
+		t.Fatalf("updated ADF = %#v", updatedDescription)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "First line\nSecond line" {
+		t.Fatalf("success did not show refreshed detail: view=%v detail=%#v", m.view, m.detail)
+	}
+	if m.detailReturn != viewSearch || m.toast != "Description updated" || m.descriptionSubmitting {
+		t.Fatalf("success lost navigation or feedback: return=%v toast=%q submitting=%v", m.detailReturn, m.toast, m.descriptionSubmitting)
+	}
+}
+
+func TestDescriptionEditAppliedRefreshFailureRetriesGetWithoutRepeatingPut(t *testing.T) {
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalls++
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			getCalls++
+			if getCalls == 1 {
+				_, _ = fmt.Fprint(w, `not-json`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Applied replacement"}]}]}}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.detailReturn = viewSearch
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Applied replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if putCalls != 1 || getCalls != 1 || !m.descriptionApplied || m.descriptionErr == nil {
+		t.Fatalf("partial result = PUT %d GET %d applied=%v err=%v", putCalls, getCalls, m.descriptionApplied, m.descriptionErr)
+	}
+	if m.descriptionInput.Value() != "Applied replacement" || m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatal("applied-but-unrefreshed state lost editor or original detail context")
+	}
+	plain := ansi.Strip(m.View().Content)
+	for _, want := range []string{"updated in Jira", "Retry refresh only", "update remains applied"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("partial state missing %q:\n%s", want, plain)
+		}
+	}
+
+	m, retryCmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if retryCmd == nil || !m.descriptionSubmitting {
+		t.Fatal("retry did not start refresh-only request")
+	}
+	m, _ = updateModel(t, m, retryCmd())
+	if putCalls != 1 || getCalls != 2 {
+		t.Fatalf("retry requests = PUT %d GET %d, want one PUT and two GETs", putCalls, getCalls)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description.Flatten() != "Applied replacement" {
+		t.Fatalf("refresh retry did not restore detail: view=%v detail=%#v", m.view, m.detail)
+	}
+	if m.detailReturn != viewSearch || m.descriptionApplied || m.descriptionErr != nil {
+		t.Fatalf("refresh retry lost navigation or retained partial state: return=%v applied=%v err=%v", m.detailReturn, m.descriptionApplied, m.descriptionErr)
+	}
+}
+
+func TestDescriptionEditCancelAfterAppliedRefreshFailureDoesNotImplyRollback(t *testing.T) {
+	putCalls, getCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			putCalls++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		getCalls++
+		_, _ = fmt.Fprint(w, `not-json`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Applied replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if !m.descriptionApplied {
+		t.Fatal("successful PUT plus failed refresh was not marked applied")
+	}
+	m, cancelCmd := updateModel(t, m, specialKey(tea.KeyEsc))
+	if cancelCmd == nil || m.view != viewDetail || m.toast != "Description updated; detail was not refreshed" {
+		t.Fatalf("close did not disclose applied update: cmd=%v view=%v toast=%q", cancelCmd != nil, m.view, m.toast)
+	}
+	if putCalls != 1 || getCalls != 1 {
+		t.Fatalf("close changed request counts: PUT %d GET %d", putCalls, getCalls)
+	}
+	if m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatal("close discarded the retained pre-refresh detail context")
+	}
+}
+
+func TestDescriptionEditErrorKeepsEditorAndOriginalDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"errorMessages":["update rejected"]}`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("Attempted replacement")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if m.view != viewDescriptionEdit || m.descriptionErr == nil || m.descriptionInput.Value() != "Attempted replacement" {
+		t.Fatalf("failure lost editable context: view=%v err=%v value=%q", m.view, m.descriptionErr, m.descriptionInput.Value())
+	}
+	if m.detail == nil || m.detail.Fields.Description.Flatten() != "Original description" {
+		t.Fatalf("failure replaced original detail: %#v", m.detail)
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "Error:") {
+		t.Fatal("failure is not visible in description editor")
+	}
+}
+
+func TestDescriptionEditExplicitEmptySendsNullAndRefreshes(t *testing.T) {
+	var rawDescription json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var payload struct {
+				Fields map[string]json.RawMessage `json:"fields"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			rawDescription = payload.Fields["description"]
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"key":"P0","fields":{"summary":"Test issue P0","description":null}}`)
+	}))
+	defer srv.Close()
+
+	m := descriptionEditModel("Original description")
+	m.client = jira.NewClient(srv.URL, "email", "token")
+	m, _ = updateModel(t, m, textKey("e"))
+	m.descriptionInput.SetValue("")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	m, _ = updateModel(t, m, cmd())
+	if string(rawDescription) != "null" {
+		t.Fatalf("description payload = %s, want null", rawDescription)
+	}
+	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description != nil {
+		t.Fatalf("empty update did not refresh cleared detail: view=%v detail=%#v", m.view, m.detail)
 	}
 }

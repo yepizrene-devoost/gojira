@@ -3,6 +3,7 @@ package jira
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 )
 
 // API path constants — all endpoints live here.
@@ -18,6 +19,7 @@ const (
 	pathProjects         = "/rest/api/3/project?maxResults=100"
 	pathIssue            = "/rest/api/3/issue/%s"
 	pathIssueCreate      = "/rest/api/3/issue"
+	pathIssueEditMeta    = "/rest/api/3/issue/%s/editmeta"
 	pathIssueTransitions = "/rest/api/3/issue/%s/transitions"
 	pathIssueWorklog     = "/rest/api/3/issue/%s/worklog"
 	pathIssueComment     = "/rest/api/3/issue/%s/comment"
@@ -37,15 +39,27 @@ const (
 	pathBoardIssues  = "/rest/agile/1.0/board/%d/issue"
 	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
 	pathSprintAdd    = "/rest/agile/1.0/sprint/%d/issue"
+	pathBacklogIssue = "/rest/agile/1.0/backlog/issue"
 )
 
 // Issue fields for different contexts.
 const (
 	fieldsBasic  = "summary,status,priority,assignee,issuetype"
-	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,created,updated,description,comment,worklog"
+	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks"
 	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
 	fieldsExport = "summary,status,priority,assignee,issuetype"
 )
+
+var customFieldIDPattern = regexp.MustCompile(`^customfield_[1-9][0-9]*$`)
+
+// ValidateCustomFieldID accepts only Jira's canonical customfield_N form.
+// Callers must validate before interpolating a selected field into a query.
+func ValidateCustomFieldID(fieldID string) error {
+	if !customFieldIDPattern.MatchString(fieldID) {
+		return fmt.Errorf("custom field ID must match customfield_N with a positive numeric ID")
+	}
+	return nil
+}
 
 func issuePath(path, key string) string {
 	return fmt.Sprintf(path, url.PathEscape(key))

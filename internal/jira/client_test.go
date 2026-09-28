@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,109 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestMoveIssueToBacklogSingleDispatchAndState(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantState MutationState
+	}{
+		{"accepted", http.StatusNoContent, ""},
+		{"rejected", http.StatusBadRequest, MutationNotApplied},
+		{"server failure", http.StatusServiceUnavailable, MutationUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				if r.Method != http.MethodPost || r.URL.Path != "/rest/agile/1.0/backlog/issue" || r.URL.RawQuery != "" {
+					t.Errorf("request = %s %s", r.Method, r.URL.String())
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != `{"issues":["ARA-12"]}` {
+					t.Errorf("body = %q, err = %v", body, err)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			err := NewClient(srv.URL, "email", "token").MoveIssueToBacklog("ARA-12")
+			if tc.wantState == "" {
+				if err != nil {
+					t.Fatalf("204 error = %v", err)
+				}
+			} else if err == nil || MutationStateOf(err) != tc.wantState {
+				t.Fatalf("error = %v, state = %q; want %q", err, MutationStateOf(err), tc.wantState)
+			}
+			if hits != 1 {
+				t.Fatalf("requests = %d, want 1", hits)
+			}
+		})
+	}
+	t.Run("transport failure", func(t *testing.T) {
+		hits := 0
+		client := NewClient("https://jira.example", "email", "token")
+		client.http.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			hits++
+			return nil, errors.New("connection lost")
+		})
+		err := client.MoveIssueToBacklog("ARA-12")
+		if err == nil || MutationStateOf(err) != MutationUnknown || hits != 1 {
+			t.Fatalf("error=%v state=%q requests=%d", err, MutationStateOf(err), hits)
+		}
+	})
+}
+
+func TestCreateIssueWithParentKeepsLegacyPayloadSeparate(t *testing.T) {
+	for _, tc := range []struct {
+		name, parent string
+	}{
+		{"legacy create", ""},
+		{"subtask create", "ARA-4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method != http.MethodPost || r.URL.Path != pathIssueCreate {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				var body struct {
+					Fields map[string]json.RawMessage `json:"fields"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode: %v", err)
+				}
+				parent, present := body.Fields["parent"]
+				if present != (tc.parent != "") {
+					t.Errorf("parent presence = %v", present)
+				}
+				if present && string(parent) != `{"key":"ARA-4"}` {
+					t.Errorf("parent = %s", parent)
+				}
+				if len(body.Fields["description"]) == 0 {
+					t.Error("description omitted")
+				}
+				_, _ = fmt.Fprint(w, `{"key":"ARA-5"}`)
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			description := TextToADF("context")
+			var key string
+			var err error
+			if tc.parent == "" {
+				key, err = client.CreateIssue("ARA", "Task", "summary", &description)
+			} else {
+				key, err = client.CreateIssueWithParent("ARA", "Sub-task", "summary", &description, tc.parent)
+			}
+			if key != "ARA-5" || err != nil || requests != 1 {
+				t.Fatalf("key=%q err=%v requests=%d", key, err, requests)
+			}
+		})
+	}
+}
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
@@ -101,6 +205,130 @@ func TestRequestDoesNotRetryPostAfterTransportError(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("made %d requests, want 1", hits)
+	}
+}
+
+func TestWriteServerFailuresAfterDispatchAreUnknown(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			writes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writes++ // Simulate Jira applying the mutation before its proxy response fails.
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.URL, "e@x.com", "tok")
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if state := MutationStateOf(err); state != MutationUnknown {
+				t.Fatalf("state = %q, want %q after HTTP %d", state, MutationUnknown, status)
+			}
+			if writes != 1 {
+				t.Fatalf("server observed %d writes, want exactly 1", writes)
+			}
+		})
+	}
+}
+
+func TestWriteRedirectsAreNotFollowed(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			redirectedWrites := 0
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				redirectedWrites++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer target.Close()
+
+			initialWrites := 0
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				initialWrites++
+				w.Header().Set("Location", target.URL+r.URL.Path)
+				w.WriteHeader(status)
+			}))
+			defer origin.Close()
+
+			client := NewClient(origin.URL, "e@x.com", "tok")
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if state := MutationStateOf(err); state != MutationUnknown {
+				t.Fatalf("state = %q, want %q after HTTP %d", state, MutationUnknown, status)
+			}
+			if initialWrites != 1 || redirectedWrites != 0 {
+				t.Fatalf("origin writes = %d, redirected writes = %d; want 1 and 0", initialWrites, redirectedWrites)
+			}
+		})
+	}
+}
+
+func TestWriteRequestsAreNeverRetriedAndClassifyFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport roundTripperFunc
+		wantState MutationState
+	}{
+		{
+			name: "transport failure is ambiguous",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return nil, fmt.Errorf("connection lost")
+			},
+			wantState: MutationUnknown,
+		},
+		{
+			name: "HTTP rejection confirms not applied",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid"}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationNotApplied,
+		},
+		{
+			name: "server failure body read error is ambiguous",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Body:       errorReadCloser{err: errors.New("truncated proxy response")},
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationUnknown,
+		},
+		{
+			name: "client rejection body read error remains not applied",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       errorReadCloser{err: errors.New("truncated rejection response")},
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationNotApplied,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hits := 0
+			client := NewClient("https://jira.example", "e@x.com", "tok")
+			client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hits++
+				return test.transport(req)
+			})
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if err == nil {
+				t.Fatal("write error = nil")
+			}
+			if state := MutationStateOf(err); state != test.wantState {
+				t.Fatalf("state = %q, want %q", state, test.wantState)
+			}
+			if hits != 1 {
+				t.Fatalf("made %d write requests, want exactly 1", hits)
+			}
+		})
 	}
 }
 
@@ -233,6 +461,182 @@ func TestIssueKeyPathEscapingAcrossEndpoints(t *testing.T) {
 	}
 }
 
+func TestGetIssueEditMetaUsesCentralizedEscapedPathAndPreservesAllowedValuesPresence(t *testing.T) {
+	const issueKey = "PROJ/13?part=1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.EscapedPath(), "/rest/api/3/issue/PROJ%2F13%3Fpart=1/editmeta"; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = fmt.Fprint(w, `{"fields":{"components":{"allowedValues":[{"name":"API"}]},"fixVersions":{}}}`)
+	}))
+	defer srv.Close()
+
+	meta, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueEditMeta(issueKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values := meta.Fields["components"].AllowedValues; values == nil || len(*values) != 1 || (*values)[0].Name != "API" {
+		t.Fatalf("component allowedValues = %#v", values)
+	}
+	if meta.Fields["fixVersions"].AllowedValues != nil {
+		t.Fatal("absent allowedValues must remain distinguishable from an empty list")
+	}
+}
+
+func TestGetIssueFullWithStoryPointsRejectsInvalidSelectorBeforeRequest(t *testing.T) {
+	invalid := []string{
+		"",
+		"customfield_0",
+		"customfield_01",
+		"customfield_-1",
+		"customfield_10016,summary",
+		"customfield_10016&fields=summary",
+		"customfield_10016 ",
+		" customfield_10016",
+		"customfield_10016/extra",
+		"CUSTOMFIELD_10016",
+	}
+	for _, fieldID := range invalid {
+		t.Run(fmt.Sprintf("selector_%q", fieldID), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			_, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFullWithStoryPoints("A-1", fieldID)
+			if err == nil {
+				t.Fatal("invalid selector was accepted")
+			}
+			if requests != 0 {
+				t.Fatalf("invalid selector made %d requests, want zero", requests)
+			}
+		})
+	}
+}
+
+func TestGetIssueFullWithStoryPointsRequestsOnlySelectedCustomFieldAndDecodesTriState(t *testing.T) {
+	tests := []struct {
+		name      string
+		fields    string
+		wantValue string
+		wantNull  bool
+		wantErr   string
+	}{
+		{name: "number", fields: `{"summary":"Issue","customfield_10016":9007199254740993.125}`, wantValue: "9007199254740993.125"},
+		{name: "null", fields: `{"summary":"Issue","customfield_10016":null}`, wantNull: true},
+		{name: "missing", fields: `{"summary":"Issue"}`, wantErr: "missing"},
+		{name: "string", fields: `{"summary":"Issue","customfield_10016":"5"}`, wantErr: "not a number or null"},
+		{name: "boolean", fields: `{"summary":"Issue","customfield_10016":true}`, wantErr: "not a number or null"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requested := strings.Split(r.URL.Query().Get("fields"), ",")
+				customFields := 0
+				for _, field := range requested {
+					if strings.HasPrefix(field, "customfield_") {
+						customFields++
+						if field != "customfield_10016" {
+							t.Errorf("unexpected custom field %q", field)
+						}
+					}
+				}
+				if customFields != 1 {
+					t.Errorf("custom fields requested = %d, want exactly 1 in %q", customFields, r.URL.Query().Get("fields"))
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":%s}`, tc.fields)
+			}))
+			defer srv.Close()
+
+			issue, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFullWithStoryPoints("A-1", "customfield_10016")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issue.StoryPoints == nil {
+				t.Fatal("selected story points state is nil")
+			}
+			if tc.wantNull {
+				if issue.StoryPoints.Value != nil {
+					t.Fatalf("value = %v, want null", issue.StoryPoints.Value)
+				}
+			} else if issue.StoryPoints.Value == nil || issue.StoryPoints.Value.String() != tc.wantValue {
+				t.Fatalf("value = %v, want %s", issue.StoryPoints.Value, tc.wantValue)
+			}
+		})
+	}
+}
+
+func TestGetIssueFullHierarchyFromSingleResponse(t *testing.T) {
+	for _, selected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("story points selected=%t", selected), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodGet || r.URL.Path != "/rest/api/3/issue/A-1" {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				fields := "," + r.URL.Query().Get("fields") + ","
+				for _, name := range []string{"parent", "subtasks"} {
+					if !strings.Contains(fields, ","+name+",") {
+						t.Errorf("missing %s in %s", name, fields)
+					}
+				}
+				if selected != strings.Contains(fields, ",customfield_10016,") {
+					t.Errorf("story-points selector mismatch: %s", fields)
+				}
+				points := ""
+				if selected {
+					points = `,"customfield_10016":5.5`
+				}
+				_, _ = fmt.Fprintf(w, `{"key":"A-1","fields":{"parent":{"key":"A-0","fields":{"summary":"Parent","status":{"name":"Open","statusCategory":{"key":"new"}}}},"subtasks":[{"key":"A-2","fields":{"summary":"Child","status":{"name":"Complete","statusCategory":{"key":"done"}}}}]%s}}`, points)
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			var issue *Issue
+			var err error
+			if selected {
+				issue, err = client.GetIssueFullWithStoryPoints("A-1", "customfield_10016")
+			} else {
+				issue, err = client.GetIssueFull("A-1")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || issue.Fields.Parent == nil || issue.Fields.Parent.Key != "A-0" || issue.Fields.Subtasks == nil || len(*issue.Fields.Subtasks) != 1 {
+				t.Fatalf("calls=%d hierarchy=%+v", calls, issue.Fields)
+			}
+		})
+	}
+}
+
+func TestGetIssueFullRequestsAndDecodesUpdateFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, field := range []string{"duedate", "components", "fixVersions"} {
+			if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
+				t.Errorf("fields query omitted %q: %q", field, r.URL.Query().Get("fields"))
+			}
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"duedate":"2026-10-31","components":[{"name":"API"}],"fixVersions":[{"name":"v1.0"}]}}`)
+	}))
+	defer srv.Close()
+
+	issue, err := NewClient(srv.URL, "e@x.com", "tok").GetIssueFull("A-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.Fields.DueDate == nil || *issue.Fields.DueDate != "2026-10-31" || len(issue.Fields.FixVersions) != 1 {
+		t.Fatalf("decoded fields = %#v", issue.Fields)
+	}
+}
+
 func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -312,6 +716,7 @@ func TestMalformedSuccessBodySurfacesDecodeError(t *testing.T) {
 		{"GetBoardIssues", func() error { _, err := client.GetBoardIssues(1, 0); return err }},
 		{"GetIssue", func() error { _, err := client.GetIssue("A-1"); return err }},
 		{"GetIssueFull", func() error { _, err := client.GetIssueFull("A-1"); return err }},
+		{"GetIssueEditMeta", func() error { _, err := client.GetIssueEditMeta("A-1"); return err }},
 		{"GetProjects", func() error { _, err := client.GetProjects(); return err }},
 		{"SearchJQL", func() error { _, _, err := client.SearchJQL("project = A", 10); return err }},
 		{"GetTransitions", func() error { _, err := client.GetTransitions("A-1"); return err }},

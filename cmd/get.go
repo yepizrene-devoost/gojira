@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -49,28 +48,42 @@ var getCmd = &cobra.Command{
 	Long:  "Display complete ticket information including project, labels, components, reporter, comments, and more.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, domain, err := BuildClient()
-		if err != nil {
-			return err
+		storyPointsField, _ := cmd.Flags().GetString("story-points-field")
+		if cmd.Flags().Changed("story-points-field") {
+			if err := validateStoryPointsField(storyPointsField); err != nil {
+				return err
+			}
 		}
-
 		issueKey := args[0]
-		iss, err := client.GetIssueFull(issueKey)
+		client, domain, err := buildClient()
 		if err != nil {
-			return err
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", issueKey, jira.MutationNotApplied, err)
+		}
+		var iss *jira.Issue
+		if storyPointsField == "" {
+			iss, err = client.GetIssueFull(issueKey)
+		} else {
+			iss, err = client.GetIssueFullWithStoryPoints(issueKey, storyPointsField)
+		}
+		if err != nil {
+			return commandError(cmd, "read_failed", "issue could not be read", issueKey, jira.MutationNotApplied, err)
 		}
 
-		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			ticket := jira.IssueToTicketJSON(*iss, domain)
-			b, _ := json.MarshalIndent(ticket, "", "  ")
-			fmt.Println(string(b))
+		if wantsJSON(cmd) {
+			if err := writeGetJSON(cmd, *iss, domain); err != nil {
+				return reportJSONError(cmd, "output_failed", "issue JSON could not be written", issueKey, jira.MutationNotApplied, err)
+			}
 			return nil
 		}
 
 		// Render readable output
-		fmt.Println(renderIssueFull(iss))
-		return nil
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), renderIssueFull(iss))
+		return err
 	},
+}
+
+func writeGetJSON(cmd *cobra.Command, issue jira.Issue, domain string) error {
+	return writeJSON(cmd, jira.IssueToTicketJSON(issue, domain))
 }
 
 // writef appends a formatted line to b. strings.Builder.Write never returns a
@@ -82,6 +95,7 @@ func writef(b *strings.Builder, format string, args ...any) {
 
 func renderIssueFull(iss *jira.Issue) string {
 	var b strings.Builder
+	ticket := jira.IssueToTicketJSON(*iss, "")
 
 	b.WriteString(keyStyle.Render(fmt.Sprintf("📋 %s", iss.Key)))
 	b.WriteString("\n\n")
@@ -110,6 +124,9 @@ func renderIssueFull(iss *jira.Issue) string {
 	if iss.Fields.Project != nil {
 		rows = append(rows, [2]string{"Project", fmt.Sprintf("%s (%s)", iss.Fields.Project.Key, iss.Fields.Project.Name)})
 	}
+	if parent := ticket.Parent; parent != nil {
+		rows = append(rows, [2]string{"Parent", fmt.Sprintf("%s %s (%s)", parent.Key, parent.Summary, parent.Status)})
+	}
 	if len(iss.Fields.Labels) > 0 {
 		rows = append(rows, [2]string{"Labels", strings.Join(iss.Fields.Labels, ", ")})
 	}
@@ -120,11 +137,39 @@ func renderIssueFull(iss *jira.Issue) string {
 		}
 		rows = append(rows, [2]string{"Components", strings.Join(names, ", ")})
 	}
+	if len(iss.Fields.FixVersions) > 0 {
+		names := make([]string, len(iss.Fields.FixVersions))
+		for i, version := range iss.Fields.FixVersions {
+			names[i] = version.Name
+		}
+		rows = append(rows, [2]string{"Fix versions", strings.Join(names, ", ")})
+	}
+	if iss.Fields.DueDate != nil {
+		rows = append(rows, [2]string{"Due date", *iss.Fields.DueDate})
+	}
+	if iss.StoryPoints != nil {
+		value := "None"
+		if iss.StoryPoints.Value != nil {
+			value = iss.StoryPoints.Value.String()
+		}
+		rows = append(rows, [2]string{"Story points", value})
+	}
 	rows = append(rows, [2]string{"Created", iss.Fields.Created})
 	rows = append(rows, [2]string{"Updated", iss.Fields.Updated})
 
 	for _, row := range rows {
 		writef(&b, "%-12s %s\n", metaLabelStyle.Render(row[0]+":"), row[1])
+	}
+
+	// Hierarchy is read from the same issue response; no per-child requests.
+	if ticket.Subtasks != nil {
+		b.WriteString("\n── Subtasks ──\n")
+		for _, child := range *ticket.Subtasks {
+			writef(&b, "  %s %s (%s)\n", child.Key, child.Summary, child.Status)
+		}
+		if ticket.SubtaskProgress != nil {
+			writef(&b, "  Progress: %d/%d done\n", ticket.SubtaskProgress.Done, ticket.SubtaskProgress.Total)
+		}
 	}
 
 	// Description
@@ -154,5 +199,6 @@ func renderIssueFull(iss *jira.Issue) string {
 
 func init() {
 	getCmd.Flags().Bool("json", false, "Output as JSON")
+	getCmd.Flags().String("story-points-field", "", "Include story points from this Jira customfield_N ID")
 	rootCmd.AddCommand(getCmd)
 }

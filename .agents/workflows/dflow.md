@@ -58,7 +58,7 @@ is merged directly by dflow or through a pull request:
 
 | Target merge_mode | Agent action |
 |---|---|
-| `auto` | direct merge via `dflow finish` (clean tree + human confirmation). No PR. |
+| `auto` | direct merge via `dflow finish` (clean tree; fully non-interactive). No PR. |
 | `manual` | open a PR toward that target. Never use `dflow finish`. |
 
 This repository: manual default. `develop = auto`. `main = manual`.
@@ -80,34 +80,39 @@ Consequences:
 
 - the target is `auto`, AND
 - the working tree is clean, AND
-- a human explicitly confirmed a direct merge (or the repo has no `origin`).
+- direct merge is explicitly requested by running `dflow finish` (or the repo has no `origin`).
 
 Do not run `dflow finish` to:
 
 - complete a `manual` target (open a PR instead), or
 - finish a branch that still has stacked children (it would break their merge bases).
 
-Default agent behavior: propose a PR. Direct merge is explicit, never assumed.
+Default agent behavior: propose a PR. Direct merge is explicit, never assumed. `dflow finish`
+is fully non-interactive; `--delete` is the complete confirmation and never prompts.
+The work branch is deleted only after every automatic target merge and push succeeds,
+never when manual targets remain, and never after a merge, conflict, non-fast-forward,
+or target-push failure. There is no automatic rollback or merge abort.
 
 ## Issue lifecycle
 
-- The repository default branch is `develop`, so the delivering merge lands
-  there. **When** that closes the issue is the trigger in
-  "Closing an issue" below; nothing else is a trigger.
-- Closing is an explicit step, not a side effect of merging. A `Closes #<n>`
-  keyword needs a pull request merged into the default branch to carry it.
-- `main` and release branches do not close issues.
+- `.dflow.yaml` defines configured branch names, bases, finish targets, and merge
+  modes. It does not declare the forge's default branch.
+- Do not infer issue auto-closing behavior from configured integration targets.
+  Verify the forge default separately before predicting how a closing keyword behaves.
+- If work remains after a merge, use a non-closing reference such as
+  `References #<n>` instead of `Closes`, `Fixes`, or `Resolves`.
 - Issues track any work unit (feature, bug, chore, docs), not only production incidents.
 
 ### Closing an issue
 
-Close the issue when the finished branch has no manual targets left, and only then:
+Close an issue only after all tracked scope is complete and a human explicitly
+confirms that standalone action:
 
-- **Trigger** — `dflow finish --dry-run` prints `Manual targets: none`;
-  the machine-readable equivalent is `"manual_targets":[]` in `--json`.
+- **Finish state** — verify that no implementation, merge, tagging, publication,
+  or other tracked delivery work remains.
 - **Labels** — remove every `status:` label naming a state that has ended.
   Keep the issue's `type:` label.
-- **Closing comment** — one comment, naming the merge commit on `develop`.
+- **Closing comment** — name the relevant delivery commit and review lineage when used.
 
 ## Chained branches
 

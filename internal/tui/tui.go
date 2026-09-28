@@ -3,11 +3,14 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"regexp"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -122,6 +125,8 @@ const (
 	viewWorklog
 	viewCreate
 	viewSearch
+	viewDescriptionEdit
+	viewFieldsEdit
 )
 
 type column struct {
@@ -173,6 +178,27 @@ type Model struct {
 	worklogIssue                  string
 	nextWorklogRequest            uint64
 	activeWorklogRequest          uint64
+	descriptionInput              textarea.Model
+	descriptionOriginal           string
+	descriptionSubmitting         bool
+	descriptionApplied            bool
+	descriptionErr                error
+	nextDescriptionRequest        uint64
+	activeDescriptionRequest      uint64
+	boardPointsField string
+	fieldInputs [5]textinput.Model // date, components, versions, points, field ID
+	fieldOriginal [5]string
+	fieldTouched [5]bool
+	fieldCur int
+	fieldLoading bool
+	fieldSelected bool
+	fieldSelectedID string
+	fieldLastID string
+	fieldSubmitting bool
+	fieldApplied bool
+	fieldErr error
+	nextFieldRequest uint64
+	activeFieldRequest uint64
 
 	filterInput  textinput.Model
 	filterActive bool
@@ -221,6 +247,7 @@ type boardLoadMsg struct {
 	columns    []column
 	sprintName string
 	sprintID   int
+	pointsField string
 	err        error
 }
 type detailMsg struct {
@@ -259,6 +286,31 @@ type worklogDoneMsg struct {
 	requestID uint64
 	issueKey  string
 	err       error
+}
+type descriptionUpdatedMsg struct {
+	requestID uint64
+	issueKey  string
+	issue     *jira.Issue
+	applied   bool
+	err       error
+}
+type fieldLoadedMsg struct {
+	requestID uint64
+	fieldID string
+	issueKey string
+	boardRequest uint64
+	searchRequest uint64
+	issue *jira.Issue
+	err error
+}
+type fieldUpdatedMsg struct {
+	requestID uint64
+	issueKey string
+	boardRequest uint64
+	searchRequest uint64
+	issue *jira.Issue
+	applied bool
+	err error
 }
 type createTypesMsg struct {
 	types []string
@@ -312,11 +364,13 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.columns = nil
 	m.sprintName = ""
 	m.sprintID = 0
+	m.boardPointsField = ""
 	if !preserveTransitionError {
 		m.err = nil
 		m.transitionResultErrBoardID = 0
 	}
-	if m.view == viewKanban || m.view == viewTransition || (m.view == viewDetail && m.detailReturn != viewSearch) {
+	if m.view == viewKanban || m.view == viewTransition ||
+		((m.view == viewDetail || m.view == viewDescriptionEdit || m.view == viewFieldsEdit) && m.detailReturn != viewSearch) {
 		m.view = viewKanban
 		m.detail = nil
 		m.detailScroll = 0
@@ -332,6 +386,15 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 		m.helpOpen = false
 		m.helpScroll = 0
 		m.activeWorklogRequest = 0
+		m.descriptionSubmitting = false
+		m.descriptionApplied = false
+		m.activeDescriptionRequest = 0
+		m.descriptionErr = nil
+		m.boardPointsField = ""
+		m.activeFieldRequest = 0
+		m.fieldLoading = false
+		m.fieldSubmitting = false
+		m.fieldApplied = false
 	}
 	m.transitionLoading = false
 	m.activeTransitionRequest = 0
@@ -348,6 +411,13 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 	m.rowCur = 0
 
 	return m, func() tea.Msg { return m.loadBoardData(board, requestID) }
+}
+
+func boardEstimationField(board jira.Board, cfg jira.BoardConfig) string {
+	if board.Type == "scrum" && cfg.Estimation != nil && cfg.Estimation.Type == "field" && cfg.Estimation.Field != nil && jira.ValidateCustomFieldID(cfg.Estimation.Field.FieldID) == nil {
+		return cfg.Estimation.Field.FieldID
+	}
+	return ""
 }
 
 func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
@@ -455,6 +525,7 @@ func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 		cols = append(cols, column{name: "Backlog", issues: backlog})
 	}
 
+	result.pointsField = boardEstimationField(board, cfg)
 	result.columns = cols
 	result.sprintName = sprintName
 	result.sprintID = sprintID
@@ -470,6 +541,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		if m.view == viewDetail {
 			m.detailScroll = min(m.detailScroll, m.detailMaxScroll())
+		} else if m.view == viewDescriptionEdit {
+			m.sizeDescriptionInput()
 		} else if m.helpOpen {
 			m.helpScroll = min(m.helpScroll, m.helpMaxScroll())
 		}
@@ -494,6 +567,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.columns = msg.columns
 		m.sprintName = msg.sprintName
 		m.sprintID = msg.sprintID
+		m.boardPointsField = msg.pointsField
 		if m.transitionResultErrBoardID != msg.boardID {
 			m.err = nil
 		}
@@ -629,6 +703,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = "Worklog added"
 		return m, clearToastAfter(3 * time.Second)
 
+	case descriptionUpdatedMsg:
+		if m.view != viewDescriptionEdit || !m.descriptionSubmitting ||
+			msg.requestID == 0 || msg.requestID != m.activeDescriptionRequest ||
+			m.detail == nil || msg.issueKey == "" || msg.issueKey != m.detail.Key {
+			return m, nil
+		}
+		m.descriptionSubmitting = false
+		m.activeDescriptionRequest = 0
+		if msg.err != nil {
+			m.descriptionApplied = msg.applied
+			m.descriptionErr = msg.err
+			return m, nil
+		}
+		if msg.issue == nil || msg.issue.Key != msg.issueKey {
+			m.descriptionApplied = msg.applied
+			m.descriptionErr = fmt.Errorf("description was updated, but Jira returned no refreshed ticket")
+			return m, nil
+		}
+		m.descriptionApplied = false
+		m.descriptionErr = nil
+		m.err = nil
+		m.detail = msg.issue
+		m.detailScroll = 0
+		m.descriptionInput.Blur()
+		m.view = viewDetail
+		m.toast = "Description updated"
+		return m, clearToastAfter(3 * time.Second)
+
+	case fieldLoadedMsg:
+		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldLoading || msg.fieldID != m.fieldInputs[4].Value() { return m, nil }
+		m.fieldLoading = false
+		m.activeFieldRequest = 0
+		if msg.err != nil { m.fieldErr = msg.err; return m, nil }
+		if msg.issue == nil || msg.issue.Key != msg.issueKey || msg.issue.StoryPoints == nil {
+			m.fieldErr = fmt.Errorf("selected story points data is missing or belongs to another issue")
+			return m, nil
+		}
+		m.detail = msg.issue
+		m.fieldSelected = true
+		m.fieldSelectedID = msg.fieldID
+		m.fieldOriginal[3] = ""
+		m.fieldInputs[3].SetValue("")
+		m.fieldTouched[3] = false
+		if msg.issue.StoryPoints.Value != nil {
+			value := msg.issue.StoryPoints.Value.String()
+			m.fieldInputs[3].CharLimit = max(512, len([]rune(value)))
+			m.fieldInputs[3].SetValue(value)
+			m.fieldOriginal[3] = value
+		}
+		return m, nil
+
+	case fieldUpdatedMsg:
+		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldSubmitting { return m, nil }
+		m.fieldSubmitting = false
+		m.activeFieldRequest = 0
+		if msg.err != nil { m.fieldApplied = msg.applied; m.fieldErr = msg.err; return m, nil }
+		if msg.issue == nil || msg.issue.Key != msg.issueKey || (m.fieldInputs[4].Value() != "" && msg.issue.StoryPoints == nil) {
+			m.fieldApplied = msg.applied
+			m.fieldErr = fmt.Errorf("update applied, but refreshed ticket data is missing or invalid")
+			return m, nil
+		}
+		m.detail = msg.issue
+		m.fieldApplied = false
+		m.fieldErr = nil
+		m.detailScroll = 0
+		m.view = viewDetail
+		m.toast = "Ticket fields updated"
+		return m, clearToastAfter(3*time.Second)
+
 	case createTypesMsg:
 		// The form already defaults to "Task"; richer types are a bonus.
 		if msg.err == nil && len(msg.types) > 0 {
@@ -686,6 +829,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewSearch:
 			return m.updateSearch(msg)
+		case viewDescriptionEdit:
+			return m.updateDescriptionEdit(msg)
+		case viewFieldsEdit:
+			return m.updateFieldsEdit(msg)
 		}
 
 	case tea.PasteMsg:
@@ -714,6 +861,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.searchEditing {
 				var cmd tea.Cmd
 				m.searchInput, cmd = m.searchInput.Update(msg)
+				return m, cmd
+			}
+		case viewFieldsEdit:
+			if !m.fieldSubmitting && !m.fieldApplied && !m.fieldLoading {
+				var cmd tea.Cmd
+				m.fieldInputs[m.fieldCur], cmd = m.fieldInputs[m.fieldCur].Update(msg)
+				m.fieldTouched[m.fieldCur] = true
+				if m.fieldCur == 4 { m = m.syncFieldSelector() }
+				return m, cmd
+			}
+		case viewDescriptionEdit:
+			if !m.descriptionSubmitting && !m.descriptionApplied {
+				var cmd tea.Cmd
+				m.descriptionInput, cmd = m.descriptionInput.Update(msg)
 				return m, cmd
 			}
 		}
@@ -1012,8 +1173,368 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = viewWorklog
 			return m, textinput.Blink
 		}
+	case "E":
+		if m.detail != nil { return m.openFieldsEdit() }
+	case "e":
+		if m.detail != nil {
+			input := textarea.New()
+			input.Placeholder = "Ticket description (plain text)"
+			input.ShowLineNumbers = false
+			description := ""
+			if m.detail.Fields.Description != nil {
+				description = m.detail.Fields.Description.Flatten()
+				input.SetValue(description)
+			}
+			m.descriptionInput = input
+			m.descriptionOriginal = m.descriptionInput.Value()
+			m.sizeDescriptionInput()
+			m.descriptionSubmitting = false
+			m.descriptionApplied = false
+			m.descriptionErr = nil
+			m.activeDescriptionRequest = 0
+			m.err = nil
+			m.view = viewDescriptionEdit
+			return m, m.descriptionInput.Focus()
+		}
 	}
 	return m, nil
+}
+
+var fieldLabels = [5]string{"Due date", "Components", "Fix versions", "Story points", "Points field ID"}
+var fieldKeys = [4]string{"duedate", "components", "fixVersions", ""}
+var decimalPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
+
+func (m Model) matchFieldRequest(id uint64, key string, board, search uint64) bool {
+	if m.view != viewFieldsEdit || m.detail == nil || id == 0 || id != m.activeFieldRequest || key == "" || key != m.detail.Key { return false }
+	if m.detailReturn == viewSearch { return search != 0 && search == m.detailSearchRequest && search == m.activeSearchRequest }
+	return board != 0 && board == m.detailBoardRequest && board == m.loadedBoardRequest
+}
+
+func (m Model) openFieldsEdit() (tea.Model, tea.Cmd) {
+	m.view = viewFieldsEdit
+	m.fieldCur = 0
+	m.fieldErr = nil
+	m.fieldApplied = false
+	m.fieldSubmitting = false
+	m.fieldLoading = false
+	m.fieldSelected = false
+	m.fieldSelectedID = ""
+	m.fieldTouched = [5]bool{}
+	values := [5]string{}
+	if m.detail.Fields.DueDate != nil { values[0] = *m.detail.Fields.DueDate }
+	for _, c := range m.detail.Fields.Components { if values[1] != "" { values[1] += "," }; values[1] += c.Name }
+	for _, v := range m.detail.Fields.FixVersions { if values[2] != "" { values[2] += "," }; values[2] += v.Name }
+	fieldID := ""
+	if m.detailReturn != viewSearch { fieldID = m.boardPointsField }
+	values[4] = fieldID
+	m.fieldLastID = fieldID
+	m.fieldOriginal = values
+	for i := range m.fieldInputs {
+		input := textinput.New()
+		input.SetWidth(max(m.modalWidth()-20, 12))
+		input.CharLimit = max(512, len([]rune(values[i])))
+		input.SetValue(values[i])
+		m.fieldInputs[i] = input
+	}
+	m.fieldInputs[0].Focus()
+	if fieldID == "" { return m, textinput.Blink }
+	return m.loadSelectedField(fieldID)
+}
+
+func (m Model) loadSelectedField(fieldID string) (tea.Model, tea.Cmd) {
+	if err := jira.ValidateCustomFieldID(fieldID); err != nil {
+		m.fieldErr = fmt.Errorf("invalid story points field ID: %w", err)
+		return m, nil
+	}
+	m.fieldErr = nil
+	m.fieldLoading = true
+	m.nextFieldRequest++
+	id, key, board, search := m.nextFieldRequest, m.detail.Key, m.detailBoardRequest, m.detailSearchRequest
+	m.activeFieldRequest = id
+	client := m.client
+	return m, func() tea.Msg {
+		issue, err := client.GetIssueFullWithStoryPoints(key, fieldID)
+		return fieldLoadedMsg{requestID:id, fieldID:fieldID, issueKey:key, boardRequest:board, searchRequest:search, issue:issue, err:err}
+	}
+}
+
+func (m Model) syncFieldSelector() Model {
+	id := m.fieldInputs[4].Value()
+	if id == m.fieldLastID { return m }
+	m.fieldLastID = id
+	m.fieldSelected = false
+	m.fieldSelectedID = ""
+	m.fieldOriginal[3] = ""
+	m.fieldInputs[3].SetValue("")
+	m.fieldTouched[3] = false
+	m.fieldErr = nil
+	return m
+}
+
+func parseFieldNames(value string) ([]string, error) {
+	if value == "" { return []string{}, nil }
+	parts := strings.Split(value, ",")
+	seen := map[string]bool{}
+	for i, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" || seen[strings.ToLower(name)] { return nil, fmt.Errorf("list has an empty or duplicate name") }
+		seen[strings.ToLower(name)] = true
+		parts[i] = name
+	}
+	return parts, nil
+}
+
+func (m Model) fieldChanges() (map[string]interface{}, map[string][]string, error) {
+	fields := map[string]interface{}{}
+	lists := map[string][]string{}
+	for i := 0; i < 4; i++ {
+		value := m.fieldInputs[i].Value()
+		if value == m.fieldOriginal[i] && (!m.fieldTouched[i] || value != "") { continue }
+		switch i {
+		case 0:
+			if value != "" { d, err := time.Parse("2006-01-02", value); if err != nil || d.Format("2006-01-02") != value { return nil, nil, fmt.Errorf("due date must be a real YYYY-MM-DD date") }; fields["duedate"] = value } else { fields["duedate"] = nil }
+		case 1, 2:
+			names, err := parseFieldNames(value); if err != nil { return nil,nil,fmt.Errorf("%s: %w", fieldLabels[i], err) }
+			items := make([]map[string]string, len(names))
+			for j, name := range names { items[j] = map[string]string{"name": name} }
+			fields[fieldKeys[i]] = items
+			lists[fieldKeys[i]] = names
+		case 3:
+			id := m.fieldInputs[4].Value()
+			if err := jira.ValidateCustomFieldID(id); err != nil { return nil,nil,fmt.Errorf("story points require a valid customfield_N field ID: %w", err) }
+			if value == "" { fields[id] = nil } else {
+				if !decimalPattern.MatchString(value) { return nil,nil,fmt.Errorf("story points must be a finite decimal") }
+				if _, ok := new(big.Rat).SetString(value); !ok { return nil,nil,fmt.Errorf("story points must be a finite decimal") }
+				fields[id] = json.Number(value)
+			}
+		}
+	}
+	return fields, lists, nil
+}
+
+func validateFieldMeta(meta *jira.EditMeta, fields map[string]interface{}, lists map[string][]string) error {
+	if meta == nil { return fmt.Errorf("Jira returned no edit metadata") }
+	for key := range fields {
+		f, ok := meta.Fields[key]
+		if !ok { return fmt.Errorf("%s is not editable for this issue", key) }
+		switch key {
+		case "duedate":
+			if f.Schema.Type != "date" { return fmt.Errorf("%s has invalid date schema", key) }
+		case "components", "fixVersions":
+			want := "component"
+			if key == "fixVersions" { want = "version" }
+			if f.Schema.Type != "array" || f.Schema.Items != want { return fmt.Errorf("%s has invalid list schema", key) }
+		default:
+			if f.Schema.Type != "number" { return fmt.Errorf("%s is not numeric", key) }
+		}
+		set := false
+		for _, op := range f.Operations { if op == "set" { set = true } }
+		if !set { return fmt.Errorf("%s does not support set", key) }
+		if names, ok := lists[key]; ok && len(names)>0 {
+			if f.AllowedValues == nil { return fmt.Errorf("%s has no allowed values", key) }
+			allowed := map[string]bool{}
+			for _, v := range *f.AllowedValues { allowed[v.Name] = true }
+			for _, name := range names { if !allowed[name] { return fmt.Errorf("%q is not allowed for %s", name, key) } }
+		}
+	}
+	return nil
+}
+
+func (m Model) startFieldSave(refreshOnly bool) (tea.Model, tea.Cmd) {
+	key, board, search := m.detail.Key, m.detailBoardRequest, m.detailSearchRequest
+	fieldID := m.fieldInputs[4].Value()
+	var fields map[string]interface{}
+	var lists map[string][]string
+	if fieldID != "" {
+		if err := jira.ValidateCustomFieldID(fieldID); err != nil {
+			m.fieldErr = fmt.Errorf("invalid story points field ID: %w", err)
+			return m, nil
+		}
+		if !refreshOnly && (!m.fieldSelected || m.fieldSelectedID != fieldID) {
+			return m.loadSelectedField(fieldID)
+		}
+	}
+	if !refreshOnly {
+		var err error
+		fields, lists, err = m.fieldChanges()
+		if err != nil { m.fieldErr = err; return m,nil }
+		if len(fields) == 0 { m.view = viewDetail; m.fieldErr = nil; return m,nil }
+	}
+	m.fieldErr = nil
+	m.fieldSubmitting = true
+	m.nextFieldRequest++
+	id := m.nextFieldRequest
+	m.activeFieldRequest = id
+	client := m.client
+	return m, func() tea.Msg {
+		result := fieldUpdatedMsg{requestID:id, issueKey:key, boardRequest:board, searchRequest:search, applied:refreshOnly}
+		if !refreshOnly {
+			meta, err := client.GetIssueEditMeta(key)
+			if err == nil { err = validateFieldMeta(meta, fields, lists) }
+			if err != nil { result.err = err; return result }
+			if err = client.UpdateIssue(key, fields); err != nil { result.err = err; return result }
+			result.applied = true
+		}
+		if fieldID != "" { result.issue, result.err = client.GetIssueFullWithStoryPoints(key, fieldID) } else { result.issue, result.err = client.GetIssueFull(key) }
+		return result
+	}
+}
+
+func (m Model) updateFieldsEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if key == "ctrl+c" { return m, tea.Quit }
+	if m.fieldSubmitting || m.fieldLoading { if key == "esc" && m.fieldLoading { m.fieldLoading = false; m.activeFieldRequest = 0; m.view = viewDetail }; return m,nil }
+	if key == "esc" { m.activeFieldRequest = 0; m.view = viewDetail; if m.fieldApplied { m.toast = "Update applied; detail refresh failed" }; return m,nil }
+	if key == "ctrl+s" {
+		m = m.syncFieldSelector()
+		if m.fieldApplied { return m.startFieldSave(true) }
+		return m.startFieldSave(false)
+	}
+	if m.fieldApplied { return m,nil }
+	if key == "tab" || key == "shift+tab" {
+		previous := m.fieldCur
+		m.fieldInputs[m.fieldCur].Blur()
+		if key == "tab" { m.fieldCur = (m.fieldCur+1)%5 } else { m.fieldCur = (m.fieldCur+4)%5 }
+		focus := m.fieldInputs[m.fieldCur].Focus()
+		if previous == 4 {
+			m = m.syncFieldSelector()
+			id := m.fieldInputs[4].Value()
+			if id != "" && (!m.fieldSelected || m.fieldSelectedID != id) { return m.loadSelectedField(id) }
+		}
+		return m, focus
+	}
+	if key == "ctrl+d" {
+		m.fieldInputs[m.fieldCur].SetValue("")
+		m.fieldTouched[m.fieldCur] = true
+		if m.fieldCur == 4 { m = m.syncFieldSelector() }
+		return m,nil
+	}
+	var cmd tea.Cmd
+	m.fieldInputs[m.fieldCur], cmd = m.fieldInputs[m.fieldCur].Update(msg)
+	m.fieldTouched[m.fieldCur] = true
+	if m.fieldCur == 4 { m = m.syncFieldSelector() }
+	return m,cmd
+}
+
+func (m Model) renderFieldsEdit() string {
+	var b strings.Builder
+	b.WriteString(keyStyle.Render("✎ Edit fields · " + m.detail.Key) + "\n\n")
+	for i, label := range fieldLabels {
+		marker := "  "; if i == m.fieldCur { marker = "→ " }
+		b.WriteString(marker + label + ": " + m.fieldInputs[i].View() + "\n")
+	}
+	b.WriteString("\nComma-separated exact component/version names; empty clears. Date YYYY-MM-DD; points decimal.\n")
+	if m.fieldLoading { b.WriteString("Loading selected story points... Save is disabled until selection completes.\n") }
+	if m.fieldInputs[4].Value() != "" && !m.fieldSelected && !m.fieldLoading { b.WriteString("Select a valid field ID, then press Tab or Ctrl+S to load its current value before saving.\n") }
+	if m.fieldSubmitting { b.WriteString("Updating or refreshing ticket...\n") }
+	if m.fieldApplied { b.WriteString("Update applied; retry refresh only with Ctrl+S.\n") }
+	if m.fieldErr != nil { b.WriteString(errStyle.Render("Error: " + m.fieldErr.Error()) + "\n") }
+	b.WriteString("[tab] Next  [ctrl+d] Clear  [ctrl+s] Save  [esc] Cancel")
+	return m.modalStyle().Render(b.String())
+}
+
+func (m *Model) sizeDescriptionInput() {
+	width := m.modalWidth() - 2
+	if width < 1 {
+		width = 1
+	}
+	height := m.modalHeight() - 10
+	if height < 3 {
+		height = 3
+	}
+	if height > 12 {
+		height = 12
+	}
+	m.descriptionInput.SetWidth(width)
+	m.descriptionInput.SetHeight(height)
+}
+
+func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.descriptionSubmitting {
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.descriptionInput.Blur()
+		m.descriptionErr = nil
+		m.activeDescriptionRequest = 0
+		m.view = viewDetail
+		if m.descriptionApplied {
+			m.descriptionApplied = false
+			m.toast = "Description updated; detail was not refreshed"
+			return m, clearToastAfter(4 * time.Second)
+		}
+		return m, nil
+	case "ctrl+s":
+		if m.detail == nil {
+			return m, nil
+		}
+		if m.descriptionApplied {
+			return m.startDescriptionRefresh()
+		}
+		if m.descriptionInput.Value() == m.descriptionOriginal {
+			m.descriptionInput.Blur()
+			m.descriptionErr = nil
+			m.view = viewDetail
+			return m, nil
+		}
+		return m.startDescriptionUpdate()
+	default:
+		if m.descriptionApplied {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.descriptionInput, cmd = m.descriptionInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Model) startDescriptionUpdate() (tea.Model, tea.Cmd) {
+	issueKey := m.detail.Key
+	text := m.descriptionInput.Value()
+	var description interface{}
+	if text != "" {
+		description = jira.TextToADF(text)
+	}
+	m.nextDescriptionRequest++
+	requestID := m.nextDescriptionRequest
+	m.activeDescriptionRequest = requestID
+	m.descriptionSubmitting = true
+	m.descriptionErr = nil
+	client := m.client
+	return m, func() tea.Msg {
+		if err := client.UpdateIssue(issueKey, map[string]interface{}{"description": description}); err != nil {
+			return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, err: err}
+		}
+		issue, err := client.GetIssueFull(issueKey)
+		if err != nil {
+			err = fmt.Errorf("description was updated, but detail refresh failed: %w", err)
+		}
+		return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, issue: issue, applied: true, err: err}
+	}
+}
+
+func (m Model) startDescriptionRefresh() (tea.Model, tea.Cmd) {
+	issueKey := m.detail.Key
+	m.nextDescriptionRequest++
+	requestID := m.nextDescriptionRequest
+	m.activeDescriptionRequest = requestID
+	m.descriptionSubmitting = true
+	m.descriptionErr = nil
+	client := m.client
+	return m, func() tea.Msg {
+		issue, err := client.GetIssueFull(issueKey)
+		if err != nil {
+			err = fmt.Errorf("description was updated, but detail refresh failed: %w", err)
+		}
+		return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, issue: issue, applied: true, err: err}
+	}
 }
 
 func (m Model) scrollDetail(steps int) Model {
@@ -1555,6 +2076,18 @@ func (m Model) View() tea.View {
 
 	case viewSearch:
 		b.WriteString(m.renderSearch())
+
+	case viewFieldsEdit:
+		background := m.renderKanban()
+		if m.detailReturn == viewSearch { background = m.renderSearch() }
+		b.WriteString(m.composeOverlay(background, m.renderFieldsEdit()))
+
+	case viewDescriptionEdit:
+		background := m.renderKanban()
+		if m.detailReturn == viewSearch {
+			background = m.renderSearch()
+		}
+		b.WriteString(m.composeOverlay(background, m.renderDescriptionEdit()))
 	}
 
 	content := b.String()
@@ -2016,6 +2549,38 @@ func (m Model) renderDetail() string {
 	return m.renderDetailModal(content, actions)
 }
 
+func (m Model) renderDescriptionEdit() string {
+	key := m.detailIssueKey
+	if m.detail != nil {
+		key = m.detail.Key
+	}
+	var b strings.Builder
+	b.WriteString(keyStyle.Render("✎ Edit description · " + key))
+	b.WriteString("\n\n")
+	b.WriteString(m.descriptionInput.View())
+	if m.descriptionApplied {
+		b.WriteString("\n")
+		b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed."))
+	}
+	if m.descriptionErr != nil {
+		b.WriteString("\n")
+		b.WriteString(errStyle.Render("Error: " + m.descriptionErr.Error()))
+	}
+	b.WriteString("\n\n")
+	if m.descriptionSubmitting {
+		if m.descriptionApplied {
+			b.WriteString(subStyle.Render("Refreshing ticket detail...  [ctrl+c] Quit"))
+		} else {
+			b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit"))
+		}
+	} else if m.descriptionApplied {
+		b.WriteString(subStyle.Render("[ctrl+s] Retry refresh only  [esc] Close (update remains applied)"))
+	} else {
+		b.WriteString(subStyle.Render("[ctrl+s] Confirm  [esc] Cancel"))
+	}
+	return m.modalStyle().Render(b.String())
+}
+
 func (m Model) detailContent() (string, string) {
 	var b strings.Builder
 	if m.detailLoading {
@@ -2078,5 +2643,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [w] Log  [o] Open  [esc] Close"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Description  [E] Fields  [w] Log  [o] Open  [esc] Close"
 }

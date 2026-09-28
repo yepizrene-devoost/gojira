@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -19,9 +18,9 @@ var searchCmd = &cobra.Command{
   gojira search "text ~ 'login bug'" --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, domain, err := BuildClient()
+		client, domain, err := buildClient()
 		if err != nil {
-			return err
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
 		}
 
 		jql := args[0]
@@ -29,13 +28,13 @@ var searchCmd = &cobra.Command{
 
 		issues, total, err := client.SearchJQL(jql, limit)
 		if err != nil {
-			return err
+			return commandError(cmd, "read_failed", "issues could not be searched", "", jira.MutationNotApplied, err)
 		}
 
-		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			tickets := jira.IssuesToTicketJSON(issues, domain)
-			b, _ := json.MarshalIndent(tickets, "", "  ")
-			fmt.Println(string(b))
+		if wantsJSON(cmd) {
+			if err := writeSearchJSON(cmd, issues, domain); err != nil {
+				return reportJSONError(cmd, "output_failed", "search JSON could not be written", "", jira.MutationNotApplied, err)
+			}
 			return nil
 		}
 
@@ -68,6 +67,10 @@ var searchCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func writeSearchJSON(cmd *cobra.Command, issues []jira.Issue, domain string) error {
+	return writeJSON(cmd, jira.IssuesToTicketJSON(issues, domain))
 }
 
 func truncate(s string, max int) string {

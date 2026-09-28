@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -8,9 +9,9 @@ import (
 // ─── Board / Sprint ────────────────────────────────────────────────────
 
 type Board struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
 	Location *struct {
 		ProjectName string `json:"projectName"`
 		ProjectKey  string `json:"projectKey"`
@@ -18,6 +19,13 @@ type Board struct {
 }
 
 type BoardConfig struct {
+	Estimation *struct {
+		Type  string `json:"type"`
+		Field *struct {
+			FieldID     string `json:"fieldId"`
+			DisplayName string `json:"displayName"`
+		} `json:"field"`
+	} `json:"estimation,omitempty"`
 	ColumnConfig *struct {
 		Columns []struct {
 			Name     string `json:"name"`
@@ -189,6 +197,10 @@ type ComponentField struct {
 	Name string `json:"name"`
 }
 
+type FixVersionField struct {
+	Name string `json:"name"`
+}
+
 type DescriptionField = ADFDoc
 
 type Comment struct {
@@ -204,25 +216,71 @@ type CommentField struct {
 	Comments []Comment `json:"comments"`
 }
 
+// IssueHierarchyRef contains only the nested fields supplied by the issue GET.
+type IssueHierarchyRef struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string       `json:"summary"`
+		Status  *StatusField `json:"status"`
+	} `json:"fields"`
+}
+
 type IssueFieldData struct {
-	Summary     string            `json:"summary"`
-	Status      *StatusField      `json:"status,omitempty"`
-	Priority    *PriorityField    `json:"priority,omitempty"`
-	Assignee    *AssigneeField    `json:"assignee,omitempty"`
-	Reporter    *ReporterField    `json:"reporter,omitempty"`
-	IssueType   *IssueTypeField   `json:"issuetype,omitempty"`
-	Project     *ProjectField     `json:"project,omitempty"`
-	Labels      []string          `json:"labels,omitempty"`
-	Components  []ComponentField  `json:"components,omitempty"`
-	Created     string            `json:"created"`
-	Updated     string            `json:"updated"`
-	Description *DescriptionField `json:"description,omitempty"`
-	Comment     *CommentField     `json:"comment,omitempty"`
+	Parent      *IssueHierarchyRef   `json:"parent,omitempty"`
+	Subtasks    *[]IssueHierarchyRef `json:"subtasks,omitempty"`
+	Summary     string               `json:"summary"`
+	Status      *StatusField         `json:"status,omitempty"`
+	Priority    *PriorityField       `json:"priority,omitempty"`
+	Assignee    *AssigneeField       `json:"assignee,omitempty"`
+	Reporter    *ReporterField       `json:"reporter,omitempty"`
+	IssueType   *IssueTypeField      `json:"issuetype,omitempty"`
+	Project     *ProjectField        `json:"project,omitempty"`
+	Labels      []string             `json:"labels,omitempty"`
+	Components  []ComponentField     `json:"components,omitempty"`
+	FixVersions []FixVersionField    `json:"fixVersions,omitempty"`
+	DueDate     *string              `json:"duedate"`
+	Created     string               `json:"created"`
+	Updated     string               `json:"updated"`
+	Description *DescriptionField    `json:"description,omitempty"`
+	Comment     *CommentField        `json:"comment,omitempty"`
 }
 
 type Issue struct {
-	Key    string         `json:"key"`
-	Fields IssueFieldData `json:"fields"`
+	Key         string          `json:"key"`
+	Fields      IssueFieldData  `json:"fields"`
+	StoryPoints *NullableNumber `json:"-"`
+}
+
+// NullableNumber represents a selected Jira numeric field. A nil Value is an
+// explicit Jira null; a nil *NullableNumber means that no field was selected.
+type NullableNumber struct {
+	Value *json.Number
+}
+
+func (n NullableNumber) MarshalJSON() ([]byte, error) {
+	if n.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Value)
+}
+
+type EditMeta struct {
+	Fields map[string]EditMetaField `json:"fields"`
+}
+
+type EditMetaField struct {
+	AllowedValues *[]NamedValue  `json:"allowedValues"`
+	Schema        EditMetaSchema `json:"schema"`
+	Operations    []string       `json:"operations"`
+}
+
+type EditMetaSchema struct {
+	Type  string `json:"type"`
+	Items string `json:"items"`
+}
+
+type NamedValue struct {
+	Name string `json:"name"`
 }
 
 // ─── Project ───────────────────────────────────────────────────────────
@@ -251,23 +309,54 @@ type Worklog struct {
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
 
 type TicketJSON struct {
-	Key            string   `json:"key"`
-	URL            string   `json:"url,omitempty"`
-	Summary        string   `json:"summary"`
-	Status         string   `json:"status"`
-	StatusCategory string   `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
-	Priority       string   `json:"priority"`
-	Assignee       string   `json:"assignee"`
-	Reporter       string   `json:"reporter,omitempty"`
-	IssueType      string   `json:"issueType"`
-	Project        string   `json:"project,omitempty"`
-	Labels         []string `json:"labels,omitempty"`
-	Components     []string `json:"components,omitempty"`
-	Description    string   `json:"description"`
-	Created        string   `json:"created"`
-	Updated        string   `json:"updated"`
-	TimeLogged     string   `json:"timeLogged,omitempty"`
-	Comments       []CommentJSON `json:"comments,omitempty"`
+	SchemaVersion   string               `json:"schemaVersion"`
+	Key             string               `json:"key"`
+	URL             string               `json:"url,omitempty"`
+	Summary         string               `json:"summary"`
+	Status          string               `json:"status"`
+	StatusCategory  string               `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
+	Priority        string               `json:"priority"`
+	Assignee        string               `json:"assignee"`
+	Reporter        string               `json:"reporter,omitempty"`
+	IssueType       string               `json:"issueType"`
+	Project         string               `json:"project,omitempty"`
+	Labels          []string             `json:"labels,omitempty"`
+	Components      []string             `json:"components,omitempty"`
+	FixVersions     []string             `json:"fixVersions,omitempty"`
+	DueDate         *string              `json:"dueDate"`
+	StoryPoints     *NullableNumber      `json:"storyPoints,omitempty"`
+	Description     string               `json:"description"`
+	Created         string               `json:"created"`
+	Updated         string               `json:"updated"`
+	TimeLogged      string               `json:"timeLogged,omitempty"`
+	Comments        []CommentJSON        `json:"comments,omitempty"`
+	Parent          *HierarchyJSON       `json:"parent,omitempty"`
+	Subtasks        *[]HierarchyJSON     `json:"subtasks,omitempty"`
+	SubtaskProgress *SubtaskProgressJSON `json:"subtaskProgress,omitempty"`
+}
+
+// HierarchyJSON preserves the nested issue evidence without fetching each child.
+type HierarchyJSON struct {
+	Key            string `json:"key"`
+	Summary        string `json:"summary"`
+	Status         string `json:"status"`
+	StatusCategory string `json:"statusCategory,omitempty"`
+}
+
+type SubtaskProgressJSON struct {
+	Done  int `json:"done"`
+	Total int `json:"total"`
+}
+
+func hierarchyJSON(ref IssueHierarchyRef) HierarchyJSON {
+	out := HierarchyJSON{Key: ref.Key, Summary: ref.Fields.Summary}
+	if ref.Fields.Status != nil {
+		out.Status = ref.Fields.Status.Name
+		if ref.Fields.Status.Category != nil {
+			out.StatusCategory = ref.Fields.Status.Category.Key
+		}
+	}
+	return out
 }
 
 type CommentJSON struct {
@@ -365,13 +454,14 @@ func TextToADF(text string) ADFDoc {
 
 func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
-		Key:      iss.Key,
-		URL:      browseURL(domain, iss.Key),
-		Summary:  iss.Fields.Summary,
-		Created:  normalizeDate(iss.Fields.Created),
-		Updated:  normalizeDate(iss.Fields.Updated),
-		Assignee: "Unassigned",
-		Labels:   iss.Fields.Labels,
+		SchemaVersion: "v1",
+		Key:           iss.Key,
+		URL:           browseURL(domain, iss.Key),
+		Summary:       iss.Fields.Summary,
+		Created:       normalizeDate(iss.Fields.Created),
+		Updated:       normalizeDate(iss.Fields.Updated),
+		Assignee:      "Unassigned",
+		Labels:        iss.Fields.Labels,
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name
@@ -398,6 +488,40 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 		t.Components = make([]string, len(iss.Fields.Components))
 		for i, c := range iss.Fields.Components {
 			t.Components[i] = c.Name
+		}
+	}
+	if len(iss.Fields.FixVersions) > 0 {
+		t.FixVersions = make([]string, len(iss.Fields.FixVersions))
+		for i, version := range iss.Fields.FixVersions {
+			t.FixVersions[i] = version.Name
+		}
+	}
+	t.DueDate = iss.Fields.DueDate
+	t.StoryPoints = iss.StoryPoints
+	if iss.Fields.Parent != nil {
+		parent := hierarchyJSON(*iss.Fields.Parent)
+		t.Parent = &parent
+	}
+	if iss.Fields.Subtasks != nil {
+		children := make([]HierarchyJSON, len(*iss.Fields.Subtasks))
+		progress := &SubtaskProgressJSON{Total: len(children)}
+		complete := true
+		for i, child := range *iss.Fields.Subtasks {
+			children[i] = hierarchyJSON(child)
+			if child.Key == "" {
+				complete = false
+			}
+			switch strings.ToLower(children[i].StatusCategory) {
+			case "done":
+				progress.Done++
+			case "new", "indeterminate":
+			default:
+				complete = false
+			}
+		}
+		t.Subtasks = &children
+		if complete {
+			t.SubtaskProgress = progress
 		}
 	}
 	if iss.Fields.Description != nil {

@@ -112,22 +112,34 @@ When creating `config.yaml`, the fallback requests mode `0600`; rewriting an
 existing file does not correct a pre-existing broader mode. The YAML is not
 encrypted.
 
+Run `gojira` without arguments to see the available commands. To start the
+interactive board, invoke the TUI explicitly:
+
+```bash
+gojira tui
+```
+
+The bare command only prints help; it does not require configuration, open the
+setup wizard, or connect to Jira.
+
 ## CLI commands
 
 | Command | Description |
 |---|---|
-| `gojira` | Launch the interactive TUI |
+| `gojira` | Show available commands and usage |
+| `gojira tui` | Launch the interactive TUI (including first-run setup and connection checks) |
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
-| `gojira get <KEY>` | Full ticket details: project, labels, components, comments (`--json`) |
+| `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments, parent and subtasks when returned (`--json`); add `--story-points-field customfield_N` to include that numeric field |
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
-| `gojira move <KEY> --to <STATUS>` | Transition a ticket (no `--to` lists available transitions) |
-| `gojira log <KEY> --time 2h` | Add worklog (`--comment`, `--show` for history) |
-| `gojira create` | Create an issue (`--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
-| `gojira comment <KEY> <text>` | Comment with `--mention email` (resolves to @mention) |
-| `gojira assign <KEY> <email>` | Assign by email (resolves to accountId) |
-| `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` |
+| `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
+| `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
+| `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
+| `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
+| `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
@@ -146,22 +158,162 @@ gojira get ARA-1892 --json
 # Create a ticket from a markdown requirement file
 gojira create --project ARA --type Task --summary "Add export" --description-file req.md
 
+# Create a sub-task beneath an existing issue (defaults to --type Sub-task)
+gojira create --project ARA --parent ARA-1892 --summary "Verify export" --json
+
 # Create a ticket straight into the active sprint (skip the backlog)
 gojira create --project ARA --type Task --summary "Sprint work" --board 1
 
+# Move an issue from future and active sprints to the backlog
+gojira backlog ARA-1892 --json
+
 # Comment and notify the PM
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
+
+# Replace a description using plain text converted to Jira ADF
+gojira update ARA-1892 --description $'First paragraph\n- checklist item'
+
+# Replace due date, components, and fix versions after Jira editability checks
+gojira update ARA-1892 --due-date 2026-10-31 --components "API,Web" --fix-versions "v1.0,v1.1"
+
+# Clear these fields explicitly (omitting a flag leaves its field unchanged)
+gojira update ARA-1892 --due-date= --components= --fix-versions=
+
+# Set or explicitly clear the site's selected numeric story-points field
+gojira update ARA-1892 --story-points 5.5 --story-points-field customfield_10016
+gojira update ARA-1892 --story-points= --story-points-field customfield_10016
+
+# Include the same selected field in human or JSON reads
+gojira get ARA-1892 --story-points-field customfield_10016 --json
 ```
 
-JSON modes write valid JSON to stdout, with diagnostics on stderr. The curated
-`TicketJSON` schema is used only by `get --json`, `search --json`, `export`, and
-TUI ticket/column copy. Board exports request basic issue fields, so fields such
-as description, labels, comments, and timestamps may be empty or omitted.
-`boards --json` and `projects --json` expose their own list shapes;
-`move --json` only lists transitions when `--to` is omitted, and `log --json`
-only lists worklogs with `--show`. `version --json` has its own
-`version`/`revision`/`dirty` schema. Mutation commands print human-readable
-confirmation rather than `TicketJSON`.
+`create --parent KEY` accepts a canonical Jira issue key and requires type
+`Sub-task` when `--type` is explicit. It cannot be combined with `--board`:
+child sprint membership is not established by this command. Without `--parent`,
+the default remains `Task`. GoJira validates the flag combination locally but
+Jira decides whether the parent exists and permits child creation.
+
+`backlog KEY` sends one request to Jira's [Cloud backlog endpoint](https://developer.atlassian.com/cloud/jira/software/rest/api-group-backlog/),
+without first reading sprint membership. The documented operation removes future
+and active sprint membership; preservation of closed sprint history has not
+been independently proven. A 204 response confirms the request succeeded, not
+independently verified backlog membership. No live Jira verification has been
+performed.
+
+JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
+The curated `TicketJSON` schema is used by `get --json`, `search --json`,
+`export`, TUI ticket/column copy, and successful JSON mutations. `get --json`,
+ticket copy, and `create`/`update`/`assign`/`move --to`/`backlog`/`comment`/`log` with
+`--json` produce one object; mutation commands re-fetch the full issue after the
+write. Search, export, and column copy produce a top-level array. Each ticket
+object carries `schemaVersion: "v1"`. Human mutation output is unchanged when
+`--json` is omitted.
+
+### TicketJSON v1 contract
+
+All field types are stable JSON types. A field marked **always** is present even
+when its string value is empty. An **omitted when empty** field uses JSON
+`omitempty`: absent Jira data is represented by no property, not `null` or an
+empty array. Jira descriptions and comment bodies are flattened from ADF to
+plain text, and recognized Jira timestamps are normalized to RFC3339. Unknown
+date formats are preserved verbatim.
+
+| Field | JSON type | Presence and meaning |
+|---|---|---|
+| `schemaVersion` | string | Always; exactly `"v1"` for this contract. |
+| `key` | string | Always; Jira issue key, or an empty string if unavailable. |
+| `url` | string | Omitted when empty; HTTPS browse URL, available when both domain and key are known. |
+| `summary` | string | Always; empty string when unavailable. |
+| `status` | string | Always; status display name, or empty string when unavailable. |
+| `statusCategory` | string | Omitted when empty; Jira category key such as `new`, `indeterminate`, or `done`. |
+| `priority` | string | Always; priority display name, or empty string when unavailable. |
+| `assignee` | string | Always; assignee display name, or `"Unassigned"` when Jira has no assignee. |
+| `reporter` | string | Omitted when empty; reporter display name. |
+| `issueType` | string | Always; issue type display name, or empty string when unavailable. |
+| `project` | string | Omitted when empty; Jira project key. |
+| `labels` | array of strings | Omitted when empty; Jira label values. |
+| `components` | array of strings | Omitted when empty; component display names. |
+| `fixVersions` | array of strings | Omitted when empty; fix-version display names. |
+| `dueDate` | string or null | Always; Jira calendar date in `YYYY-MM-DD` form, or `null` when unset or unavailable. |
+| `storyPoints` | number or null | Present only when a validated `--story-points-field customfield_N` selector is supplied to `get`, or when `update --json` writes that selected field; the exact Jira number or `null`. |
+| `description` | string | Always; flattened ADF text, or empty string when unavailable. |
+| `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
+| `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
+| `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
+| `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
+| `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
+| `subtasks` | array of objects | `get` children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
+| `subtaskProgress` | object | `get` only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
+
+Read surfaces can only populate fields requested and returned by their Jira
+endpoint. In particular, board-backed export and TUI column copy request basic
+issue fields, so description, comments, and timestamps may be empty or omitted.
+Sparse Jira responses preserve the required empty-string fields and the
+`"Unassigned"` default described above. `dueDate` is always present as either a
+`YYYY-MM-DD` string or `null`. `storyPoints` is omitted unless a field selector
+was supplied; with a selector it is always a JSON number or `null`. A selected
+field missing from Jira's response, or returned as another JSON type, is a read
+error rather than an omitted property. Hierarchy is requested by the full issue
+GET used by `get`, not by board/export/TUI reads; availability of nested child
+status categories depends on Jira's response. Synthetic tests cover this shape;
+live Jira Cloud compatibility has not been verified.
+
+`boards --json` and `projects --json` expose their own list shapes.
+`move --json` without `--to` retains its transition array, and
+`log --json --show` retains its worklog array. `version --json` has its own
+`version`/`revision`/`dirty` schema.
+
+For `get`, `search`, `boards`, and `projects` with `--json`, and for `export`
+(which is always JSON), configuration failures report `configuration_error`,
+Jira read failures report `read_failed`, and result encoding/writer failures
+report `output_failed`. Export with no boards reports `validation_error`.
+Each exits nonzero and writes one v1 error object to stderr with
+`mutationState: "not_applied"`; `get` includes the issue key. Automatic export
+board/sprint selection diagnostics remain on stderr. No success JSON is written
+before result encoding begins. An output writer can fail after a partial stdout
+write, so output is not guaranteed atomic. Invalid arguments retain the root
+command's `validation_error` behavior.
+
+For `update`, `--due-date` is validated as a real `YYYY-MM-DD` calendar date,
+and comma-separated component/version lists reject empty or duplicate names
+before any Jira request. When any of those three flags is present, GoJira first
+loads that issue's edit metadata and refuses the write if a requested field is
+not editable. Component and fix-version names are checked locally when Jira
+supplies `allowedValues`; otherwise Jira's write rejection remains visible.
+The metadata read never causes a write retry, and the PUT is still dispatched
+at most once.
+
+Story points use no field-name heuristics. `--story-points` and
+`--story-points-field customfield_N` must be supplied together; malformed IDs,
+non-decimal values, and non-finite values are rejected before any Jira request.
+An explicitly empty `--story-points=` sends JSON `null`. Before the PUT, edit
+metadata must contain the selected field with `schema.type: "number"` and a
+`set` operation. Selector-aware reads request the normal full fields plus only
+the selected custom field, and preserve decimal precision in JSON output.
+
+A failed JSON mutation exits with status 1, writes no stdout before result
+encoding begins, and writes one error object to stderr:
+
+```json
+{
+  "schemaVersion": "v1",
+  "code": "mutation_failed",
+  "message": "issue update failed",
+  "issueKey": "ARA-1892",
+  "mutationState": "unknown"
+}
+```
+
+`code` and `message` are stable, non-sensitive summaries; `issueKey` is omitted
+when it is not known. `mutationState` is exactly `applied`, `not_applied`, or
+`unknown`. A successful write followed by a failed re-fetch is `applied`; a
+confirmed HTTP 4xx rejection is `not_applied`; transport failures, HTTP 5xx,
+and refused HTTP redirects after dispatch are `unknown`. Writes are sent once,
+never retried, and 307/308 redirects are not followed. If issue creation
+succeeds but sprint placement fails, the error includes the created key and
+`applied`. An output writer may fail after a partial stdout write, so
+stdout atomicity cannot be guaranteed in that case; the command still returns
+failure and never reports success.
 
 ## TUI keyboard shortcuts
 
@@ -228,9 +380,40 @@ where search started.
 |---|---|
 | `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
+| `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
+| `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+The description editor accepts multiple lines and converts an actual plain-text
+edit to Jira ADF. Replacing a description this way may discard rich ADF formatting
+that plain text cannot represent; confirming unchanged text performs no write. A
+successful update refreshes the open ticket detail. If the update succeeds but
+refresh fails, the editor marks the update as already applied and `Ctrl+S` retries
+only the detail refresh; closing that state does not roll back the Jira update.
+Other failures keep the editor text and ticket context available for retry or
+cancel.
+
+In the separate `E` field editor, `Tab`/`Shift+Tab` switch fields, `Ctrl+D`
+clears the focused field, `Ctrl+S` saves, and `Esc` cancels. Dates require a
+real `YYYY-MM-DD` date; components and fix versions are comma-separated exact
+Jira names without duplicates; story points require a finite decimal and a
+canonical `customfield_N` ID. Clearing date/points sends JSON null; clearing a
+list sends an empty array. Unchanged fields are omitted, and a no-op sends no
+PUT. The editor checks this issue's edit metadata and allowed list values before
+one combined update. A Scrum board with field-based estimation supplies the
+validated story-points field ID; otherwise enter the ID manually (the displayed
+field name is never used as an ID). Leaving a manually entered ID with `Tab`
+(or pressing `Ctrl+S`) first loads the actual selected value from Jira; saving
+is disabled while it loads. Changing the ID discards the previously selected
+points value. If the selected GET fails or returns missing/invalid data, no
+write is allowed: retry the GET with `Ctrl+S` or clear/change the ID. An invalid
+nonempty ID blocks all updates, including edits to unrelated fields. After a
+successful PUT, a failed detail refresh leaves an applied state:
+`Ctrl+S` retries only the GET, never the PUT. An uncertain write failure retains
+the form; check Jira before retrying because the mutation may already have landed.
+An HTTP request already dispatched cannot be undone by exiting the TUI.
 
 ## Project structure
 

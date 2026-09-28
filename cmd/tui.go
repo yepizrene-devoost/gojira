@@ -11,12 +11,17 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/tui"
 )
 
-var tuiCmd = &cobra.Command{
-	Use:   "tui",
-	Short: "Launch the interactive TUI (default when no command is given)",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTUI()
-	},
+var tuiCmd = newTUICommand(runTUI)
+
+func newTUICommand(run func() error) *cobra.Command {
+	return &cobra.Command{
+		Use:   "tui",
+		Short: "Launch the interactive TUI",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return run()
+		},
+	}
 }
 
 func runTUI() error {
@@ -51,9 +56,5 @@ func runTUI() error {
 }
 
 func init() {
-	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return runTUI()
-	}
 	rootCmd.AddCommand(tuiCmd)
 }
-
