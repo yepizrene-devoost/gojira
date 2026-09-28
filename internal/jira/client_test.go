@@ -104,6 +104,130 @@ func TestRequestDoesNotRetryPostAfterTransportError(t *testing.T) {
 	}
 }
 
+func TestWriteServerFailuresAfterDispatchAreUnknown(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			writes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writes++ // Simulate Jira applying the mutation before its proxy response fails.
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			client := NewClient(srv.URL, "e@x.com", "tok")
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if state := MutationStateOf(err); state != MutationUnknown {
+				t.Fatalf("state = %q, want %q after HTTP %d", state, MutationUnknown, status)
+			}
+			if writes != 1 {
+				t.Fatalf("server observed %d writes, want exactly 1", writes)
+			}
+		})
+	}
+}
+
+func TestWriteRedirectsAreNotFollowed(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			redirectedWrites := 0
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				redirectedWrites++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer target.Close()
+
+			initialWrites := 0
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				initialWrites++
+				w.Header().Set("Location", target.URL+r.URL.Path)
+				w.WriteHeader(status)
+			}))
+			defer origin.Close()
+
+			client := NewClient(origin.URL, "e@x.com", "tok")
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if state := MutationStateOf(err); state != MutationUnknown {
+				t.Fatalf("state = %q, want %q after HTTP %d", state, MutationUnknown, status)
+			}
+			if initialWrites != 1 || redirectedWrites != 0 {
+				t.Fatalf("origin writes = %d, redirected writes = %d; want 1 and 0", initialWrites, redirectedWrites)
+			}
+		})
+	}
+}
+
+func TestWriteRequestsAreNeverRetriedAndClassifyFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport roundTripperFunc
+		wantState MutationState
+	}{
+		{
+			name: "transport failure is ambiguous",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return nil, fmt.Errorf("connection lost")
+			},
+			wantState: MutationUnknown,
+		},
+		{
+			name: "HTTP rejection confirms not applied",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid"}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationNotApplied,
+		},
+		{
+			name: "server failure body read error is ambiguous",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Body:       errorReadCloser{err: errors.New("truncated proxy response")},
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationUnknown,
+		},
+		{
+			name: "client rejection body read error remains not applied",
+			transport: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       errorReadCloser{err: errors.New("truncated rejection response")},
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			},
+			wantState: MutationNotApplied,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hits := 0
+			client := NewClient("https://jira.example", "e@x.com", "tok")
+			client.http.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				hits++
+				return test.transport(req)
+			})
+			err := client.UpdateIssue("A-1", map[string]interface{}{"summary": "new"})
+			if err == nil {
+				t.Fatal("write error = nil")
+			}
+			if state := MutationStateOf(err); state != test.wantState {
+				t.Fatalf("state = %q, want %q", state, test.wantState)
+			}
+			if hits != 1 {
+				t.Fatalf("made %d write requests, want exactly 1", hits)
+			}
+		})
+	}
+}
+
 func TestRequestDoesNotRetryPostAfterTransientResponse(t *testing.T) {
 	hits := 0
 	client := NewClient("https://jira.example", "e@x.com", "tok")

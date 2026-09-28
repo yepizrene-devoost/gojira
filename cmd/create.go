@@ -21,11 +21,6 @@ var createCmd = &cobra.Command{
 With --board, the new issue is also added to that board's active sprint;
 without it, sprint-board issues land in the backlog.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
-		if err != nil {
-			return err
-		}
-
 		project, _ := cmd.Flags().GetString("project")
 		issueType, _ := cmd.Flags().GetString("type")
 		summary, _ := cmd.Flags().GetString("summary")
@@ -33,19 +28,20 @@ without it, sprint-board issues land in the backlog.`,
 		descFile, _ := cmd.Flags().GetString("description-file")
 
 		if project == "" || summary == "" {
-			return fmt.Errorf("--project and --summary are required")
+			err := fmt.Errorf("--project and --summary are required")
+			return commandError(cmd, "validation_error", "project and summary are required", "", jira.MutationNotApplied, err)
 		}
 		if issueType == "" {
 			issueType = "Task"
 		}
 
-		// Build description from flag or file
 		var desc *jira.ADFDoc
 		text := descRaw
 		if descFile != "" {
 			b, err := os.ReadFile(descFile)
 			if err != nil {
-				return fmt.Errorf("reading description file: %w", err)
+				wrapped := fmt.Errorf("reading description file: %w", err)
+				return commandError(cmd, "input_error", "description file could not be read", "", jira.MutationNotApplied, wrapped)
 			}
 			text = string(b)
 		}
@@ -54,18 +50,25 @@ without it, sprint-board issues land in the backlog.`,
 			desc = &doc
 		}
 
+		client, domain, err := buildClient()
+		if err != nil {
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
+		}
+
 		key, err := client.CreateIssue(project, issueType, summary, desc)
 		if err != nil {
-			return err
+			return commandError(cmd, "mutation_failed", "issue creation failed", key, jira.MutationStateOf(err), err)
 		}
-		fmt.Printf("✓ Created %s\n", key)
+		if !wantsJSON(cmd) {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "✓ Created %s\n", key)
+		}
 
-		// Optionally place the new issue in a board's active sprint.
 		boardID, _ := cmd.Flags().GetInt("board")
 		if boardID > 0 {
 			sprints, err := client.GetSprints(boardID)
 			if err != nil {
-				return fmt.Errorf("created %s but could not read sprints for board %d: %w", key, boardID, err)
+				wrapped := fmt.Errorf("created %s but could not read sprints for board %d: %w", key, boardID, err)
+				return commandError(cmd, "partial_failure", "issue created but active sprint lookup failed", key, jira.MutationApplied, wrapped)
 			}
 			var active *jira.Sprint
 			for i := range sprints {
@@ -75,12 +78,20 @@ without it, sprint-board issues land in the backlog.`,
 				}
 			}
 			if active == nil {
-				return fmt.Errorf("created %s but board %d has no active sprint (issue is in the backlog)", key, boardID)
+				err := fmt.Errorf("created %s but board %d has no active sprint (issue is in the backlog)", key, boardID)
+				return commandError(cmd, "partial_failure", "issue created but the board has no active sprint", key, jira.MutationApplied, err)
 			}
 			if err := client.AddIssuesToSprint(active.ID, []string{key}); err != nil {
-				return fmt.Errorf("created %s but could not add it to sprint %q: %w", key, active.Name, err)
+				wrapped := fmt.Errorf("created %s but could not add it to sprint %q: %w", key, active.Name, err)
+				return commandError(cmd, "partial_failure", "issue created but adding it to the active sprint failed", key, jira.MutationApplied, wrapped)
 			}
-			fmt.Printf("✓ Added %s to active sprint %q\n", key, active.Name)
+			if !wantsJSON(cmd) {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "✓ Added %s to active sprint %q\n", key, active.Name)
+			}
+		}
+
+		if wantsJSON(cmd) {
+			return writeMutationResult(cmd, client, domain, key)
 		}
 		return nil
 	},
@@ -93,5 +104,6 @@ func init() {
 	createCmd.Flags().String("description", "", "Description text")
 	createCmd.Flags().String("description-file", "", "Path to description file (markdown)")
 	createCmd.Flags().Int("board", 0, "Also add the new issue to this board's active sprint")
+	createCmd.Flags().Bool("json", false, "Output the resulting issue as TicketJSON v1")
 	rootCmd.AddCommand(createCmd)
 }

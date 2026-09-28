@@ -3,6 +3,7 @@ package jira
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,7 +38,7 @@ const (
 )
 
 func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
-	idempotent := method == http.MethodGet || method == http.MethodPut
+	idempotent := method == http.MethodGet
 	for attempt := 0; attempt < maxRequestAttempts; attempt++ {
 		var body io.Reader
 		if payload != nil {
@@ -102,6 +103,86 @@ func (c *Client) get(path string) ([]byte, error) {
 
 func (c *Client) post(path string, payload []byte) ([]byte, error) {
 	return c.request(http.MethodPost, path, payload)
+}
+
+// MutationState describes what is known about a failed write request.
+type MutationState string
+
+const (
+	MutationApplied    MutationState = "applied"
+	MutationNotApplied MutationState = "not_applied"
+	MutationUnknown    MutationState = "unknown"
+)
+
+// MutationError preserves whether Jira confirmed or rejected a write. A
+// transport error after dispatch is always unknown because the server may have
+// applied the request before the connection failed.
+type MutationError struct {
+	State MutationState
+	Err   error
+}
+
+func (e *MutationError) Error() string { return e.Err.Error() }
+func (e *MutationError) Unwrap() error { return e.Err }
+
+// MutationStateOf returns the state carried by a write error. Unknown is the
+// safe fallback for errors whose origin cannot be classified.
+func MutationStateOf(err error) MutationState {
+	var mutationErr *MutationError
+	if errors.As(err, &mutationErr) {
+		return mutationErr.State
+	}
+	return MutationUnknown
+}
+
+// mutate dispatches a write exactly once. Writes are never retried because a
+// repeated request could duplicate a mutation whose first result was lost.
+func (c *Client) mutate(method, path string, payload []byte) ([]byte, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequest(method, c.baseURL+path, body)
+	if err != nil {
+		return nil, &MutationError{State: MutationNotApplied, Err: err}
+	}
+	req.SetBasicAuth(c.auth, "")
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	writeClient := *c.http
+	writeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := writeClient.Do(req)
+	if err != nil {
+		return nil, &MutationError{State: MutationUnknown, Err: err}
+	}
+	responseBody, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, &MutationError{State: mutationResponseState(resp.StatusCode), Err: readErr}
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, &MutationError{
+			State: mutationResponseState(resp.StatusCode),
+			Err:   fmt.Errorf("API %d: %s", resp.StatusCode, string(responseBody[:minInt(len(responseBody), 200)])),
+		}
+	}
+	return responseBody, nil
+}
+
+func mutationResponseState(status int) MutationState {
+	switch {
+	case status >= http.StatusOK && status < http.StatusMultipleChoices:
+		return MutationApplied
+	case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
+		return MutationNotApplied
+	default:
+		return MutationUnknown
+	}
 }
 
 // ─── Read ──────────────────────────────────────────────────────────────
@@ -285,7 +366,7 @@ func (c *Client) TransitionIssue(issueKey, transitionID string) error {
 	payload, _ := json.Marshal(map[string]map[string]string{
 		"transition": {"id": transitionID},
 	})
-	_, err := c.post(issuePath(pathIssueTransitions, issueKey), payload)
+	_, err := c.mutate(http.MethodPost, issuePath(pathIssueTransitions, issueKey), payload)
 	return err
 }
 
@@ -308,7 +389,7 @@ func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
 		"timeSpent": timeSpent,
 		"comment":   comment,
 	})
-	_, err := c.post(issuePath(pathIssueWorklog, issueKey), payload)
+	_, err := c.mutate(http.MethodPost, issuePath(pathIssueWorklog, issueKey), payload)
 	return err
 }
 
@@ -325,13 +406,16 @@ func (c *Client) CreateIssue(projectKey, issueType, summary string, description 
 		fields["description"] = description
 	}
 	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
-	b, err := c.post(pathIssueCreate, payload)
+	b, err := c.mutate(http.MethodPost, pathIssueCreate, payload)
 	if err != nil {
 		return "", err
 	}
 	var resp struct{ Key string }
 	if err := json.Unmarshal(b, &resp); err != nil {
-		return "", err
+		return "", &MutationError{State: MutationApplied, Err: err}
+	}
+	if resp.Key == "" {
+		return "", &MutationError{State: MutationApplied, Err: fmt.Errorf("create response did not include an issue key")}
 	}
 	return resp.Key, nil
 }
@@ -340,7 +424,7 @@ func (c *Client) CreateIssue(projectKey, issueType, summary string, description 
 // POST /rest/agile/1.0/sprint/{id}/issue with {"issues": ["KEY", ...]}.
 func (c *Client) AddIssuesToSprint(sprintID int, keys []string) error {
 	payload, _ := json.Marshal(map[string][]string{"issues": keys})
-	_, err := c.post(fmt.Sprintf(pathSprintAdd, sprintID), payload)
+	_, err := c.mutate(http.MethodPost, fmt.Sprintf(pathSprintAdd, sprintID), payload)
 	return err
 }
 
@@ -378,21 +462,21 @@ func (c *Client) GetIssueTypes(projectKey string) ([]string, error) {
 // AddComment adds a comment (ADF body) to an issue.
 func (c *Client) AddComment(issueKey string, body ADFDoc) error {
 	payload, _ := json.Marshal(map[string]interface{}{"body": body})
-	_, err := c.post(issuePath(pathIssueComment, issueKey), payload)
+	_, err := c.mutate(http.MethodPost, issuePath(pathIssueComment, issueKey), payload)
 	return err
 }
 
 // AssignIssue assigns an issue by account ID.
 func (c *Client) AssignIssue(issueKey, accountID string) error {
 	payload, _ := json.Marshal(map[string]string{"accountId": accountID})
-	_, err := c.request(http.MethodPut, issuePath(pathIssueAssign, issueKey), payload)
+	_, err := c.mutate(http.MethodPut, issuePath(pathIssueAssign, issueKey), payload)
 	return err
 }
 
 // UpdateIssue updates one or more fields on an issue.
 func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) error {
 	payload, _ := json.Marshal(map[string]interface{}{"fields": fields})
-	_, err := c.request(http.MethodPut, issuePath(pathIssue, issueKey), payload)
+	_, err := c.mutate(http.MethodPut, issuePath(pathIssue, issueKey), payload)
 	return err
 }
 

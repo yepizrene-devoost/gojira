@@ -62,6 +62,38 @@ func TestRootCommandWithoutArgsShowsHelpWithoutConfiguration(t *testing.T) {
 	}
 }
 
+func TestHasJSONIntentRespectsCommandFlagGrammar(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "implicit true", args: []string{"create", "--json"}, want: true},
+		{name: "numeric true", args: []string{"create", "--json=1"}, want: true},
+		{name: "uppercase true", args: []string{"create", "--json=TRUE"}, want: true},
+		{name: "true before command", args: []string{"--json=true", "create"}, want: true},
+		{name: "false before command overridden after", args: []string{"--json=false", "create", "--json=TRUE"}, want: true},
+		{name: "true before command overridden after", args: []string{"--json=1", "create", "--json=false"}, want: false},
+		{name: "flag value before command is skipped", args: []string{"--summary", "value", "create", "--json"}, want: true},
+		{name: "command name consumed as flag value", args: []string{"--summary", "create", "--json"}, want: false},
+		{name: "terminator before command", args: []string{"--", "create", "--json"}, want: false},
+		{name: "JSON token consumed as summary value", args: []string{"create", "--summary", "--json"}, want: false},
+		{name: "flag terminator", args: []string{"create", "--", "--json"}, want: false},
+		{name: "later false overrides true", args: []string{"create", "--json", "--json=false"}, want: false},
+		{name: "later numeric false overrides true", args: []string{"create", "--json=TRUE", "--json=0"}, want: false},
+		{name: "later true overrides false", args: []string{"create", "--json=false", "--json=T"}, want: true},
+		{name: "unrelated value is not sniffed", args: []string{"create", "--summary=contains--json=true"}, want: false},
+		{name: "command without JSON flag", args: []string{"tui", "--json"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasJSONIntent(rootCmd, test.args); got != test.want {
+				t.Fatalf("hasJSONIntent(%q) = %v, want %v", test.args, got, test.want)
+			}
+		})
+	}
+}
+
 func TestTUIRunsOnlyWhenExplicitlySelected(t *testing.T) {
 	tests := []struct {
 		name      string

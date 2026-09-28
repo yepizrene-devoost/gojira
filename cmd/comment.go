@@ -18,48 +18,49 @@ var commentCmd = &cobra.Command{
   gojira comment ARA-1892 "LGTM" --mention rene@devoost.com --mention dev@devoost.com`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, _, err := BuildClient()
-		if err != nil {
-			return err
-		}
-
 		issueKey := args[0]
 		text := args[1]
 		mentions, _ := cmd.Flags().GetStringArray("mention")
+		client, domain, err := buildClient()
+		if err != nil {
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", issueKey, jira.MutationNotApplied, err)
+		}
 
-		// Build ADF body: one paragraph with the text followed by inline
-		// mention nodes. A mention notifies only when attrs.id carries the
-		// resolved accountId; attrs.text is the display name.
 		inline := []jira.ADFNode{{Type: "text", Text: text}}
 		for _, email := range mentions {
 			accountID, displayName, err := client.ResolveAccountID(email)
 			if err != nil {
-				return fmt.Errorf("resolving mention %s: %w", email, err)
+				wrapped := fmt.Errorf("resolving mention %s: %w", email, err)
+				return commandError(cmd, "lookup_failed", "mentioned user could not be resolved", issueKey, jira.MutationNotApplied, wrapped)
 			}
 			inline = append(inline,
 				jira.ADFNode{Type: "text", Text: " "},
 				jira.ADFNode{Type: "mention", Attrs: &jira.ADFAttrs{ID: accountID, Text: displayName}},
 			)
 		}
-		nodes := []jira.ADFNode{
-			{Type: "paragraph", Content: inline},
+		body := jira.ADFDoc{
+			Type:    "doc",
+			Version: 1,
+			Content: []jira.ADFNode{{Type: "paragraph", Content: inline}},
 		}
-
-		body := jira.ADFDoc{Type: "doc", Version: 1, Content: nodes}
 		if err := client.AddComment(issueKey, body); err != nil {
-			return err
+			return commandError(cmd, "mutation_failed", "comment creation failed", issueKey, jira.MutationStateOf(err), err)
+		}
+		if wantsJSON(cmd) {
+			return writeMutationResult(cmd, client, domain, issueKey)
 		}
 
-		fmt.Printf("✓ Commented on %s", issueKey)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "✓ Commented on %s", issueKey)
 		if len(mentions) > 0 {
-			fmt.Printf(" (mentioned %d user(s))", len(mentions))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), " (mentioned %d user(s))", len(mentions))
 		}
-		fmt.Println()
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 		return nil
 	},
 }
 
 func init() {
 	commentCmd.Flags().StringArray("mention", nil, "Email to mention (can be repeated)")
+	commentCmd.Flags().Bool("json", false, "Output the resulting issue as TicketJSON v1")
 	rootCmd.AddCommand(commentCmd)
 }

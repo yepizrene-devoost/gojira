@@ -133,12 +133,12 @@ setup wizard, or connect to Jira.
 | `gojira get <KEY>` | Full ticket details: project, labels, components, comments (`--json`) |
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
-| `gojira move <KEY> --to <STATUS>` | Transition a ticket (no `--to` lists available transitions) |
-| `gojira log <KEY> --time 2h` | Add worklog (`--comment`, `--show` for history) |
-| `gojira create` | Create an issue (`--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
-| `gojira comment <KEY> <text>` | Comment with `--mention email` (resolves to @mention) |
-| `gojira assign <KEY> <email>` | Assign by email (resolves to accountId) |
-| `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` |
+| `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
+| `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--board` to place it in the board's active sprint) |
+| `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
+| `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
+| `gojira update <KEY>` | Update `--summary`, `--priority`, `--labels` (`--json`) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
@@ -165,12 +165,13 @@ gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
 ```
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
-The curated `TicketJSON` schema is used only by `get --json`, `search --json`,
-`export`, and TUI ticket/column copy. `get --json` and ticket copy produce one
-object; search, export, and column copy produce a top-level array. Each ticket
-object carries `schemaVersion: "v1"`. This version is additive to the original
-curated shape; mutation command output is outside its scope and remains
-human-readable.
+The curated `TicketJSON` schema is used by `get --json`, `search --json`,
+`export`, TUI ticket/column copy, and successful JSON mutations. `get --json`,
+ticket copy, and `create`/`update`/`assign`/`move --to`/`comment`/`log` with
+`--json` produce one object; mutation commands re-fetch the full issue after the
+write. Search, export, and column copy produce a top-level array. Each ticket
+object carries `schemaVersion: "v1"`. Human mutation output is unchanged when
+`--json` is omitted.
 
 ### TicketJSON v1 contract
 
@@ -208,11 +209,34 @@ issue fields, so description, comments, and timestamps may be empty or omitted.
 Sparse Jira responses preserve the required empty-string fields and the
 `"Unassigned"` default described above; they never synthesize `null` values.
 
-`boards --json` and `projects --json` expose their own list shapes;
-`move --json` only lists transitions when `--to` is omitted, and `log --json`
-only lists worklogs with `--show`. `version --json` has its own
-`version`/`revision`/`dirty` schema. Mutation commands print human-readable
-confirmation rather than `TicketJSON`.
+`boards --json` and `projects --json` expose their own list shapes.
+`move --json` without `--to` retains its transition array, and
+`log --json --show` retains its worklog array. `version --json` has its own
+`version`/`revision`/`dirty` schema.
+
+A failed JSON mutation exits with status 1, writes no stdout before result
+encoding begins, and writes one error object to stderr:
+
+```json
+{
+  "schemaVersion": "v1",
+  "code": "mutation_failed",
+  "message": "issue update failed",
+  "issueKey": "ARA-1892",
+  "mutationState": "unknown"
+}
+```
+
+`code` and `message` are stable, non-sensitive summaries; `issueKey` is omitted
+when it is not known. `mutationState` is exactly `applied`, `not_applied`, or
+`unknown`. A successful write followed by a failed re-fetch is `applied`; a
+confirmed HTTP 4xx rejection is `not_applied`; transport failures, HTTP 5xx,
+and refused HTTP redirects after dispatch are `unknown`. Writes are sent once,
+never retried, and 307/308 redirects are not followed. If issue creation
+succeeds but sprint placement fails, the error includes the created key and
+`applied`. An output writer may fail after a partial stdout write, so
+stdout atomicity cannot be guaranteed in that case; the command still returns
+failure and never reports success.
 
 ## TUI keyboard shortcuts
 
