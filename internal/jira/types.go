@@ -19,6 +19,13 @@ type Board struct {
 }
 
 type BoardConfig struct {
+	Estimation *struct {
+		Type string `json:"type"`
+		Field *struct {
+			FieldID string `json:"fieldId"`
+			DisplayName string `json:"displayName"`
+		} `json:"field"`
+	} `json:"estimation,omitempty"`
 	ColumnConfig *struct {
 		Columns []struct {
 			Name     string `json:"name"`
@@ -258,6 +265,7 @@ type EditMetaField struct {
 
 type EditMetaSchema struct {
 	Type string `json:"type"`
+	Items string `json:"items"`
 }
 
 type NamedValue struct {

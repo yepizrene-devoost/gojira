@@ -344,6 +344,7 @@ where search started.
 | `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
 | `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
+| `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
@@ -356,6 +357,26 @@ refresh fails, the editor marks the update as already applied and `Ctrl+S` retri
 only the detail refresh; closing that state does not roll back the Jira update.
 Other failures keep the editor text and ticket context available for retry or
 cancel.
+
+In the separate `E` field editor, `Tab`/`Shift+Tab` switch fields, `Ctrl+D`
+clears the focused field, `Ctrl+S` saves, and `Esc` cancels. Dates require a
+real `YYYY-MM-DD` date; components and fix versions are comma-separated exact
+Jira names without duplicates; story points require a finite decimal and a
+canonical `customfield_N` ID. Clearing date/points sends JSON null; clearing a
+list sends an empty array. Unchanged fields are omitted, and a no-op sends no
+PUT. The editor checks this issue's edit metadata and allowed list values before
+one combined update. A Scrum board with field-based estimation supplies the
+validated story-points field ID; otherwise enter the ID manually (the displayed
+field name is never used as an ID). Leaving a manually entered ID with `Tab`
+(or pressing `Ctrl+S`) first loads the actual selected value from Jira; saving
+is disabled while it loads. Changing the ID discards the previously selected
+points value. If the selected GET fails or returns missing/invalid data, no
+write is allowed: retry the GET with `Ctrl+S` or clear/change the ID. An invalid
+nonempty ID blocks all updates, including edits to unrelated fields. After a
+successful PUT, a failed detail refresh leaves an applied state:
+`Ctrl+S` retries only the GET, never the PUT. An uncertain write failure retains
+the form; check Jira before retrying because the mutation may already have landed.
+An HTTP request already dispatched cannot be undone by exiting the TUI.
 
 ## Project structure
 

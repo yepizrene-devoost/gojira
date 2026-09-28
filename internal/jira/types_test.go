@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestBoardConfigEstimationFieldFromOfficialShape(t *testing.T) {
+	var cfg BoardConfig
+	if err := json.Unmarshal([]byte(`{"estimation":{"field":{"displayName":"Story Points","fieldId":"customfield_10002"},"type":"field"}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Estimation == nil || cfg.Estimation.Type != "field" || cfg.Estimation.Field == nil || cfg.Estimation.Field.FieldID != "customfield_10002" {
+		t.Fatalf("board estimation was not decoded: %+v", cfg.Estimation)
+	}
+}
+
+func TestEditMetaArrayItemSchema(t *testing.T) {
+	var meta EditMeta
+	if err := json.Unmarshal([]byte(`{"fields":{"components":{"schema":{"type":"array","items":"component"},"operations":["set"]}}}`), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if got := meta.Fields["components"].Schema.Items; got != "component" {
+		t.Fatalf("array item type = %q, want component", got)
+	}
+}
+
 func TestIssueToTicketJSONRichFixture(t *testing.T) {
 	statusCategory := struct {
 		Key  string `json:"key"`
