@@ -74,6 +74,56 @@ func TestFieldEditorBoardSelectionAndCombinedUpdate(t *testing.T) {
 	if len(body.Fields)!=4 || string(body.Fields["customfield_10002"])!="2.5" { t.Fatalf("unexpected changed-only payload: %s",*payload) }
 }
 
+func TestFieldEditorLongPrefillChangedOnly(t *testing.T) {
+	component := strings.Repeat("界", 520)
+	version := strings.Repeat("é", 521)
+	points := strings.Repeat("7", 513)
+	for _, tc := range []struct{ name, date string }{{"no-op", ""}, {"due date only", "2026-10-10"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			var payload []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/editmeta"):
+					fmt.Fprint(w, `{"fields":{"duedate":{"schema":{"type":"date"},"operations":["set"]}}}`)
+				case r.Method == http.MethodPut:
+					var err error
+					payload, err = io.ReadAll(r.Body)
+					if err != nil { t.Errorf("read payload: %v", err) }
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					fmt.Fprintf(w, `{"key":"A-1","fields":{"summary":"Test","customfield_10002":%s}}`, points)
+				}
+			}))
+			defer srv.Close()
+			m := editorModel(t, srv, "customfield_10002")
+			m.detail.Fields.Components = []jira.ComponentField{{Name: component}}
+			m.detail.Fields.FixVersions = []jira.FixVersionField{{Name: version}}
+			m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 'E', Text: "E"})
+			if cmd == nil { t.Fatal("board selection did not start") }
+			m, _ = updateModel(t, m, cmd())
+			if m.fieldErr != nil || !m.fieldSelected { t.Fatalf("selection failed: %v", m.fieldErr) }
+			for i, want := range map[int]string{1: component, 2: version, 3: points} {
+				if got := m.fieldInputs[i].Value(); got != want { t.Fatalf("field %d prefill: %d runes, want %d", i, len([]rune(got)), len([]rune(want))) }
+			}
+			if tc.date != "" { m.fieldInputs[0].SetValue(tc.date) }
+			m, cmd = updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			if tc.date == "" {
+				if cmd != nil || m.view != viewDetail || len(calls) != 1 { t.Fatalf("no-op sent requests: %v", calls) }
+				return
+			}
+			if cmd == nil { t.Fatal("due date save did not start") }
+			m, _ = updateModel(t, m, cmd())
+			wantCalls := []string{"GET /rest/api/3/issue/A-1", "GET /rest/api/3/issue/A-1/editmeta", "PUT /rest/api/3/issue/A-1", "GET /rest/api/3/issue/A-1"}
+			if m.view != viewDetail || !reflect.DeepEqual(calls, wantCalls) { t.Fatalf("save state=%v err=%v calls=%v", m.view, m.fieldErr, calls) }
+			var body struct{ Fields map[string]json.RawMessage `json:"fields"` }
+			if err := json.Unmarshal(payload, &body); err != nil { t.Fatal(err) }
+			if len(body.Fields) != 1 || string(body.Fields["duedate"]) != `"2026-10-10"` { t.Fatalf("unexpected payload: %s", payload) }
+		})
+	}
+}
+
 func TestFieldEditorLocalValidationAndCancel(t *testing.T) {
 	for _,tc := range []struct{name string; field int; value string}{
 		{"invalid date",0,"2026-02-30"}, {"duplicate list",1,"Web,web"}, {"invalid decimal",3,"NaN"}, {"missing selector",3,"4"},

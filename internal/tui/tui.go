@@ -747,8 +747,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fieldInputs[3].SetValue("")
 		m.fieldTouched[3] = false
 		if msg.issue.StoryPoints.Value != nil {
-			m.fieldInputs[3].SetValue(msg.issue.StoryPoints.Value.String())
-			m.fieldOriginal[3] = msg.issue.StoryPoints.Value.String()
+			value := msg.issue.StoryPoints.Value.String()
+			m.fieldInputs[3].CharLimit = max(512, len([]rune(value)))
+			m.fieldInputs[3].SetValue(value)
+			m.fieldOriginal[3] = value
 		}
 		return m, nil
 
@@ -1230,7 +1232,7 @@ func (m Model) openFieldsEdit() (tea.Model, tea.Cmd) {
 	for i := range m.fieldInputs {
 		input := textinput.New()
 		input.SetWidth(max(m.modalWidth()-20, 12))
-		input.CharLimit = 512
+		input.CharLimit = max(512, len([]rune(values[i])))
 		input.SetValue(values[i])
 		m.fieldInputs[i] = input
 	}
