@@ -134,6 +134,7 @@ setup wizard, or connect to Jira.
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
@@ -163,6 +164,9 @@ gojira create --project ARA --parent ARA-1892 --summary "Verify export" --json
 # Create a ticket straight into the active sprint (skip the backlog)
 gojira create --project ARA --type Task --summary "Sprint work" --board 1
 
+# Move an issue from future and active sprints to the backlog
+gojira backlog ARA-1892 --json
+
 # Comment and notify the PM
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
 
@@ -189,10 +193,17 @@ child sprint membership is not established by this command. Without `--parent`,
 the default remains `Task`. GoJira validates the flag combination locally but
 Jira decides whether the parent exists and permits child creation.
 
+`backlog KEY` sends one request to Jira's [Cloud backlog endpoint](https://developer.atlassian.com/cloud/jira/software/rest/api-group-backlog/),
+without first reading sprint membership. The documented operation removes future
+and active sprint membership; preservation of closed sprint history has not
+been independently proven. A 204 response confirms the request succeeded, not
+independently verified backlog membership. No live Jira verification has been
+performed.
+
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
 The curated `TicketJSON` schema is used by `get --json`, `search --json`,
 `export`, TUI ticket/column copy, and successful JSON mutations. `get --json`,
-ticket copy, and `create`/`update`/`assign`/`move --to`/`comment`/`log` with
+ticket copy, and `create`/`update`/`assign`/`move --to`/`backlog`/`comment`/`log` with
 `--json` produce one object; mutation commands re-fetch the full issue after the
 write. Search, export, and column copy produce a top-level array. Each ticket
 object carries `schemaVersion: "v1"`. Human mutation output is unchanged when

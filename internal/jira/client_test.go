@@ -11,6 +11,60 @@ import (
 	"testing"
 )
 
+func TestMoveIssueToBacklogSingleDispatchAndState(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		wantState MutationState
+	}{
+		{"accepted", http.StatusNoContent, ""},
+		{"rejected", http.StatusBadRequest, MutationNotApplied},
+		{"server failure", http.StatusServiceUnavailable, MutationUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				if r.Method != http.MethodPost || r.URL.Path != "/rest/agile/1.0/backlog/issue" || r.URL.RawQuery != "" {
+					t.Errorf("request = %s %s", r.Method, r.URL.String())
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != `{"issues":["ARA-12"]}` {
+					t.Errorf("body = %q, err = %v", body, err)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			err := NewClient(srv.URL, "email", "token").MoveIssueToBacklog("ARA-12")
+			if tc.wantState == "" {
+				if err != nil {
+					t.Fatalf("204 error = %v", err)
+				}
+			} else if err == nil || MutationStateOf(err) != tc.wantState {
+				t.Fatalf("error = %v, state = %q; want %q", err, MutationStateOf(err), tc.wantState)
+			}
+			if hits != 1 {
+				t.Fatalf("requests = %d, want 1", hits)
+			}
+		})
+	}
+	t.Run("transport failure", func(t *testing.T) {
+		hits := 0
+		client := NewClient("https://jira.example", "email", "token")
+		client.http.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			hits++
+			return nil, errors.New("connection lost")
+		})
+		err := client.MoveIssueToBacklog("ARA-12")
+		if err == nil || MutationStateOf(err) != MutationUnknown || hits != 1 {
+			t.Fatalf("error=%v state=%q requests=%d", err, MutationStateOf(err), hits)
+		}
+	})
+}
+
 func TestCreateIssueWithParentKeepsLegacyPayloadSeparate(t *testing.T) {
 	for _, tc := range []struct {
 		name, parent string

@@ -39,6 +39,7 @@ const (
 	pathBoardIssues  = "/rest/agile/1.0/board/%d/issue"
 	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
 	pathSprintAdd    = "/rest/agile/1.0/sprint/%d/issue"
+	pathBacklogIssue = "/rest/agile/1.0/backlog/issue"
 )
 
 // Issue fields for different contexts.

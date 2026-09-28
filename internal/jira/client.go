@@ -497,6 +497,14 @@ func (c *Client) AddIssuesToSprint(sprintID int, keys []string) error {
 	return err
 }
 
+// MoveIssueToBacklog asks Jira to remove an issue from future and active sprints.
+// A successful response does not independently verify its resulting membership.
+func (c *Client) MoveIssueToBacklog(issueKey string) error {
+	payload, _ := json.Marshal(map[string][]string{"issues": {issueKey}})
+	_, err := c.mutate(http.MethodPost, pathBacklogIssue, payload)
+	return err
+}
+
 // GetIssueTypes returns the creatable issue type names for a project
 // via the Platform v3 createmeta endpoint.
 func (c *Client) GetIssueTypes(projectKey string) ([]string, error) {
