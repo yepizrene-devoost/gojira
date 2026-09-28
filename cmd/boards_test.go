@@ -124,15 +124,16 @@ func TestBoardsHumanOutputUnchanged(t *testing.T) {
 func TestBoardsJSONFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name, response string
+		wantCode       string
 		builderError   error
 		writerError    error
 		status         int
 	}{
-		{name: "client failure", builderError: errors.New("client unavailable")},
-		{name: "parse failure", response: `{broken`},
-		{name: "HTTP 4xx", status: http.StatusForbidden, response: `denied`},
-		{name: "HTTP 5xx", status: http.StatusInternalServerError, response: `unavailable`},
-		{name: "writer failure", response: `{"values":[{"id":7,"name":"Team","type":"scrum"}]}`, writerError: errors.New("output unavailable")},
+		{name: "client failure", wantCode: "configuration_error", builderError: errors.New("client unavailable")},
+		{name: "parse failure", wantCode: "read_failed", response: `{broken`},
+		{name: "HTTP 4xx", wantCode: "read_failed", status: http.StatusForbidden, response: `denied`},
+		{name: "HTTP 5xx", wantCode: "read_failed", status: http.StatusInternalServerError, response: `unavailable`},
+		{name: "writer failure", wantCode: "output_failed", response: `{"values":[{"id":7,"name":"Team","type":"scrum"}]}`, writerError: errors.New("output unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,8 +160,8 @@ func TestBoardsJSONFailure(t *testing.T) {
 			if code != 1 || stdout.Len() != 0 {
 				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr)
 			}
-			if got := decodeMutationError(t, stderr); got.Code != "validation_error" {
-				t.Fatalf("error code = %q, want validation_error", got.Code)
+			if got := decodeMutationError(t, stderr); got.Code != tc.wantCode || got.MutationState != jira.MutationNotApplied || got.IssueKey != "" {
+				t.Fatalf("error = %+v, want %s/not_applied without issueKey", got, tc.wantCode)
 			}
 		})
 	}

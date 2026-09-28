@@ -54,12 +54,11 @@ var getCmd = &cobra.Command{
 				return err
 			}
 		}
+		issueKey := args[0]
 		client, domain, err := buildClient()
 		if err != nil {
-			return err
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", issueKey, jira.MutationNotApplied, err)
 		}
-
-		issueKey := args[0]
 		var iss *jira.Issue
 		if storyPointsField == "" {
 			iss, err = client.GetIssueFull(issueKey)
@@ -67,11 +66,14 @@ var getCmd = &cobra.Command{
 			iss, err = client.GetIssueFullWithStoryPoints(issueKey, storyPointsField)
 		}
 		if err != nil {
-			return err
+			return commandError(cmd, "read_failed", "issue could not be read", issueKey, jira.MutationNotApplied, err)
 		}
 
-		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			return writeGetJSON(cmd, *iss, domain)
+		if wantsJSON(cmd) {
+			if err := writeGetJSON(cmd, *iss, domain); err != nil {
+				return reportJSONError(cmd, "output_failed", "issue JSON could not be written", issueKey, jira.MutationNotApplied, err)
+			}
+			return nil
 		}
 
 		// Render readable output

@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,87 @@ import (
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+// runReadCLI isolates the client seam and Cobra streams for read-command errors.
+func runReadCLI(t *testing.T, args []string, builder func() (*jira.Client, string, error), writer io.Writer) (int, string) {
+	t.Helper()
+	restoreFlagDefaults(rootCmd)
+	var stderr bytes.Buffer
+	oldBuilder := buildClient
+	oldOut := rootCmd.OutOrStdout()
+	oldErr := rootCmd.ErrOrStderr()
+	buildClient = builder
+	rootCmd.SetOut(writer)
+	rootCmd.SetErr(&stderr)
+	defer func() {
+		buildClient = oldBuilder
+		rootCmd.SetOut(oldOut)
+		rootCmd.SetErr(oldErr)
+		rootCmd.SetArgs(nil)
+		restoreFlagDefaults(rootCmd)
+	}()
+	return runRootCommand(rootCmd, args), stderr.String()
+}
+
+func TestGetJSONErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, response, wantCode  string
+		status                    int
+		builderError, writerError error
+	}{
+		{name: "configuration", wantCode: "configuration_error", builderError: errors.New("client unavailable")},
+		{name: "HTTP 4xx", wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "HTTP 5xx", wantCode: "read_failed", status: http.StatusInternalServerError},
+		{name: "invalid response", wantCode: "read_failed", response: `{broken`},
+		{name: "writer", wantCode: "output_failed", response: `{"key":"A-1","fields":{"summary":"Issue"}}`, writerError: errors.New("output unavailable")},
+	} {
+		for _, before := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json-before=%t", tc.name, before), func(t *testing.T) {
+				requests := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					if r.Method != http.MethodGet {
+						t.Errorf("method = %s", r.Method)
+					}
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
+					}
+					_, _ = fmt.Fprint(w, tc.response)
+				}))
+				defer srv.Close()
+				args := []string{"get", "A-1", "--json"}
+				if before {
+					args = []string{"get", "--json", "A-1"}
+				}
+				var stdout bytes.Buffer
+				var writer io.Writer = &stdout
+				if tc.writerError != nil {
+					writer = failingWriter{err: tc.writerError}
+				}
+				code, stderr := runReadCLI(t, args, func() (*jira.Client, string, error) {
+					if tc.builderError != nil {
+						return nil, "", tc.builderError
+					}
+					return jira.NewClient(srv.URL, "email", "token"), "jira.example", nil
+				}, writer)
+				if code != 1 || stdout.Len() != 0 {
+					t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr)
+				}
+				wantRequests := 1
+				if tc.builderError != nil {
+					wantRequests = 0
+				}
+				if (tc.status == http.StatusInternalServerError && requests < 1) || (tc.status != http.StatusInternalServerError && requests != wantRequests) {
+					t.Fatalf("requests=%d, want %d (5xx may retry)", requests, wantRequests)
+				}
+				got := decodeMutationError(t, stderr)
+				if got.Code != tc.wantCode || got.MutationState != jira.MutationNotApplied || got.IssueKey != "A-1" {
+					t.Fatalf("error=%+v, want %s/not_applied/A-1", got, tc.wantCode)
+				}
+			})
+		}
+	}
+}
 
 func TestWriteGetJSONUsesCobraOutputAsSingleDocument(t *testing.T) {
 	var stdout bytes.Buffer

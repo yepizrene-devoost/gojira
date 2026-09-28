@@ -18,9 +18,9 @@ var searchCmd = &cobra.Command{
   gojira search "text ~ 'login bug'" --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		client, domain, err := BuildClient()
+		client, domain, err := buildClient()
 		if err != nil {
-			return err
+			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
 		}
 
 		jql := args[0]
@@ -28,11 +28,14 @@ var searchCmd = &cobra.Command{
 
 		issues, total, err := client.SearchJQL(jql, limit)
 		if err != nil {
-			return err
+			return commandError(cmd, "read_failed", "issues could not be searched", "", jira.MutationNotApplied, err)
 		}
 
-		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			return writeSearchJSON(cmd, issues, domain)
+		if wantsJSON(cmd) {
+			if err := writeSearchJSON(cmd, issues, domain); err != nil {
+				return reportJSONError(cmd, "output_failed", "search JSON could not be written", "", jira.MutationNotApplied, err)
+			}
+			return nil
 		}
 
 		// Table output
