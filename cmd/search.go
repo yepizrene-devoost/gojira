@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -33,10 +32,7 @@ var searchCmd = &cobra.Command{
 		}
 
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			tickets := jira.IssuesToTicketJSON(issues, domain)
-			b, _ := json.MarshalIndent(tickets, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return writeSearchJSON(cmd, issues, domain)
 		}
 
 		// Table output
@@ -68,6 +64,10 @@ var searchCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func writeSearchJSON(cmd *cobra.Command, issues []jira.Issue, domain string) error {
+	return writeJSON(cmd, jira.IssuesToTicketJSON(issues, domain))
 }
 
 func truncate(s string, max int) string {

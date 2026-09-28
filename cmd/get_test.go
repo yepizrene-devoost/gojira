@@ -1,12 +1,33 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/spf13/cobra"
+
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+func TestWriteGetJSONUsesCobraOutputAsSingleDocument(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	issue := jira.Issue{Key: "ARA-9"}
+	issue.Fields.Summary = "Agent JSON"
+
+	if err := writeGetJSON(cmd, issue, "example.atlassian.net"); err != nil {
+		t.Fatalf("writeGetJSON() error = %v", err)
+	}
+
+	var ticket jira.TicketJSON
+	assertSingleJSONDocument(t, stdout.Bytes(), &ticket)
+	if ticket.SchemaVersion != "v1" || ticket.Key != "ARA-9" {
+		t.Fatalf("ticket = %#v, want v1 ARA-9", ticket)
+	}
+}
 
 // Comment previews are cut on rune boundaries: Jira bodies in this workspace
 // carry accented Spanish, and a byte slice used to split those characters.

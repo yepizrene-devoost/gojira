@@ -164,10 +164,50 @@ gojira create --project ARA --type Task --summary "Sprint work" --board 1
 gojira comment ARA-1892 "Ready for review" --mention pm@devoost.com
 ```
 
-JSON modes write valid JSON to stdout, with diagnostics on stderr. The curated
-`TicketJSON` schema is used only by `get --json`, `search --json`, `export`, and
-TUI ticket/column copy. Board exports request basic issue fields, so fields such
-as description, labels, comments, and timestamps may be empty or omitted.
+JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
+The curated `TicketJSON` schema is used only by `get --json`, `search --json`,
+`export`, and TUI ticket/column copy. `get --json` and ticket copy produce one
+object; search, export, and column copy produce a top-level array. Each ticket
+object carries `schemaVersion: "v1"`. This version is additive to the original
+curated shape; mutation command output is outside its scope and remains
+human-readable.
+
+### TicketJSON v1 contract
+
+All field types are stable JSON types. A field marked **always** is present even
+when its string value is empty. An **omitted when empty** field uses JSON
+`omitempty`: absent Jira data is represented by no property, not `null` or an
+empty array. Jira descriptions and comment bodies are flattened from ADF to
+plain text, and recognized Jira timestamps are normalized to RFC3339. Unknown
+date formats are preserved verbatim.
+
+| Field | JSON type | Presence and meaning |
+|---|---|---|
+| `schemaVersion` | string | Always; exactly `"v1"` for this contract. |
+| `key` | string | Always; Jira issue key, or an empty string if unavailable. |
+| `url` | string | Omitted when empty; HTTPS browse URL, available when both domain and key are known. |
+| `summary` | string | Always; empty string when unavailable. |
+| `status` | string | Always; status display name, or empty string when unavailable. |
+| `statusCategory` | string | Omitted when empty; Jira category key such as `new`, `indeterminate`, or `done`. |
+| `priority` | string | Always; priority display name, or empty string when unavailable. |
+| `assignee` | string | Always; assignee display name, or `"Unassigned"` when Jira has no assignee. |
+| `reporter` | string | Omitted when empty; reporter display name. |
+| `issueType` | string | Always; issue type display name, or empty string when unavailable. |
+| `project` | string | Omitted when empty; Jira project key. |
+| `labels` | array of strings | Omitted when empty; Jira label values. |
+| `components` | array of strings | Omitted when empty; component display names. |
+| `description` | string | Always; flattened ADF text, or empty string when unavailable. |
+| `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
+| `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
+| `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
+| `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
+
+Read surfaces can only populate fields requested and returned by their Jira
+endpoint. In particular, board-backed export and TUI column copy request basic
+issue fields, so description, comments, and timestamps may be empty or omitted.
+Sparse Jira responses preserve the required empty-string fields and the
+`"Unassigned"` default described above; they never synthesize `null` values.
+
 `boards --json` and `projects --json` expose their own list shapes;
 `move --json` only lists transitions when `--to` is omitted, and `log --json`
 only lists worklogs with `--show`. `version --json` has its own

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -54,12 +53,12 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 
-		tickets := jira.IssuesToTicketJSON(issues, domain)
-
-		b, _ := json.MarshalIndent(tickets, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return writeExportJSON(cmd, issues, domain)
 	},
+}
+
+func writeExportJSON(cmd *cobra.Command, issues []jira.Issue, domain string) error {
+	return writeJSON(cmd, jira.IssuesToTicketJSON(issues, domain))
 }
 
 func init() {

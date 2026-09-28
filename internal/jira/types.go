@@ -251,22 +251,23 @@ type Worklog struct {
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
 
 type TicketJSON struct {
-	Key            string   `json:"key"`
-	URL            string   `json:"url,omitempty"`
-	Summary        string   `json:"summary"`
-	Status         string   `json:"status"`
-	StatusCategory string   `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
-	Priority       string   `json:"priority"`
-	Assignee       string   `json:"assignee"`
-	Reporter       string   `json:"reporter,omitempty"`
-	IssueType      string   `json:"issueType"`
-	Project        string   `json:"project,omitempty"`
-	Labels         []string `json:"labels,omitempty"`
-	Components     []string `json:"components,omitempty"`
-	Description    string   `json:"description"`
-	Created        string   `json:"created"`
-	Updated        string   `json:"updated"`
-	TimeLogged     string   `json:"timeLogged,omitempty"`
+	SchemaVersion  string        `json:"schemaVersion"`
+	Key            string        `json:"key"`
+	URL            string        `json:"url,omitempty"`
+	Summary        string        `json:"summary"`
+	Status         string        `json:"status"`
+	StatusCategory string        `json:"statusCategory,omitempty"` // "new", "indeterminate", "done"
+	Priority       string        `json:"priority"`
+	Assignee       string        `json:"assignee"`
+	Reporter       string        `json:"reporter,omitempty"`
+	IssueType      string        `json:"issueType"`
+	Project        string        `json:"project,omitempty"`
+	Labels         []string      `json:"labels,omitempty"`
+	Components     []string      `json:"components,omitempty"`
+	Description    string        `json:"description"`
+	Created        string        `json:"created"`
+	Updated        string        `json:"updated"`
+	TimeLogged     string        `json:"timeLogged,omitempty"`
 	Comments       []CommentJSON `json:"comments,omitempty"`
 }
 
@@ -365,13 +366,14 @@ func TextToADF(text string) ADFDoc {
 
 func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
-		Key:      iss.Key,
-		URL:      browseURL(domain, iss.Key),
-		Summary:  iss.Fields.Summary,
-		Created:  normalizeDate(iss.Fields.Created),
-		Updated:  normalizeDate(iss.Fields.Updated),
-		Assignee: "Unassigned",
-		Labels:   iss.Fields.Labels,
+		SchemaVersion: "v1",
+		Key:           iss.Key,
+		URL:           browseURL(domain, iss.Key),
+		Summary:       iss.Fields.Summary,
+		Created:       normalizeDate(iss.Fields.Created),
+		Updated:       normalizeDate(iss.Fields.Updated),
+		Assignee:      "Unassigned",
+		Labels:        iss.Fields.Labels,
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name

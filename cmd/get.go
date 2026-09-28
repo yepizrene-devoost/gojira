@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -61,16 +60,17 @@ var getCmd = &cobra.Command{
 		}
 
 		if jsonOut, _ := cmd.Flags().GetBool("json"); jsonOut {
-			ticket := jira.IssueToTicketJSON(*iss, domain)
-			b, _ := json.MarshalIndent(ticket, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return writeGetJSON(cmd, *iss, domain)
 		}
 
 		// Render readable output
 		fmt.Println(renderIssueFull(iss))
 		return nil
 	},
+}
+
+func writeGetJSON(cmd *cobra.Command, issue jira.Issue, domain string) error {
+	return writeJSON(cmd, jira.IssueToTicketJSON(issue, domain))
 }
 
 // writef appends a formatted line to b. strings.Builder.Write never returns a
