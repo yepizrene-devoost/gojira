@@ -30,6 +30,23 @@ Repository instructions for coding agents working in this project.
 - All documentation, code comments, commit messages and GitHub issues are
   written in **English**.
 
+## Review Before Commit
+
+- Work stays **uncommitted in the working tree** until the user has seen it.
+  Never run `git commit` (including `docs(odd)` identity commits, `--amend`, and
+  commits made by a delegated agent) on your own initiative. Do not stage
+  either unless the user asked for it.
+- After implementing and verifying a unit, stop and report: `git status`, a
+  `git diff --stat`, the checks run, and any open ODD stage. Then wait.
+- A commit needs an explicit user instruction for **that** commit. Approval
+  for one commit, one native RDD review, or a "continue" never carries over to
+  the next unit or to a later commit. When in doubt, ask.
+- Native RDD freeze and review (`gentle_review`) also wait for the user's go
+  ahead and run over the tree the user has seen, never as a way to justify a
+  commit that was not approved.
+- A commit made without approval is undone with a safety ref and
+  `git reset --mixed HEAD~1` (nothing is lost) and reported to the user.
+
 ## Commit Messages
 
 - Preferred format: `type(scope): description`

@@ -45,11 +45,16 @@ var kanbanHelp = []helpEntry{
 	{keys: "←/→ or h/l", action: "Move between columns"},
 	{keys: "↑/↓ or k/j", action: "Move within a column"},
 	{keys: "Enter", action: "Open ticket detail"},
+	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search all Jira tickets"},
 	{keys: "t", action: "Transition ticket"},
+	{keys: "X", action: "Close/reopen by status category"},
+	{keys: "D", action: "Permanently delete (type exact key)"},
 	{keys: "n", action: "Create issue"},
 	{keys: "a", action: "Add ticket to active sprint"},
+	{keys: "S", action: "Choose a future/active sprint"},
+	{keys: "b", action: "Move ticket to backlog"},
 	{keys: "C", action: "Copy column as JSON"},
 	{keys: "Esc or q", action: "Back to boards"},
 	{keys: "Ctrl+C", action: "Quit"},
@@ -127,6 +132,8 @@ const (
 	viewSearch
 	viewDescriptionEdit
 	viewFieldsEdit
+	viewSprintChoose
+	viewDeleteConfirm
 )
 
 type column struct {
@@ -137,6 +144,22 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
+	lifecycleRequest uint64
+	lifecycleBoard uint64
+	lifecycleSearch uint64
+	lifecycleBusy bool
+	lifecycleKey string
+	lifecycleReturn view
+	deleteInput textinput.Model
+	sprintChoices []jira.Sprint
+	sprintChoiceCur int
+	sprintMoveKey string
+	sprintMoveReturn view
+	sprintMoveRequest uint64
+	sprintMoveBoard uint64
+	sprintMoveSearch uint64
+	sprintMoveLoading bool
+	sprintMoveSubmitting bool
 	client                        *jira.Client
 	domain                        string
 	view                          view
@@ -180,6 +203,7 @@ type Model struct {
 	activeWorklogRequest          uint64
 	descriptionInput              textarea.Model
 	descriptionOriginal           string
+	commentEntry                  bool
 	descriptionSubmitting         bool
 	descriptionApplied            bool
 	descriptionErr                error
@@ -351,6 +375,9 @@ func (m Model) loadBoards() tea.Msg {
 }
 
 func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
+	m.sprintMoveRequest++
+	m.sprintMoveSubmitting = false
+	m.sprintMoveLoading = false
 	preserveTransitionSubmit := m.transitionSubmitting && m.transitionSubmitBoardID == board.ID
 	preserveTransitionError := m.transitionResultErrBoardID == board.ID
 
@@ -714,11 +741,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = msg.err
+			if m.commentEntry && msg.applied { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied); detail refresh failed: %w", msg.err) }
 			return m, nil
 		}
 		if msg.issue == nil || msg.issue.Key != msg.issueKey {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = fmt.Errorf("description was updated, but Jira returned no refreshed ticket")
+			if m.commentEntry { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied), but Jira returned no refreshed ticket") }
 			return m, nil
 		}
 		m.descriptionApplied = false
@@ -729,6 +758,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.descriptionInput.Blur()
 		m.view = viewDetail
 		m.toast = "Description updated"
+		if m.commentEntry { m.toast = "Comment added" }
 		return m, clearToastAfter(3 * time.Second)
 
 	case fieldLoadedMsg:
@@ -802,6 +832,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(4*time.Second))
 
+	case lifecycleDoneMsg:
+		if msg.request != m.lifecycleRequest || msg.board != m.loadedBoardRequest || msg.search != m.activeSearchRequest || m.activeBoardRequest != 0 || m.view == viewBoards || !m.lifecycleBusy { return m, nil }
+		m.lifecycleBusy = false
+		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		m.view = viewKanban
+		m.detail = nil
+		m.toast = "Jira accepted the request for " + m.lifecycleKey + " (mutation state: applied)"
+		return m.startBoardLoad(m.boards[m.boardCur])
+
+	case sprintChoiceMsg:
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveLoading { return m, nil }
+		m.sprintMoveLoading = false
+		if msg.err != nil { m.err = sprintMovementError(&jira.MutationError{State:jira.MutationNotApplied, Err:msg.err}); return m, nil }
+		m.sprintChoices = msg.sprints
+		return m, nil
+
+	case sprintMovementMsg:
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveSubmitting { return m, nil }
+		m.sprintMoveSubmitting = false
+		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		m.view = viewKanban
+		m.toast = "Jira accepted the request for " + m.sprintMoveKey
+		m.focusIssue = m.sprintMoveKey
+		loaded, refresh := m.startBoardLoad(m.boards[m.boardCur])
+		return loaded, refresh
+
 	case sprintDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -815,6 +871,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewDeleteConfirm:
+			return m.updateDeleteConfirm(msg)
+		case viewSprintChoose:
+			return m.updateSprintChoose(msg)
 		case viewBoards:
 			return m.updateBoards(msg)
 		case viewKanban:
@@ -1043,7 +1103,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.activeDetailRequest = detailRequest
 				m.err = nil
 				return m, func() tea.Msg {
-					iss, err := m.client.GetIssue(key)
+					iss, err := m.client.GetIssueFull(key)
 					return detailMsg{issue: iss, issueKey: key, boardRequest: boardRequest, detailRequest: detailRequest, err: err}
 				}
 			}
@@ -1097,6 +1157,14 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "X", "D":
+		if m.colCur >= 0 && m.colCur < len(cols) && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
+			return m.startLifecycle(cols[m.colCur].issues[m.rowCur], msg.String() == "D")
+		}
+	case "S", "b":
+		if m.colCur >= 0 && m.colCur < len(cols) && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
+			return m.startSprintMovement(cols[m.colCur].issues[m.rowCur].Key, msg.String() == "b")
+		}
 	case "n":
 		return m.enterCreate()
 	case "a":
@@ -1122,8 +1190,149 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+type lifecycleDoneMsg struct {
+	request, board, search uint64
+	err error
+}
+
+func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.Cmd) {
+	if (m.lifecycleBusy && m.lifecycleBoard == m.loadedBoardRequest && m.lifecycleSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	m.lifecycleRequest++
+	m.lifecycleBoard, m.lifecycleSearch = m.loadedBoardRequest, m.activeSearchRequest
+	m.lifecycleKey, m.lifecycleReturn = issue.Key, m.view
+	m.err = nil
+	if deleting {
+		m.deleteInput = textinput.New()
+		m.deleteInput.CharLimit = 128
+		m.deleteInput.Focus()
+		m.view = viewDeleteConfirm
+		return m, nil
+	}
+	if issue.Fields.Status == nil || issue.Fields.Status.Category == nil {
+		m.err = fmt.Errorf("validation_error (mutation state: not_applied): current status category unavailable; use t")
+		return m, nil
+	}
+	reopen := issue.Fields.Status.Category.Key == "done"
+	m.lifecycleBusy = true
+	client, key := m.client, issue.Key
+	request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
+	return m, func() tea.Msg {
+		transitions, err := client.GetTransitions(key)
+		if err != nil { return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:err}} }
+		var candidates []jira.Transition
+		var labels []string
+		for _, tr := range transitions {
+			if tr.To == nil || tr.To.Category == nil { continue }
+			category := tr.To.Category.Key
+			if (!reopen && category == "done") || (reopen && (category == "new" || category == "indeterminate")) {
+				candidates = append(candidates, tr)
+				labels = append(labels, fmt.Sprintf("%s %s -> %s (%s)", tr.ID, tr.Name, tr.To.Name, category))
+			}
+		}
+		if len(candidates) != 1 {
+			return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:fmt.Errorf("validation_error: expected one candidate, got %d: [%s]; use t", len(candidates), strings.Join(labels, "; "))}}
+		}
+		return lifecycleDoneMsg{request, board, search, client.TransitionIssue(key, candidates[0].ID)}
+	}
+}
+
+func (m Model) updateDeleteConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c": return m, tea.Quit
+	case "esc":
+		// A submitted write cannot be cancelled or retried from this dialog.
+		if !m.lifecycleBusy { m.view = m.lifecycleReturn; m.err = nil }
+		return m, nil
+	case "enter":
+		if m.lifecycleBusy || m.err != nil || m.deleteInput.Value() != m.lifecycleKey { return m, nil }
+		m.lifecycleBusy = true
+		client, key := m.client, m.lifecycleKey
+		request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
+		return m, func() tea.Msg { return lifecycleDoneMsg{request, board, search, client.DeleteIssue(key)} }
+	}
+	if !m.lifecycleBusy { var cmd tea.Cmd; m.deleteInput, cmd = m.deleteInput.Update(msg); return m, cmd }
+	return m, nil
+}
+
+type sprintChoiceMsg struct {
+	request, board, search uint64
+	sprints []jira.Sprint
+	err error
+}
+
+type sprintMovementMsg struct {
+	request, board, search uint64
+	err error
+}
+
+func sprintMovementError(err error) error {
+	code, _ := jira.ClassifyAPIError(err)
+	if code == "" { code = "request_failed" }
+	return fmt.Errorf("%s (mutation state: %s): %w", code, jira.MutationStateOf(err), err)
+}
+
+func (m Model) matchSprintMove(request, board, search uint64) bool {
+	return request == m.sprintMoveRequest && board == m.loadedBoardRequest && search == m.activeSearchRequest &&
+		m.view != viewBoards && m.activeBoardRequest == 0
+}
+
+func (m Model) startSprintMovement(key string, backlog bool) (tea.Model, tea.Cmd) {
+	if (m.sprintMoveSubmitting && m.sprintMoveBoard == m.loadedBoardRequest && m.sprintMoveSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	m.sprintMoveRequest++
+	m.sprintMoveKey = key
+	m.sprintMoveBoard, m.sprintMoveSearch = m.loadedBoardRequest, m.activeSearchRequest
+	m.sprintMoveReturn = m.view
+	m.err = nil
+	if backlog { return m.submitSprintMovement(0) }
+	m.view = viewSprintChoose
+	m.sprintChoiceCur = 0
+	m.sprintChoices = nil
+	m.sprintMoveLoading = true
+	client, boardID := m.client, m.boards[m.boardCur].ID
+	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
+	return m, func() tea.Msg {
+		sprints, err := client.GetSprintsByState(boardID, "active,future")
+		return sprintChoiceMsg{request:request, board:board, search:search, sprints:sprints, err:err}
+	}
+}
+
+func (m Model) submitSprintMovement(id int) (tea.Model, tea.Cmd) {
+	m.sprintMoveSubmitting = true
+	client, key := m.client, m.sprintMoveKey
+	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
+	return m, func() tea.Msg {
+		var err error
+		if id == 0 { err = client.MoveIssueToBacklog(key) } else { err = client.AddIssuesToSprint(id, []string{key}) }
+		return sprintMovementMsg{request:request, board:board, search:search, err:err}
+	}
+}
+
+func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c": return m, tea.Quit
+	case "esc", "q":
+		m.sprintMoveRequest++
+		m.sprintMoveSubmitting = false
+		m.sprintMoveLoading = false
+		m.view = m.sprintMoveReturn
+	case "down", "j":
+		m.sprintChoiceCur = min(m.sprintChoiceCur+1, max(0,len(m.sprintChoices)-1))
+	case "up", "k":
+		m.sprintChoiceCur = max(m.sprintChoiceCur-1,0)
+	case "enter":
+		if !m.sprintMoveLoading && !m.sprintMoveSubmitting && m.sprintChoiceCur < len(m.sprintChoices) && m.err == nil {
+			return m.submitSprintMovement(m.sprintChoices[m.sprintChoiceCur].ID)
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "X", "D":
+		if m.detail != nil && !m.detailLoading { return m.startLifecycle(*m.detail, msg.String() == "D") }
+	case "S", "b":
+		if m.detail != nil && !m.detailLoading { return m.startSprintMovement(m.detail.Key, msg.String() == "b") }
 	case "down", "j":
 		m = m.scrollDetail(1)
 	case "up", "k":
@@ -1175,13 +1384,15 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "E":
 		if m.detail != nil { return m.openFieldsEdit() }
-	case "e":
+	case "e", "m":
 		if m.detail != nil {
+			m.commentEntry = msg.String() == "m"
 			input := textarea.New()
 			input.Placeholder = "Ticket description (plain text)"
 			input.ShowLineNumbers = false
 			description := ""
-			if m.detail.Fields.Description != nil {
+			if m.commentEntry { input.Placeholder = "Comment (plain text; no mentions)" }
+			if !m.commentEntry && m.detail.Fields.Description != nil {
 				description = m.detail.Fields.Description.Flatten()
 				input.SetValue(description)
 			}
@@ -1468,6 +1679,7 @@ func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.descriptionApplied {
 			m.descriptionApplied = false
 			m.toast = "Description updated; detail was not refreshed"
+			if m.commentEntry { m.toast = "Comment applied; detail was not refreshed" }
 			return m, clearToastAfter(4 * time.Second)
 		}
 		return m, nil
@@ -1478,7 +1690,11 @@ func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.descriptionApplied {
 			return m.startDescriptionRefresh()
 		}
-		if m.descriptionInput.Value() == m.descriptionOriginal {
+		if m.commentEntry && strings.TrimSpace(m.descriptionInput.Value()) == "" {
+			m.descriptionErr = fmt.Errorf("comment cannot be empty (mutation state: not_applied)")
+			return m, nil
+		}
+		if !m.commentEntry && m.descriptionInput.Value() == m.descriptionOriginal {
 			m.descriptionInput.Blur()
 			m.descriptionErr = nil
 			m.view = viewDetail
@@ -1508,8 +1724,12 @@ func (m Model) startDescriptionUpdate() (tea.Model, tea.Cmd) {
 	m.descriptionSubmitting = true
 	m.descriptionErr = nil
 	client := m.client
+	comment := m.commentEntry
 	return m, func() tea.Msg {
-		if err := client.UpdateIssue(issueKey, map[string]interface{}{"description": description}); err != nil {
+		var writeErr error
+		if comment { writeErr = client.AddComment(issueKey, jira.TextToADF(text)) } else { writeErr = client.UpdateIssue(issueKey, map[string]interface{}{"description": description}) }
+		if err := writeErr; err != nil {
+			if comment { err = sprintMovementError(err) }
 			return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, err: err}
 		}
 		issue, err := client.GetIssueFull(issueKey)
@@ -2000,6 +2220,25 @@ func (m Model) View() tea.View {
 			background = m.renderSearch()
 		}
 		b.WriteString(m.composeOverlay(background, m.renderDetail()))
+
+	case viewDeleteConfirm:
+		b.WriteString(titleStyle.Render("Permanently delete " + m.lifecycleKey))
+		b.WriteString("\nThis cannot be undone. Type the exact issue key, then Enter. Esc cancels.\n")
+		b.WriteString(m.deleteInput.View())
+		if m.lifecycleBusy { b.WriteString("\nSubmitting once; awaiting Jira...") }
+		if m.err != nil { b.WriteString("\n" + errStyle.Render(m.err.Error())) }
+	case viewSprintChoose:
+		b.WriteString(titleStyle.Render("Choose sprint: " + m.sprintMoveKey))
+		b.WriteString("\n\n")
+		if m.sprintMoveLoading { b.WriteString("Loading sprints...\n") }
+		if !m.sprintMoveLoading && len(m.sprintChoices) == 0 { b.WriteString("No future or active sprints\n") }
+		for i, sprint := range m.sprintChoices {
+			prefix := "  "
+			if i == m.sprintChoiceCur { prefix = "→ " }
+			fmt.Fprintf(&b, "%s%s (%s)\n", prefix, sprint.Name, sprint.State)
+		}
+		if m.sprintMoveSubmitting { b.WriteString("Submitting once; awaiting Jira...\n") }
+		b.WriteString("[↑↓] Select  [Enter] Move  [Esc] Cancel")
 
 	case viewTransition:
 		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))
@@ -2533,7 +2772,14 @@ func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
 	if iss.Fields.Assignee != nil {
 		who = iss.Fields.Assignee.DisplayName
 	}
-	meta := truncateRunes(fmt.Sprintf(" %s • %s", pri, who), cw-2)
+	metaText := fmt.Sprintf(" %s • %s", pri, who)
+	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
+		metaText += fmt.Sprintf(" • %d/%d", progress.Done, progress.Total)
+	}
+	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
+		metaText += " • " + sprint.Name
+	}
+	meta := truncateRunes(metaText, cw-2)
 	metaLine := metaStyle.Render(meta)
 	if selected {
 		metaLine = lipgloss.NewStyle().Background(selBg).Render(padRight(metaLine, cw))
@@ -2555,12 +2801,14 @@ func (m Model) renderDescriptionEdit() string {
 		key = m.detail.Key
 	}
 	var b strings.Builder
-	b.WriteString(keyStyle.Render("✎ Edit description · " + key))
+	title := "✎ Edit description · "
+	if m.commentEntry { title = "Add comment · " }
+	b.WriteString(keyStyle.Render(title + key))
 	b.WriteString("\n\n")
 	b.WriteString(m.descriptionInput.View())
 	if m.descriptionApplied {
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed."))
+		if m.commentEntry { b.WriteString(subStyle.Render("The comment was applied in Jira; only the detail refresh failed.")) } else { b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed.")) }
 	}
 	if m.descriptionErr != nil {
 		b.WriteString("\n")
@@ -2571,7 +2819,7 @@ func (m Model) renderDescriptionEdit() string {
 		if m.descriptionApplied {
 			b.WriteString(subStyle.Render("Refreshing ticket detail...  [ctrl+c] Quit"))
 		} else {
-			b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit"))
+			if m.commentEntry { b.WriteString(subStyle.Render("Adding comment...  [ctrl+c] Quit")) } else { b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit")) }
 		}
 	} else if m.descriptionApplied {
 		b.WriteString(subStyle.Render("[ctrl+s] Retry refresh only  [esc] Close (update remains applied)"))
@@ -2579,6 +2827,11 @@ func (m Model) renderDescriptionEdit() string {
 		b.WriteString(subStyle.Render("[ctrl+s] Confirm  [esc] Cancel"))
 	}
 	return m.modalStyle().Render(b.String())
+}
+
+func readableDetailDate(value string) string {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil { return parsed.Format("2006-01-02 15:04") }
+	return value
 }
 
 func (m Model) detailContent() (string, string) {
@@ -2630,8 +2883,26 @@ func (m Model) detailContent() (string, string) {
 	} else {
 		b.WriteString("Assignee: Unassigned\n")
 	}
-	_, _ = fmt.Fprintf(&b, "Created:  %s\n", iss.Fields.Created)
-	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", iss.Fields.Updated)
+	ticket := jira.IssueToTicketJSON(*iss, "")
+	_, _ = fmt.Fprintf(&b, "Created:  %s\n", readableDetailDate(ticket.Created))
+	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", readableDetailDate(ticket.Updated))
+	if ticket.TimeLogged != "" {
+		_, _ = fmt.Fprintf(&b, "Time logged: %s", ticket.TimeLogged)
+		if ticket.WorklogsTotal != nil && *ticket.WorklogsTotal > len(ticket.Worklogs) {
+			_, _ = fmt.Fprintf(&b, " (showing %d of %d worklogs)", len(ticket.Worklogs), *ticket.WorklogsTotal)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n── Worklogs ──\n")
+	if len(ticket.Worklogs) == 0 { b.WriteString("No worklogs available\n") }
+	for _, w := range ticket.Worklogs {
+		_, _ = fmt.Fprintf(&b, "%s · %s · %s\n%s\n", w.Author, readableDetailDate(w.Started), w.TimeSpent, w.Comment)
+	}
+	b.WriteString("\n── Comments ──\n")
+	if len(ticket.Comments) == 0 { b.WriteString("No comments\n") }
+	for _, c := range ticket.Comments {
+		_, _ = fmt.Fprintf(&b, "%s · %s\n%s\n", c.Author, readableDetailDate(c.Created), c.Body)
+	}
 	if iss.Fields.Description != nil {
 		b.WriteString("\n── Description ──\n")
 		for _, block := range iss.Fields.Description.Content {
@@ -2643,5 +2914,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Description  [E] Fields  [w] Log  [o] Open  [esc] Close"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close"
 }

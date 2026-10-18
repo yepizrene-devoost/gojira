@@ -33,6 +33,7 @@ const (
 	pathUserPicker = "/rest/api/2/user/picker?query=%s"
 
 	// ─── Agile API 1.0 ────────────────────────────────────────────
+	pathAgileIssue   = "/rest/agile/1.0/issue/%s"
 	pathBoardList    = "/rest/agile/1.0/board?maxResults=50"
 	pathBoardConfig  = "/rest/agile/1.0/board/%d/configuration"
 	pathSprintList   = "/rest/agile/1.0/board/%d/sprint"
@@ -44,10 +45,10 @@ const (
 
 // Issue fields for different contexts.
 const (
-	fieldsBasic  = "summary,status,priority,assignee,issuetype"
-	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks"
+	fieldsBasic  = "summary,status,priority,assignee,issuetype,subtasks,sprint"
+	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks,timetracking"
 	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
-	fieldsExport = "summary,status,priority,assignee,issuetype"
+	fieldsExport = "summary,status,priority,assignee,issuetype,subtasks,sprint"
 )
 
 var customFieldIDPattern = regexp.MustCompile(`^customfield_[1-9][0-9]*$`)

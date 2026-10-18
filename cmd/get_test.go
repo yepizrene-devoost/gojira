@@ -38,6 +38,37 @@ func runReadCLI(t *testing.T, args []string, builder func() (*jira.Client, strin
 	return runRootCommand(rootCmd, args), stderr.String()
 }
 
+func TestGetSprintBestEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"500", 500, `{}`}, {"absent", 200, `{"fields":{}}`}, {"null", 200, `{"fields":{"sprint":null}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Main","sprint":{"id":99,"name":"Stale"}}}`)
+					return
+				}
+				if r.URL.Path != "/rest/agile/1.0/issue/A-1" || r.URL.Query().Get("fields") != "sprint" {
+					t.Errorf("Agile request = %s", r.URL)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--json")
+			if code != 0 || stderr != "" || calls != 2 || strings.Contains(stdout, `"sprint"`) {
+				t.Fatalf("exit=%d calls=%d stdout=%s stderr=%s", code, calls, stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestGetJSONErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name, response, wantCode  string
@@ -45,7 +76,7 @@ func TestGetJSONErrors(t *testing.T) {
 		builderError, writerError error
 	}{
 		{name: "configuration", wantCode: "configuration_error", builderError: errors.New("client unavailable")},
-		{name: "HTTP 4xx", wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "HTTP 4xx", wantCode: "permission_denied", status: http.StatusForbidden},
 		{name: "HTTP 5xx", wantCode: "read_failed", status: http.StatusInternalServerError},
 		{name: "invalid response", wantCode: "read_failed", response: `{broken`},
 		{name: "writer", wantCode: "output_failed", response: `{"key":"A-1","fields":{"summary":"Issue"}}`, writerError: errors.New("output unavailable")},
@@ -83,6 +114,9 @@ func TestGetJSONErrors(t *testing.T) {
 					t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr)
 				}
 				wantRequests := 1
+				if tc.writerError != nil {
+					wantRequests = 2
+				}
 				if tc.builderError != nil {
 					wantRequests = 0
 				}
@@ -170,12 +204,22 @@ func TestRenderIssueFullShowsDueDateComponentsAndFixVersionsWhenPresent(t *testi
 	}
 }
 
-func TestGetHierarchyJSONAndHumanFromSingleGET(t *testing.T) {
+func TestGetHierarchyJSONAndHumanFromTwoGETs(t *testing.T) {
 	for _, jsonOutput := range []bool{false, true} {
 		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
+				if calls == 2 {
+					if r.URL.Path != "/rest/agile/1.0/issue/A-1" || r.URL.Query().Get("fields") != "sprint" {
+						t.Errorf("Agile request = %s", r.URL)
+					}
+					_, _ = fmt.Fprint(w, `{"fields":{"sprint":{"id":7,"name":"Sprint Seven","state":"active"}}}`)
+					return
+				}
+				if r.URL.Path != "/rest/api/3/issue/A-1" || r.URL.Query().Get("fields") != "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks,timetracking" {
+					t.Errorf("primary request = %s", r.URL)
+				}
 				for _, field := range []string{"parent", "subtasks"} {
 					if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
 						t.Errorf("missing %s", field)
@@ -189,8 +233,11 @@ func TestGetHierarchyJSONAndHumanFromSingleGET(t *testing.T) {
 				args = append(args, "--json")
 			}
 			code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), args...)
-			if code != 0 || stderr != "" || calls != 1 {
+			if code != 0 || stderr != "" || calls != 2 {
 				t.Fatalf("exit=%d stderr=%q calls=%d", code, stderr, calls)
+			}
+			if !strings.Contains(stdout, "Sprint Seven") {
+				t.Errorf("missing sprint: %s", stdout)
 			}
 			if jsonOutput {
 				var ticket jira.TicketJSON
@@ -236,6 +283,10 @@ func TestGetStoryPointsSelectorJSONAndHumanOutput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/rest/agile/1.0/issue/A-1" {
+					_, _ = fmt.Fprint(w, `{"fields":{}}`)
+					return
+				}
 				if got := r.URL.Query().Get("fields"); !strings.Contains(","+got+",", ",customfield_10016,") {
 					t.Errorf("fields query = %q", got)
 				}
@@ -367,5 +418,36 @@ func TestRenderIssueFullTruncatesComments(t *testing.T) {
 	}
 	if !utf8.ValidString(out) {
 		t.Fatal("rendered output is not valid utf-8")
+	}
+}
+
+func TestGetJSONLoggedTime(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if strings.HasPrefix(r.URL.Path, "/rest/agile/") {
+			_, _ = fmt.Fprint(w, `{"fields":{}}`)
+			return
+		}
+		if !strings.Contains(","+r.URL.Query().Get("fields")+",", ",timetracking,") {
+			t.Error("full issue read missing timetracking")
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Main","timetracking":{"timeSpent":"3h"},"worklog":{"total":41,"worklogs":[{"timeSpent":"1h","comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Worked"}]}]}}]}}}`)
+	}))
+	defer srv.Close()
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--json")
+	if code != 0 || stderr != "" || calls != 2 {
+		t.Fatalf("code=%d calls=%d stderr=%s", code, calls, stderr)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["timeLogged"] != "3h" || got["worklogsTotal"] != float64(41) {
+		t.Fatal(stdout)
+	}
+	logs := got["worklogs"].([]interface{})
+	if logs[0].(map[string]interface{})["comment"] != "Worked" {
+		t.Fatal(stdout)
 	}
 }

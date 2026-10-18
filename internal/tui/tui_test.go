@@ -18,6 +18,234 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestCommentEntry(t *testing.T) {
+	for _, status := range []int{200, 201, 401, 403, 404, 500, 0} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			posts, reads := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					posts++
+					if r.URL.Path != "/rest/api/3/issue/A-1/comment" { t.Errorf("path=%s", r.URL.Path) }
+					var body struct { Body jira.ADFDoc `json:"body"` }
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Body.Flatten() != "Hello\nWorld" { t.Errorf("invalid ADF: %+v %v", body, err) }
+					if status == 0 { conn, _, err := w.(http.Hijacker).Hijack(); if err != nil { t.Error(err); return }; _ = conn.Close(); return }
+					w.WriteHeader(status)
+					return
+				}
+				reads++
+				if status == 200 { _, _ = io.WriteString(w, `{"key":"A-1","fields":{}}`); return }
+				w.WriteHeader(403)
+			}))
+			defer srv.Close()
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, detail:&jira.Issue{Key:"A-1"}}
+			updated, _ := m.Update(tea.KeyPressMsg{Code:'m', Text:"m"}); m = updated.(Model)
+			if m.view != viewDescriptionEdit || posts != 0 { t.Fatal("m must open editor without writing") }
+			m.descriptionInput.SetValue("  \n ")
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+			if cmd != nil || posts != 0 || m.descriptionErr == nil { t.Fatal("blank comment must fail locally") }
+			m.descriptionInput.SetValue("Hello\nWorld")
+			updated, cmd = m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+			if cmd == nil { t.Fatal("missing submit") }
+			if _, duplicate := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); duplicate != nil { t.Fatal("double submit") }
+			result := cmd()
+			stale := m; stale.view = viewKanban
+			ignored, _ := stale.Update(result)
+			if ignored.(Model).view != viewKanban { t.Fatal("stale result changed view") }
+			updated, _ = m.Update(result); m = updated.(Model)
+			if status == 200 { if posts != 1 || reads != 1 || m.view != viewDetail || m.descriptionErr != nil { t.Fatalf("success: posts=%d reads=%d view=%v error=%v", posts, reads, m.view, m.descriptionErr) }; return }
+			if posts != 1 || m.descriptionErr == nil { t.Fatalf("posts=%d error=%v", posts, m.descriptionErr) }
+			if status == 201 {
+				if !m.descriptionApplied { t.Fatal("write must remain applied") }
+				updated, retry := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+				if retry == nil { t.Fatal("missing refresh retry") }; updated, _ = m.Update(retry()); m = updated.(Model)
+				if posts != 1 || reads != 2 { t.Fatalf("posts=%d reads=%d", posts, reads) }
+			} else {
+				want := "unknown"; if status == 403 { want = "permission_denied" }; if status == 401 { want = "authentication_failed" }; if status == 404 { want = "not_found_or_no_permission" }
+				if !strings.Contains(m.descriptionErr.Error(), want) { t.Fatal(m.descriptionErr) }
+				if status == 403 && !strings.Contains(m.descriptionErr.Error(), "not_applied") { t.Fatal(m.descriptionErr) }
+			}
+		})
+	}
+}
+
+func TestLifecycleTransitions(t *testing.T) {
+	for _, tc := range []struct{name, current, transitions string; posts int}{
+		{"close", "new", `[{"id":"9","name":"Finish","to":{"name":"Closed","statusCategory":{"key":"done"}}}]`, 1},
+		{"reopen", "done", `[{"id":"9","name":"Resume","to":{"name":"Working","statusCategory":{"key":"indeterminate"}}}]`, 1},
+		{"missing destination", "new", `[{"id":"9","name":"Done"}]`, 0},
+		{"ambiguous", "new", `[{"id":"9","to":{"statusCategory":{"key":"done"}}},{"id":"10","to":{"statusCategory":{"key":"done"}}}]`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			posts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet { _, _ = fmt.Fprintf(w, `{"transitions":%s}`, tc.transitions); return }
+				posts++
+				var body struct{ Transition struct{ ID string `json:"id"` } `json:"transition"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Transition.ID != "9" { t.Errorf("wrong transition: %+v, %v", body, err) }
+				w.WriteHeader(204)
+			}))
+			defer srv.Close()
+			var issue jira.Issue
+			if err := json.Unmarshal([]byte(fmt.Sprintf(`{"key":"A-1","fields":{"status":{"statusCategory":{"key":%q}}}}`, tc.current)), &issue); err != nil { t.Fatal(err) }
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewKanban, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, columns:[]column{{issues:[]jira.Issue{issue}}}}
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:'X', Text:"X"})
+			if cmd == nil { t.Fatal("X did not start lifecycle") }
+			m = updated.(Model)
+			result := cmd()
+			updated, _ = m.Update(result)
+			if posts != tc.posts { t.Fatalf("posts=%d want %d", posts, tc.posts) }
+			if tc.posts == 0 && (updated.(Model).err == nil || !strings.Contains(updated.(Model).err.Error(), "not_applied")) { t.Fatal("missing no-write error") }
+		})
+	}
+}
+
+func TestLifecycleDeleteFailures(t *testing.T) {
+	for _, status := range []int{400, 403, 500, 0} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			writes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writes++
+				if status == 0 { conn, _, err := w.(http.Hijacker).Hijack(); if err != nil { t.Error(err); return }; _ = conn.Close(); return }
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, detail:&jira.Issue{Key:"A-1"}}
+			updated, _ := m.Update(tea.KeyPressMsg{Code:'D', Text:"D"}); m = updated.(Model)
+			m.deleteInput.SetValue("a-1")
+			if _, cmd := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); cmd != nil { t.Fatal("mismatched key submitted") }
+			m.deleteInput.SetValue("A-1")
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); m = updated.(Model)
+			updated, _ = m.Update(cmd()); m = updated.(Model)
+			state := "not_applied"; if status == 0 || status == 500 { state = "unknown" }
+			if writes != 1 || m.err == nil || !strings.Contains(m.err.Error(), state) { t.Fatalf("writes=%d error=%v", writes, m.err) }
+			if status == 403 && !strings.Contains(m.err.Error(), "permission_denied") { t.Fatal(m.err) }
+			if _, retry := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); retry != nil { t.Fatal("automatic retry allowed") }
+		})
+	}
+}
+
+func TestLifecycleDeleteConfirmation(t *testing.T) {
+	writes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/rest/api/3/issue/A-1" { t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path) }
+		writes++
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, detail:&jira.Issue{Key:"A-1"}}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code:'D', Text:"D"})
+	m = updated.(Model)
+	if cmd != nil || m.view == viewDetail { t.Fatal("D must open confirmation without writing") }
+	updated, cmd = m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil { t.Fatal("empty confirmation submitted") }
+	for _, r := range "A-1" { updated, _ = m.Update(tea.KeyPressMsg{Code:r, Text:string(r)}); m = updated.(Model) }
+	updated, cmd = m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil { t.Fatal("exact confirmation did not submit") }
+	result := cmd()
+	_, duplicate := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	if duplicate != nil || writes != 1 { t.Fatalf("delete repeated: %d", writes) }
+	m.activeSearchRequest++
+	updated, cmd = m.Update(result)
+	if cmd != nil || updated.(Model).view != m.view { t.Fatal("stale delete result accepted") }
+}
+
+func TestSprintMovementFailures(t *testing.T) {
+	for _, status := range []int{403,500} {
+		t.Run(fmt.Sprint(status),func(t *testing.T) {
+			writes:=0
+			srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) { writes++; w.WriteHeader(status) }))
+			defer srv.Close()
+			m:=Model{client:jira.NewClient(srv.URL,"email","token"),view:viewDetail,boards:[]jira.Board{{ID:1}},loadedBoardRequest:7,detail:&jira.Issue{Key:"A-1"}}
+			m,cmd:=updateModel(t,m,tea.KeyPressMsg{Code:'b',Text:"b"})
+			result:=cmd()
+			stale:=m
+			stale.activeSearchRequest++
+			stale,next:=updateModel(t,stale,result)
+			if next!=nil || stale.err!=nil {t.Fatal("search-stale result applied")}
+			m,next=updateModel(t,m,result)
+			state:="unknown"; code:="request_failed"
+			if status==403 {state="not_applied"; code="permission_denied"}
+			if next!=nil || m.err==nil || !strings.Contains(m.err.Error(),state) || !strings.Contains(m.err.Error(),code) || writes!=1 {t.Fatalf("err=%v writes=%d",m.err,writes)}
+		})
+	}
+}
+
+func TestSprintMovement(t *testing.T) {
+	for _, key := range []string{"S", "b"} {
+		for _, detail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/detail=%v", key, detail), func(t *testing.T) {
+				writes := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == "GET" {
+						if r.URL.Path != "/rest/agile/1.0/board/1/sprint" || r.URL.Query().Get("state") != "active,future" { t.Errorf("URL %s", r.URL) }
+						_, _ = fmt.Fprint(w, `{"values":[{"id":3,"name":"Next","state":"future"}]}`)
+						return
+					}
+					writes++
+					path := "/rest/agile/1.0/backlog/issue"
+					if key == "S" { path = "/rest/agile/1.0/sprint/3/issue" }
+					body, _ := io.ReadAll(r.Body)
+					if r.Method != "POST" || r.URL.Path != path || string(body) != `{"issues":["A-1"]}` { t.Errorf("request %s %s %s", r.Method, r.URL.Path, body) }
+					w.WriteHeader(204)
+				}))
+				defer srv.Close()
+				m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewKanban, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, columns:[]column{{name:"Todo",issues:[]jira.Issue{{Key:"A-1"}}}}}
+				if detail { m.view=viewDetail; m.detail=&jira.Issue{Key:"A-1"} }
+				m, cmd := updateModel(t,m,tea.KeyPressMsg{Code:rune(key[0]),Text:key})
+				if cmd == nil { t.Fatal("no movement command") }
+				if key == "S" {
+					if m.view != viewSprintChoose { t.Fatal("chooser not opened") }
+					choices := cmd()
+					staleChoices := m
+					staleChoices.loadedBoardRequest++
+					staleChoices,_ = updateModel(t,staleChoices,choices)
+					if len(staleChoices.sprintChoices) != 0 { t.Fatal("stale choices applied") }
+					m,_ = updateModel(t,m,choices)
+					if !strings.Contains(m.View().Content,"Next") { t.Fatal("missing sprint") }
+					m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEnter})
+				}
+				if key == "S" {
+					_, duplicate := updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEnter})
+					if duplicate != nil { t.Fatal("duplicate submit") }
+				}
+				result := cmd()
+				if writes != 1 { t.Fatalf("writes=%d",writes) }
+				stale := m
+				stale.loadedBoardRequest++
+				stale,refresh := updateModel(t,stale,result)
+				if refresh != nil || stale.toast != m.toast { t.Fatal("stale result applied") }
+				m,refresh = updateModel(t,m,result)
+				if refresh == nil || !strings.Contains(m.toast,"accepted") { t.Fatal("missing refresh/acceptance") }
+			})
+		}
+	}
+}
+
+func TestCardProgressAndOwnSprint(t *testing.T) {
+	var issue jira.Issue
+	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"sprint":{"id":7,"name":"Other Sprint","state":"future"},"subtasks":[{"key":"A-2","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-3","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-4","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-5","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-6","fields":{"status":{"statusCategory":{"key":"indeterminate"}}}}]}}`), &issue); err != nil {
+		t.Fatal(err)
+	}
+	m := Model{sprintName: "Active Sprint"}
+	out := strings.Join(m.renderCardLines(issue, false, 100), "\n")
+	if !strings.Contains(out, "2/5") || !strings.Contains(out, "Other Sprint") {
+		t.Fatalf("card = %s", out)
+	}
+	m.sprintName = "Other Sprint"
+	issue.Fields.Subtasks = nil
+	out = strings.Join(m.renderCardLines(issue, true, 100), "\n")
+	if strings.Contains(out, "2/5") || strings.Contains(out, "0/0") || strings.Contains(out, "Other Sprint") {
+		t.Fatalf("unavailable/same sprint = %s", out)
+	}
+	issue.Fields.Sprint = nil
+	out = strings.Join(m.renderCardLines(issue, false, 100), "\n")
+	if strings.Contains(out, "Sprint") {
+		t.Fatalf("fabricated sprint = %s", out)
+	}
+}
+
 func fieldEditorServer(t *testing.T, failRefresh bool) (*httptest.Server, *[]string, *[]byte) {
 	t.Helper()
 	calls := &[]string{}
@@ -2531,4 +2759,18 @@ func TestDescriptionEditExplicitEmptySendsNullAndRefreshes(t *testing.T) {
 	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description != nil {
 		t.Fatalf("empty update did not refresh cleared detail: view=%v detail=%#v", m.view, m.detail)
 	}
+}
+
+func TestDetailTimeAndComments(t *testing.T) {
+ var issue jira.Issue
+ err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"created":"2021-01-17T12:34:00.000+0000","updated":"2021-01-18T13:45:00.000+0000","timetracking":{"timeSpent":"3h"},"worklog":{"total":41,"worklogs":[{"timeSpent":"1h"}]},"comment":{"comments":[{"author":{"displayName":"Ada"},"created":"2021-01-17T12:34:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}]}}]}}}`), &issue)
+ if err != nil { t.Fatal(err) }
+ m := Model{detail: &issue, width: 100, height: 30}
+ content, _ := m.detailContent()
+ for _, want := range []string{"2021-01-17 12:34", "2021-01-18 13:45", "Time logged: 3h (showing 1 of 41 worklogs)", "── Comments ──", "Ada", "Hello", "── Worklogs ──", "1h"} {
+  if !strings.Contains(content, want) { t.Errorf("missing %q in %s",want,content) }
+ }
+ issue.Fields.Comment = nil
+ content, _ = m.detailContent()
+ if !strings.Contains(content,"No comments") { t.Fatal(content) }
 }

@@ -21,7 +21,7 @@ func TestSearchJSONErrors(t *testing.T) {
 		builderError, writerError error
 	}{
 		{name: "configuration", wantCode: "configuration_error", builderError: errors.New("client unavailable")},
-		{name: "HTTP 4xx", wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "HTTP 4xx", wantCode: "permission_denied", status: http.StatusForbidden},
 		{name: "HTTP 5xx", wantCode: "read_failed", status: http.StatusInternalServerError},
 		{name: "invalid response", wantCode: "read_failed", response: `{broken`},
 		{name: "writer", wantCode: "output_failed", response: `{"issues":[],"total":0}`, writerError: errors.New("output unavailable")},
@@ -66,6 +66,9 @@ func TestSearchJSONErrors(t *testing.T) {
 					t.Fatalf("requests=%d, want %d (5xx may retry)", requests, wantRequests)
 				}
 				got := decodeMutationError(t, stderr)
+				if tc.status == http.StatusForbidden && (got.HTTPStatus != tc.status || got.Hint == "") {
+					t.Fatalf("missing access details: %+v", got)
+				}
 				if got.Code != tc.wantCode || got.MutationState != jira.MutationNotApplied || got.IssueKey != "" {
 					t.Fatalf("error=%+v, want %s/not_applied/no key", got, tc.wantCode)
 				}

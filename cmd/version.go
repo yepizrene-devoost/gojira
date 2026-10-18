@@ -6,6 +6,8 @@ import (
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
+
+	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
 // version is the channel/version marker, overridden at build time via
@@ -45,9 +47,14 @@ machine-readable document.`,
 				Revision: buildRevision(),
 				Dirty:    buildDirty(),
 			}
-			b, _ := json.MarshalIndent(report, "", "  ")
-			_, err := fmt.Fprintln(out, string(b))
-			return err
+			b, err := json.MarshalIndent(report, "", "  ")
+			if err == nil {
+				_, err = fmt.Fprintln(out, string(b))
+			}
+			if err != nil {
+				return reportJSONError(cmd, "output_failed", "version JSON could not be written", "", jira.MutationNotApplied, err)
+			}
+			return nil
 		}
 
 		line := "gojira " + version

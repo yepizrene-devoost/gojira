@@ -260,7 +260,7 @@ func TestUpdateFailsSafelyWhenEditMetadataRejectsRequestedFields(t *testing.T) {
 		wantCode    string
 		wantMessage string
 	}{
-		{name: "metadata unavailable", status: http.StatusForbidden, args: []string{"--due-date", "2026-10-31"}, wantCode: "metadata_failed", wantMessage: "issue edit metadata is unavailable"},
+		{name: "metadata unavailable", status: http.StatusForbidden, args: []string{"--due-date", "2026-10-31"}, wantCode: "permission_denied", wantMessage: "issue edit metadata is unavailable"},
 		{name: "field absent", status: http.StatusOK, metadata: `{"fields":{"components":{}}}`, args: []string{"--fix-versions", "v1.0"}, wantCode: "validation_error", wantMessage: "requested field update is not allowed"},
 		{name: "component not allowed", status: http.StatusOK, metadata: `{"fields":{"components":{"allowedValues":[{"name":"Web"}]}}}`, args: []string{"--components", "API"}, wantCode: "validation_error", wantMessage: "requested field update is not allowed"},
 	}
@@ -283,6 +283,9 @@ func TestUpdateFailsSafelyWhenEditMetadataRejectsRequestedFields(t *testing.T) {
 			}
 			var envelope map[string]any
 			assertSingleJSONDocument(t, []byte(stderr), &envelope)
+			if tc.status == http.StatusForbidden && (envelope["httpStatus"] != float64(tc.status) || envelope["hint"] == nil || envelope["hint"] == "") {
+				t.Fatalf("missing access details: %#v", envelope)
+			}
 			if envelope["code"] != tc.wantCode || envelope["message"] != tc.wantMessage || envelope["mutationState"] != "not_applied" {
 				t.Fatalf("error envelope = %#v", envelope)
 			}

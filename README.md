@@ -4,6 +4,25 @@
 
 <h1 align="center">GoJira</h1>
 
+### Jira access errors for agents
+
+CLI JSON failures remain one v1 error envelope on stderr, with empty stdout
+and exit 1. HTTP 401 uses `authentication_failed`, 403 `permission_denied`,
+and 404 `not_found_or_no_permission` (Jira can hide inaccessible resources).
+These envelopes add `httpStatus` and an actionable `hint`; `mutationState`
+still distinguishes `not_applied`, `applied`, and `unknown`. Never repeat an
+applied write, or retry an unknown write without verification. A
+`partial_failure` retains its code and adds the classified `cause` instead.
+Other failures retain their existing codes and fields. Human output appends
+the same hint after the existing error line on stderr.
+
+`get` still succeeds when its optional Agile sprint read fails. Its JSON
+adds `warnings: [{code, message, httpStatus?}]` with code `sprint_unavailable`;
+classified causes appear in `message`. Warnings are omitted when empty, and
+no sprint is fabricated. Human mode sends warnings to stderr. Access errors
+do not trigger permission pre-checks or automatic 4xx retries.
+
+
 <p align="center">
   <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
   <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
@@ -18,7 +37,7 @@
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
-- **Ticket workflows** — view, search, transition, log work, create, and manage sprint membership in the TUI; the CLI also supports comments, assignment, and field updates
+- **Ticket workflows** — view, search, transition, close/reopen, delete, log work, comment, create, and manage sprint membership in both the CLI and the TUI; the CLI also supports assignment and field updates
 - **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated ticket output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
 - **Credential storage** — API token in the OS keychain when available, with a YAML fallback that requests `0600` when the file is created
@@ -134,6 +153,10 @@ setup wizard, or connect to Jira.
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira close KEY` / `gojira reopen KEY` | Select the single available transition into Done / New or In Progress categories (`--json`); ambiguous or missing candidates produce no write |
+| `gojira delete KEY --confirm KEY` | Permanently delete one issue after exact key confirmation (`--json` returns `{schemaVersion,key,deleted:true}`) |
+| `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
+| `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
@@ -143,6 +166,18 @@ setup wizard, or connect to Jira.
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
+Lifecycle commands use only transitions currently available on the issue, never workflow names.
+Missing destination data is not a candidate; zero or multiple candidates are listed in a
+`validation_error` without writing. Use `move` to choose a transition manually.
+
+**Delete is permanent.** It does not cascade to subtasks (Jira may reject a parent),
+does not re-fetch the deleted issue, and is never retried automatically. A 5xx or
+transport failure has `mutationState: unknown`: verify before retrying. Permission
+errors use the existing classified error envelope. Lifecycle validation used local
+HTTP simulations only; no live Jira verification or deletion was performed.
+TUI lifecycle shortcuts and typed-key deletion confirmation are not implemented yet;
+the existing `t` transition picker remains available.
+
 ### Agent usage examples
 
 ```bash
@@ -151,6 +186,13 @@ gojira export --board 1 | jq '.[] | select(.assignee == "René")'
 
 # What can this ticket become? (transition picker as JSON)
 gojira move ARA-1892 --json
+
+# Close/reopen only when exactly one destination-category candidate is available
+gojira close ARA-1892 --json
+gojira reopen ARA-1892 --json
+
+# PERMANENT deletion: confirmation must match the issue key exactly
+gojira delete ARA-1892 --confirm ARA-1892 --json
 
 # Full requirement context as JSON
 gojira get ARA-1892 --json
@@ -163,6 +205,10 @@ gojira create --project ARA --parent ARA-1892 --summary "Verify export" --json
 
 # Create a ticket straight into the active sprint (skip the backlog)
 gojira create --project ARA --type Task --summary "Sprint work" --board 1
+
+# List candidate sprints, then move exactly one issue
+gojira sprint list --board 1 --state active,future --json
+gojira sprint move ARA-1892 --to 42 --json
 
 # Move an issue from future and active sprints to the backlog
 gojira backlog ARA-1892 --json
@@ -200,6 +246,13 @@ been independently proven. A 204 response confirms the request succeeded, not
 independently verified backlog membership. No live Jira verification has been
 performed.
 
+Sprint movement sends exactly one write, never a synthetic multi-write loop to
+rewrite closed-sprint history. Board and sprint IDs must be positive integers.
+Human output confirms Jira accepted the request, not independently verified
+membership. Failed or ambiguous writes are never automatically retried; HTTP 500
+and transport drops retain mutation state `unknown`. No live Jira verification
+was performed for sprint selection or movement (local HTTP simulations only).
+
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
 The curated `TicketJSON` schema is used by `get --json`, `search --json`,
 `export`, TUI ticket/column copy, and successful JSON mutations. `get --json`,
@@ -208,6 +261,21 @@ ticket copy, and `create`/`update`/`assign`/`move --to`/`backlog`/`comment`/`log
 write. Search, export, and column copy produce a top-level array. Each ticket
 object carries `schemaVersion: "v1"`. Human mutation output is unchanged when
 `--json` is omitted.
+
+TUI ticket detail shows readable created/updated dates, supplied logged time,
+embedded worklog entries (with a truncation count when a total is supplied), and
+existing comments in Jira order, including an explicit empty state. The existing
+scrolling and navigation keys are unchanged. TUI comment entry is not implemented
+in this slice.
+
+Full issue reads request optional `timetracking` and `worklog` fields; board,
+search and export field sets are unchanged. The embedded `fields.worklog` shape
+and `fields.timetracking.timeSpent` were **not confirmed** in the official
+Atlassian v3 worklog/comment pages consulted: only supplied values are exposed,
+with no inferred total or pagination requests. Those pages document ADF worklog
+comments; `log --show --json` continues to emit flattened string comments and
+also accepts legacy strings or missing comments. No live Jira verification was
+performed (local tests only).
 
 ### TicketJSON v1 contract
 
@@ -239,11 +307,14 @@ date formats are preserved verbatim.
 | `description` | string | Always; flattened ADF text, or empty string when unavailable. |
 | `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
-| `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
+| `timeLogged` | string | Optional `fields.timetracking.timeSpent` from full issue reads (`get` and mutation re-fetch); omitted when absent or empty, never calculated from entries. |
+| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
+| `worklogsTotal` | integer | Only included when Jira supplies `fields.worklog.total`, including zero. Entries may be truncated; absence is not zero. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
-| `subtasks` | array of objects | `get` children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
-| `subtaskProgress` | object | `get` only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
+| `sprint` | object | Omitted when absent/null; integer `id`, string `name` and `state` supplied by Agile Jira. |
+| `subtasks` | array of objects | `get`, board/export/TUI children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
+| `subtaskProgress` | object | Available only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
 
 Read surfaces can only populate fields requested and returned by their Jira
 endpoint. In particular, board-backed export and TUI column copy request basic
@@ -253,17 +324,25 @@ Sparse Jira responses preserve the required empty-string fields and the
 `YYYY-MM-DD` string or `null`. `storyPoints` is omitted unless a field selector
 was supplied; with a selector it is always a JSON number or `null`. A selected
 field missing from Jira's response, or returned as another JSON type, is a read
-error rather than an omitted property. Hierarchy is requested by the full issue
-GET used by `get`, not by board/export/TUI reads; availability of nested child
-status categories depends on Jira's response. Synthetic tests cover this shape;
+error rather than an omitted property. `get` keeps its full issue GET and adds
+exactly one best-effort Agile issue GET (`fields=sprint`, no retry); failure or
+missing sprint evidence omits `sprint` without failing the command. Human output
+shows `Sprint: name (state)` only when known. Board/export/TUI reads request
+`subtasks` and `sprint` in bulk, without per-card reads; search is unchanged.
+Cards show verified `done/total` progress and their own sprint name only when it
+differs from the board's active sprint. Missing progress is not zero.
+Availability of nested child status categories depends on Jira's response.
+Synthetic tests cover this shape;
 live Jira Cloud compatibility has not been verified.
 
 `boards --json` and `projects --json` expose their own list shapes.
 `move --json` without `--to` retains its transition array, and
-`log --json --show` retains its worklog array. `version --json` has its own
-`version`/`revision`/`dirty` schema.
+`log --json --show` retains its worklog array; both print `[]` when Jira returns
+no entries, never `null`. `version --json` has its own `version`/`revision`/`dirty`
+schema. `config` and `tui` are intentionally not JSON commands: `config` manages
+local settings for humans and `tui` is interactive.
 
-For `get`, `search`, `boards`, and `projects` with `--json`, and for `export`
+For `get`, `search`, `boards`, `projects`, `move`, `log --show`, and `version` with `--json`, and for `export`
 (which is always JSON), configuration failures report `configuration_error`,
 Jira read failures report `read_failed`, and result encoding/writer failures
 report `output_failed`. Export with no boards reports `validation_error`.
@@ -315,6 +394,31 @@ succeeds but sprint placement fails, the error includes the created key and
 stdout atomicity cannot be guaranteed in that case; the command still returns
 failure and never reports success.
 
+### CLI and TUI parity
+
+| Capability | CLI | TUI |
+|---|---|---|
+| Read ticket detail (dates, time, comments, worklogs) | `get` (`--json`) | `Enter` (detail modal) |
+| Search | `search` (`--json`) | `s` and `/` |
+| Create ticket (optionally in a sprint) | `create` | `n` |
+| Edit fields | `update` | `e` (description), `E` (other fields) |
+| Add comment | `comment` | `m` |
+| Log work / show worklog | `log` (`--show`) | `w` |
+| Transition by name | `move` | `t` |
+| Close / reopen by status category | `close`, `reopen` | `X` |
+| Delete permanently (typed confirmation) | `delete --confirm KEY` | `D` |
+| List sprints | `sprint list` | `S` chooser |
+| Move to sprint | `sprint move` | `S` |
+| Move to backlog | `backlog` | `b` |
+| Assign | `assign` | not available |
+| Child progress and sprint | `get --json` | board cards |
+
+Agent-oriented extras exist only in the CLI: `--json` on every command except
+`config` and `tui`, `export`, and the stable error envelope. Mutations never
+retry automatically; a failed write reports `not_applied`, `applied`, or
+`unknown`. None of the commands above has been verified against a live Jira, so
+validate on a disposable issue first; deletion is permanent.
+
 ## TUI keyboard shortcuts
 
 ### Boards list
@@ -339,6 +443,10 @@ failure and never reports success.
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
+| `b` | From a selected card or ticket detail, move to backlog with one request |
+| `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
+| `D` | Permanently delete a selected card/detail: type its exact key and press Enter; Esc cancels before submission. One DELETE, never automatically retried |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |
@@ -381,10 +489,17 @@ where search started.
 | `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
 | `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
+| `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+Comment entry converts plain text to ADF (mentions are not supported) and rejects
+empty comments locally. After a successful write, a failed detail refresh offers
+only a refresh retry, never a second comment POST. Write failures show the
+classified error and `not_applied` or `unknown` mutation state; writes are never
+automatically retried. No live Jira verification was done.
 
 The description editor accepts multiple lines and converts an actual plain-text
 edit to Jira ADF. Replacing a description this way may discard rich ADF formatting
@@ -424,7 +539,9 @@ gojira/
 │   ├── root.go                # Root command + credential resolution
 │   ├── tui.go                 # TUI launcher + first-run wizard
 │   ├── boards.go projects.go get.go search.go export.go
-│   ├── move.go log.go create.go comment.go assign.go update.go
+│   ├── move.go close.go delete.go sprint.go backlog.go
+│   ├── log.go create.go comment.go assign.go update.go
+│   ├── json.go                # Shared JSON/error envelope helpers
 │   └── config.go              # config init/set/get/path/test
 ├── internal/
 │   ├── jira/                  # Jira domain

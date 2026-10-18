@@ -7,6 +7,44 @@ import (
 	"testing"
 )
 
+func TestSprintAndProgressContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		sprint       bool
+		progress     string
+	}{
+		{"absent", `{}`, false, "null"},
+		{"null", `{"sprint":null,"subtasks":null}`, false, "null"},
+		{"empty", `{"sprint":{"id":7,"name":"Seven","state":"active"},"subtasks":[]}`, true, `{"done":0,"total":0}`},
+		{"category not name", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done","statusCategory":{"key":"new"}}}}]}`, false, `{"done":0,"total":1}`},
+		{"done category", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Review","statusCategory":{"key":"done"}}}}]}`, false, `{"done":1,"total":1}`},
+		{"unknown", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done"}}}]}`, false, "null"},
+		{"missing key", `{"subtasks":[{"fields":{"status":{"statusCategory":{"key":"done"}}}}]}`, false, "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var issue Issue
+			if err := json.Unmarshal([]byte(`{"fields":`+tc.fields+`}`), &issue); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(IssueToTicketJSON(issue, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := out["sprint"]; ok != tc.sprint {
+				t.Errorf("sprint presence: %s", data)
+			}
+			got, _ := json.Marshal(SubtaskProgress(issue.Fields.Subtasks))
+			if string(got) != tc.progress {
+				t.Errorf("progress = %s, want %s", got, tc.progress)
+			}
+		})
+	}
+}
+
 func TestBoardConfigEstimationFieldFromOfficialShape(t *testing.T) {
 	var cfg BoardConfig
 	if err := json.Unmarshal([]byte(`{"estimation":{"field":{"displayName":"Story Points","fieldId":"customfield_10002"},"type":"field"}}`), &cfg); err != nil {
@@ -239,5 +277,69 @@ func TestIssuesToTicketJSONVersionsEveryElement(t *testing.T) {
 		if ticket.SchemaVersion != "v1" {
 			t.Errorf("ticket %d SchemaVersion = %q, want v1", i, ticket.SchemaVersion)
 		}
+	}
+}
+
+func TestWorklogCommentDecoding(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"ADF", `{"comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Worked"}]}]}}`, "Worked"},
+		{"string", `{"comment":"Legacy"}`, "Legacy"},
+		{"absent", `{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w Worklog
+			if err := json.Unmarshal([]byte(tc.raw), &w); err != nil {
+				t.Fatal(err)
+			}
+			if w.Comment != tc.want {
+				t.Fatalf("comment = %q", w.Comment)
+			}
+			b, err := json.Marshal(w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]interface{}
+			if err := json.Unmarshal(b, &out); err != nil {
+				t.Fatal(err)
+			}
+			if out["comment"] != tc.want {
+				t.Fatalf("wire comment = %v", out["comment"])
+			}
+		})
+	}
+}
+
+func TestTicketLoggedTimeContract(t *testing.T) {
+	for _, tc := range []struct{ name, fields, want string }{
+		{"absent", `{}`, `{}`},
+		{"present", `{"timetracking":{"timeSpent":"3h"},"worklog":{"total":41,"worklogs":[{"author":{"displayName":"Ada"},"timeSpent":"1h","started":"2021-01-17T12:34:00.000+0000","comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Work"}]}]}}]}}`, `{"timeLogged":"3h","worklogsTotal":41,"worklogs":[{"author":"Ada","timeSpent":"1h","started":"2021-01-17T12:34:00Z","comment":"Work"}]}`},
+		{"zero total", `{"worklog":{"total":0,"worklogs":[]}}`, `{"worklogsTotal":0}`},
+		{"no inferred total", `{"worklog":{"worklogs":[{"timeSpent":"1h"}]}}`, `{"worklogs":[{"author":"","timeSpent":"1h","started":"","comment":""}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var issue Issue
+			if err := json.Unmarshal([]byte(`{"key":"A-1","fields":`+tc.fields+`}`), &issue); err != nil {
+				t.Fatal(err)
+			}
+			b, err := json.Marshal(IssueToTicketJSON(issue, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]interface{}
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"timeLogged", "worklogs", "worklogsTotal"} {
+				if !reflect.DeepEqual(got[key], want[key]) {
+					t.Errorf("%s = %#v; want %#v", key, got[key], want[key])
+				}
+			}
+			if got["schemaVersion"] != "v1" || got["key"] != "A-1" {
+				t.Fatal("existing contract changed")
+			}
+		})
 	}
 }

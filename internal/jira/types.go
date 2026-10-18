@@ -225,24 +225,38 @@ type IssueHierarchyRef struct {
 	} `json:"fields"`
 }
 
+// These optional embedded shapes were not confirmed in the official worklog
+// and comment pages consulted. Preserve only supplied values; never infer totals.
+type TimeTrackingField struct {
+	TimeSpent string `json:"timeSpent"`
+}
+
+type WorklogField struct {
+	Total    *int      `json:"total"`
+	Worklogs []Worklog `json:"worklogs"`
+}
+
 type IssueFieldData struct {
-	Parent      *IssueHierarchyRef   `json:"parent,omitempty"`
-	Subtasks    *[]IssueHierarchyRef `json:"subtasks,omitempty"`
-	Summary     string               `json:"summary"`
-	Status      *StatusField         `json:"status,omitempty"`
-	Priority    *PriorityField       `json:"priority,omitempty"`
-	Assignee    *AssigneeField       `json:"assignee,omitempty"`
-	Reporter    *ReporterField       `json:"reporter,omitempty"`
-	IssueType   *IssueTypeField      `json:"issuetype,omitempty"`
-	Project     *ProjectField        `json:"project,omitempty"`
-	Labels      []string             `json:"labels,omitempty"`
-	Components  []ComponentField     `json:"components,omitempty"`
-	FixVersions []FixVersionField    `json:"fixVersions,omitempty"`
-	DueDate     *string              `json:"duedate"`
-	Created     string               `json:"created"`
-	Updated     string               `json:"updated"`
-	Description *DescriptionField    `json:"description,omitempty"`
-	Comment     *CommentField        `json:"comment,omitempty"`
+	TimeTracking *TimeTrackingField   `json:"timetracking,omitempty"`
+	Worklog      *WorklogField        `json:"worklog,omitempty"`
+	Sprint       *Sprint              `json:"sprint,omitempty"`
+	Parent       *IssueHierarchyRef   `json:"parent,omitempty"`
+	Subtasks     *[]IssueHierarchyRef `json:"subtasks,omitempty"`
+	Summary      string               `json:"summary"`
+	Status       *StatusField         `json:"status,omitempty"`
+	Priority     *PriorityField       `json:"priority,omitempty"`
+	Assignee     *AssigneeField       `json:"assignee,omitempty"`
+	Reporter     *ReporterField       `json:"reporter,omitempty"`
+	IssueType    *IssueTypeField      `json:"issuetype,omitempty"`
+	Project      *ProjectField        `json:"project,omitempty"`
+	Labels       []string             `json:"labels,omitempty"`
+	Components   []ComponentField     `json:"components,omitempty"`
+	FixVersions  []FixVersionField    `json:"fixVersions,omitempty"`
+	DueDate      *string              `json:"duedate"`
+	Created      string               `json:"created"`
+	Updated      string               `json:"updated"`
+	Description  *DescriptionField    `json:"description,omitempty"`
+	Comment      *CommentField        `json:"comment,omitempty"`
 }
 
 type Issue struct {
@@ -293,8 +307,9 @@ type Project struct {
 // ─── Transitions / Worklog ─────────────────────────────────────────────
 
 type Transition struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID   string       `json:"id"`
+	Name string       `json:"name"`
+	To   *StatusField `json:"to,omitempty"`
 }
 
 type Worklog struct {
@@ -304,6 +319,43 @@ type Worklog struct {
 	Comment   string `json:"comment"`
 	TimeSpent string `json:"timeSpent"`
 	Started   string `json:"started"`
+}
+
+// UnmarshalJSON accepts documented v3 ADF comments and legacy plain strings.
+// Marshaling retains the existing flattened-string log --show JSON contract.
+func (w *Worklog) UnmarshalJSON(data []byte) error {
+	type plain Worklog
+	var raw struct {
+		*plain
+		Comment json.RawMessage `json:"comment"`
+	}
+	var decoded Worklog
+	raw.plain = (*plain)(&decoded)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Comment) > 0 && string(raw.Comment) != "null" {
+		if raw.Comment[0] == '"' {
+			if err := json.Unmarshal(raw.Comment, &decoded.Comment); err != nil {
+				return err
+			}
+		} else {
+			var doc ADFDoc
+			if err := json.Unmarshal(raw.Comment, &doc); err != nil {
+				return err
+			}
+			decoded.Comment = doc.Flatten()
+		}
+	}
+	*w = decoded
+	return nil
+}
+
+type WorklogJSON struct {
+	Author    string `json:"author"`
+	TimeSpent string `json:"timeSpent"`
+	Started   string `json:"started"`
+	Comment   string `json:"comment"`
 }
 
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
@@ -329,10 +381,13 @@ type TicketJSON struct {
 	Created         string               `json:"created"`
 	Updated         string               `json:"updated"`
 	TimeLogged      string               `json:"timeLogged,omitempty"`
+	Worklogs        []WorklogJSON        `json:"worklogs,omitempty"`
+	WorklogsTotal   *int                 `json:"worklogsTotal,omitempty"`
 	Comments        []CommentJSON        `json:"comments,omitempty"`
 	Parent          *HierarchyJSON       `json:"parent,omitempty"`
 	Subtasks        *[]HierarchyJSON     `json:"subtasks,omitempty"`
 	SubtaskProgress *SubtaskProgressJSON `json:"subtaskProgress,omitempty"`
+	Sprint          *Sprint              `json:"sprint,omitempty"`
 }
 
 // HierarchyJSON preserves the nested issue evidence without fetching each child.
@@ -346,6 +401,27 @@ type HierarchyJSON struct {
 type SubtaskProgressJSON struct {
 	Done  int `json:"done"`
 	Total int `json:"total"`
+}
+
+// SubtaskProgress returns verified Done-category progress, or nil when unavailable.
+func SubtaskProgress(children *[]IssueHierarchyRef) *SubtaskProgressJSON {
+	if children == nil {
+		return nil
+	}
+	progress := &SubtaskProgressJSON{Total: len(*children)}
+	for _, child := range *children {
+		if child.Key == "" || child.Fields.Status == nil || child.Fields.Status.Category == nil {
+			return nil
+		}
+		switch strings.ToLower(child.Fields.Status.Category.Key) {
+		case "done":
+			progress.Done++
+		case "new", "indeterminate":
+		default:
+			return nil
+		}
+	}
+	return progress
 }
 
 func hierarchyJSON(ref IssueHierarchyRef) HierarchyJSON {
@@ -454,6 +530,7 @@ func TextToADF(text string) ADFDoc {
 
 func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
+		Sprint:        iss.Fields.Sprint,
 		SchemaVersion: "v1",
 		Key:           iss.Key,
 		URL:           browseURL(domain, iss.Key),
@@ -462,6 +539,15 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 		Updated:       normalizeDate(iss.Fields.Updated),
 		Assignee:      "Unassigned",
 		Labels:        iss.Fields.Labels,
+	}
+	if iss.Fields.TimeTracking != nil {
+		t.TimeLogged = iss.Fields.TimeTracking.TimeSpent
+	}
+	if iss.Fields.Worklog != nil {
+		t.WorklogsTotal = iss.Fields.Worklog.Total
+		for _, w := range iss.Fields.Worklog.Worklogs {
+			t.Worklogs = append(t.Worklogs, WorklogJSON{Author: w.Author.DisplayName, TimeSpent: w.TimeSpent, Started: normalizeDate(w.Started), Comment: w.Comment})
+		}
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name
@@ -504,25 +590,11 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	}
 	if iss.Fields.Subtasks != nil {
 		children := make([]HierarchyJSON, len(*iss.Fields.Subtasks))
-		progress := &SubtaskProgressJSON{Total: len(children)}
-		complete := true
 		for i, child := range *iss.Fields.Subtasks {
 			children[i] = hierarchyJSON(child)
-			if child.Key == "" {
-				complete = false
-			}
-			switch strings.ToLower(children[i].StatusCategory) {
-			case "done":
-				progress.Done++
-			case "new", "indeterminate":
-			default:
-				complete = false
-			}
 		}
 		t.Subtasks = &children
-		if complete {
-			t.SubtaskProgress = progress
-		}
+		t.SubtaskProgress = SubtaskProgress(iss.Fields.Subtasks)
 	}
 	if iss.Fields.Description != nil {
 		t.Description = iss.Fields.Description.Flatten()

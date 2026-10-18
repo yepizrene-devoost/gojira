@@ -35,6 +35,9 @@ var logCmd = &cobra.Command{
 				return commandError(cmd, "read_failed", "worklogs could not be read", issueKey, jira.MutationNotApplied, err)
 			}
 			if wantsJSON(cmd) {
+				if worklogs == nil {
+					worklogs = []jira.Worklog{}
+				}
 				if err := writeJSON(cmd, worklogs); err != nil {
 					return reportJSONError(cmd, "output_failed", "worklog JSON could not be written", issueKey, jira.MutationNotApplied, err)
 				}

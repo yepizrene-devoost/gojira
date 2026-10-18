@@ -13,7 +13,33 @@ import (
 
 const jsonSchemaVersion = "v1"
 
+// permissionHint never suggests retrying a potentially applied write.
+func permissionHint(cause error, state jira.MutationState) (string, int, string) {
+	code, status := jira.ClassifyAPIError(cause)
+	if code == "" {
+		return "", 0, ""
+	}
+	outcome := "The change was not applied."
+	if state == jira.MutationApplied {
+		outcome = "The change was applied; do not repeat it."
+	}
+	if state == jira.MutationUnknown {
+		outcome = "Whether the change was applied is unknown; verify before retrying."
+	}
+	action := "Report to the human that the configured Jira account lacks permission; ask for a different board/issue or access."
+	if status == 401 {
+		action = "Report to the human that the configured Jira account could not authenticate; ask them to check its credentials and access."
+	}
+	if status == 404 {
+		action = "Report to the human that the board/issue was not found or the configured Jira account lacks permission; ask for a different board/issue or access."
+	}
+	return code, status, outcome + " " + action
+}
+
 type mutationErrorJSON struct {
+	HTTPStatus    int                `json:"httpStatus,omitempty"`
+	Hint          string             `json:"hint,omitempty"`
+	Cause         string             `json:"cause,omitempty"`
 	SchemaVersion string             `json:"schemaVersion"`
 	Code          string             `json:"code"`
 	Message       string             `json:"message"`
@@ -65,6 +91,15 @@ func reportJSONError(cmd *cobra.Command, code, message, issueKey string, state j
 		IssueKey:      issueKey,
 		MutationState: state,
 	}
+	classified, status, hint := permissionHint(cause, state)
+	if classified != "" {
+		if code == "partial_failure" {
+			envelope.Cause = classified
+		} else {
+			envelope.Code = classified
+		}
+		envelope.HTTPStatus, envelope.Hint = status, hint
+	}
 	if err := writeJSONTo(cmd.ErrOrStderr(), envelope); err != nil {
 		return &reportedCommandError{err: fmt.Errorf("writing JSON error: %w", err)}
 	}
@@ -75,8 +110,19 @@ func commandError(cmd *cobra.Command, code, message, issueKey string, state jira
 	if wantsJSON(cmd) {
 		return reportJSONError(cmd, code, message, issueKey, state, cause)
 	}
+	if _, _, hint := permissionHint(cause, state); hint != "" {
+		return &humanPermissionError{err: cause, hint: hint}
+	}
 	return cause
 }
+
+type humanPermissionError struct {
+	err  error
+	hint string
+}
+
+func (e *humanPermissionError) Error() string { return e.err.Error() }
+func (e *humanPermissionError) Unwrap() error { return e.err }
 
 func writeMutationResult(cmd *cobra.Command, client *jira.Client, domain, issueKey string) error {
 	return writeMutationResultWithStoryPoints(cmd, client, domain, issueKey, "")

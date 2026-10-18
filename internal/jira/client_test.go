@@ -11,6 +11,53 @@ import (
 	"testing"
 )
 
+func TestBoardAndSprintBulkEvidence(t *testing.T) {
+	for _, sprintID := range []int{0, 7} {
+		t.Run(fmt.Sprint(sprintID), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				want := "/rest/agile/1.0/board/1/issue"
+				if sprintID != 0 {
+					want = "/rest/agile/1.0/board/1/sprint/7/issue"
+				}
+				if r.URL.Path != want {
+					t.Errorf("path=%s", r.URL.Path)
+				}
+				for _, field := range []string{"subtasks", "sprint"} {
+					if !strings.Contains(","+r.URL.Query().Get("fields")+",", ","+field+",") {
+						t.Errorf("missing %s", field)
+					}
+				}
+				_, _ = fmt.Fprint(w, `{"total":1,"issues":[{"key":"A-1","fields":{"sprint":{"id":7,"name":"Seven","state":"active"},"subtasks":[]}}]}`)
+			}))
+			defer srv.Close()
+			issues, err := NewClient(srv.URL, "email", "token").GetBoardIssues(1, sprintID)
+			if err != nil || calls != 1 || len(issues) != 1 {
+				t.Fatalf("issues=%v err=%v calls=%d", issues, err, calls)
+			}
+			ticket := IssueToTicketJSON(issues[0], "")
+			if ticket.Sprint == nil || ticket.Sprint.Name != "Seven" || ticket.Subtasks == nil || ticket.SubtaskProgress == nil {
+				t.Fatalf("ticket=%+v", ticket)
+			}
+		})
+	}
+}
+
+func TestAgileIssueSprintIgnoresOtherReturnedFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/rest/agile/1.0/issue/A-1" || r.URL.Query().Get("fields") != "sprint" {
+			t.Errorf("request=%s %s", r.Method, r.URL)
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Ignored","sprint":{"id":7,"name":"Seven","state":"active"}}}`)
+	}))
+	defer srv.Close()
+	sprint, err := NewClient(srv.URL, "email", "token").GetIssueSprint("A-1")
+	if err != nil || sprint == nil || *sprint != (Sprint{ID: 7, Name: "Seven", State: "active"}) {
+		t.Fatalf("sprint=%+v err=%v", sprint, err)
+	}
+}
+
 func TestMoveIssueToBacklogSingleDispatchAndState(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
