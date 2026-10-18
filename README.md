@@ -260,10 +260,12 @@ live Jira Cloud compatibility has not been verified.
 
 `boards --json` and `projects --json` expose their own list shapes.
 `move --json` without `--to` retains its transition array, and
-`log --json --show` retains its worklog array. `version --json` has its own
-`version`/`revision`/`dirty` schema.
+`log --json --show` retains its worklog array; both print `[]` when Jira returns
+no entries, never `null`. `version --json` has its own `version`/`revision`/`dirty`
+schema. `config` and `tui` are intentionally not JSON commands: `config` manages
+local settings for humans and `tui` is interactive.
 
-For `get`, `search`, `boards`, and `projects` with `--json`, and for `export`
+For `get`, `search`, `boards`, `projects`, `move`, `log --show`, and `version` with `--json`, and for `export`
 (which is always JSON), configuration failures report `configuration_error`,
 Jira read failures report `read_failed`, and result encoding/writer failures
 report `output_failed`. Export with no boards reports `validation_error`.

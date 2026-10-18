@@ -13,7 +13,7 @@ This is the unimplemented remainder of [issue #9](https://github.com/yepizrene-d
 
 ## Open work
 
-- [ ] I20-1: Complete the all-command JSON/error audit. Check remaining commands including `version`, write-result readback and stable stderr/exit handling; document intentional non-JSON `config`/`tui` behavior. Preserve the existing approved TicketJSON v1 and raw Board/Project array shapes. Test failures with local HTTP and failing writers.
+- [x] I20-1: Complete the all-command JSON/error audit. Check remaining commands including `version`, write-result readback and stable stderr/exit handling; document intentional non-JSON `config`/`tui` behavior. Preserve the existing approved TicketJSON v1 and raw Board/Project array shapes. Test failures with local HTTP and failing writers.
 - [ ] I20-2: Show verified Done-category child progress on board cards and available JSON, plus sprint name/state on `get` and cards. Distinguish unavailable fields from genuine zero; avoid N+1 reads and do not infer undocumented Jira field shapes as fact.
 - [ ] I20-3: Support remaining CLI/TUI sprint selection and movement, including TUI backlog movement beyond add-to-active. Preserve request scoping, partial/unknown write states, and safe refresh behavior; closed-sprint history must not be rewritten by a synthetic multi-write loop.
 - [ ] I20-4: Complete CLI/TUI lifecycle parity: close/reopen through transitions actually available on the selected issue and permanent delete with a clear, separate confirmation. Test only with local HTTP; no real-ticket deletion without a new explicit action authorization.
@@ -23,3 +23,7 @@ This is the unimplemented remainder of [issue #9](https://github.com/yepizrene-d
 ## Handoff evidence
 
 Issue #20 was created and read back as OPEN. Issue #9 was annotated with the scope handoff and remains OPEN; issue #19's design-only references now point comment implementation here and it remains OPEN. The last approved #9 work-unit boundary was `891b896c109d0c5956522b90b40daab7624b3eed` after I9-2e (`review-edd8a4d836ca311b`, approved and acknowledged). This document only transfers future scope; it makes no claim that I20-1 through I20-6 have been implemented or reviewed.
+
+## I20-1 evidence
+
+Audit found read-failure envelopes already correct for every JSON command. Three real gaps fixed with RED→GREEN tests in `cmd/json_audit_test.go`: `version --json` writer failure was mislabeled `validation_error` (now `output_failed`); `move --json` and `log --show --json` printed `null` instead of `[]` for empty responses. README documents the arrays, `version` failures and the deliberate non-JSON `config`/`tui`. Full `go vet` and `go test ./...` green. Commit identity recorded in a follow-up `docs(odd)` commit.

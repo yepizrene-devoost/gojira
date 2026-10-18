@@ -27,6 +27,9 @@ var moveCmd = &cobra.Command{
 		}
 		if targetStatus == "" {
 			if wantsJSON(cmd) {
+				if transitions == nil {
+					transitions = []jira.Transition{}
+				}
 				if err := writeJSON(cmd, transitions); err != nil {
 					return reportJSONError(cmd, "output_failed", "transition JSON could not be written", issueKey, jira.MutationNotApplied, err)
 				}
