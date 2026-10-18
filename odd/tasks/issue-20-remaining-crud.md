@@ -19,7 +19,7 @@ This is the unimplemented remainder of [issue #9](https://github.com/yepizrene-d
 - [x] I20-4: Complete CLI/TUI lifecycle parity: close/reopen through transitions actually available on the selected issue and permanent delete with a clear, separate confirmation. Test only with local HTTP; no real-ticket deletion without a new explicit action authorization.
 - [x] I20-5: Parse logged time/worklogs into TicketJSON, aggregate time on `get`, and complete TUI detail with readable dates, worklog/time summary, existing comments, and comment entry. Preserve ADF and detail navigation. Coordinate interaction design with #19 without treating that design issue as implementation authority.
 - [x] I20-7: Explicit, agent-readable permission/authentication errors across CLI JSON and human output (see "I20-7 Specs"). Added by user requirement L4/L5.
-- [ ] I20-6: Reconcile README, focused/full Go tests, local HTTP/TUI regression evidence, and the remaining CLI/TUI parity matrix before requesting delivery. Publishing, issue closure, tagging and release remain separate user decisions.
+- [x] I20-6: Reconcile README, focused/full Go tests, local HTTP/TUI regression evidence, and the remaining CLI/TUI parity matrix before requesting delivery. Publishing, issue closure, tagging and release remain separate user decisions.
 
 ## Handoff evidence
 
@@ -117,3 +117,7 @@ Implemented by `gentle-ai-worker` (CLI, then TUI) and re-verified by the parent:
 ## I20-5 evidence
 
 Implemented by `gentle-ai-worker` in three passes and re-verified by the parent: `go vet ./...`, `go test ./... -count=1`, `golangci-lint run ./...` green (0 issues); the worker's non-gofmt code in three previously clean files was formatted by the parent. `get --json` carries additive `timeLogged`, `worklogs`, `worklogsTotal`; `fields.timetracking` and the embedded worklog page/total shapes were NOT confirmed in the official Atlassian pages consulted, so they are optional and never inferred. Verified from the docs: worklog `comment` and comment `body` are ADF objects; the old `Worklog.Comment string` could not decode them, so `log --show` was likely broken against real Jira and is fixed (flattened string kept in output). TUI detail shows readable dates, time line, comments with an empty state and worklog summary; `m` opens comment entry (Ctrl+S submits, one POST, refresh-only retry after an applied write). No live Jira verification. Left uncommitted for user review.
+
+## I20-6 evidence
+
+README now has a CLI/TUI parity matrix, updated feature and project-structure lists. Claims were checked against the code: every CLI command except `config`/`tui` exposes `--json` (checked with `--help`), and the TUI has no assign action (only displays the assignee). `go vet`, `go test ./... -count=1` and `golangci-lint run ./...` run green on the final tree. Reviews: I20-1 `review-660fb6334152ed91`, I20-2/I20-7 `review-df91a17724b554d8`, I20-5 `review-cae5377db1cb9bd2`; I20-3 (`79e07fb`) and I20-4 (`5a68909`) were committed without native review. No live Jira verification of any command; deletion in particular is untested against a real instance. Publishing, PR, issue closure, tagging and release remain separate user decisions.

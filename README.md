@@ -37,7 +37,7 @@ do not trigger permission pre-checks or automatic 4xx retries.
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
-- **Ticket workflows** — view, search, transition, log work, create, and manage sprint membership in the TUI; the CLI also supports comments, assignment, and field updates
+- **Ticket workflows** — view, search, transition, close/reopen, delete, log work, comment, create, and manage sprint membership in both the CLI and the TUI; the CLI also supports assignment and field updates
 - **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated ticket output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines
 - **Credential storage** — API token in the OS keychain when available, with a YAML fallback that requests `0600` when the file is created
@@ -394,6 +394,31 @@ succeeds but sprint placement fails, the error includes the created key and
 stdout atomicity cannot be guaranteed in that case; the command still returns
 failure and never reports success.
 
+### CLI and TUI parity
+
+| Capability | CLI | TUI |
+|---|---|---|
+| Read ticket detail (dates, time, comments, worklogs) | `get` (`--json`) | `Enter` (detail modal) |
+| Search | `search` (`--json`) | `s` and `/` |
+| Create ticket (optionally in a sprint) | `create` | `n` |
+| Edit fields | `update` | `e` (description), `E` (other fields) |
+| Add comment | `comment` | `m` |
+| Log work / show worklog | `log` (`--show`) | `w` |
+| Transition by name | `move` | `t` |
+| Close / reopen by status category | `close`, `reopen` | `X` |
+| Delete permanently (typed confirmation) | `delete --confirm KEY` | `D` |
+| List sprints | `sprint list` | `S` chooser |
+| Move to sprint | `sprint move` | `S` |
+| Move to backlog | `backlog` | `b` |
+| Assign | `assign` | not available |
+| Child progress and sprint | `get --json` | board cards |
+
+Agent-oriented extras exist only in the CLI: `--json` on every command except
+`config` and `tui`, `export`, and the stable error envelope. Mutations never
+retry automatically; a failed write reports `not_applied`, `applied`, or
+`unknown`. None of the commands above has been verified against a live Jira, so
+validate on a disposable issue first; deletion is permanent.
+
 ## TUI keyboard shortcuts
 
 ### Boards list
@@ -514,7 +539,9 @@ gojira/
 │   ├── root.go                # Root command + credential resolution
 │   ├── tui.go                 # TUI launcher + first-run wizard
 │   ├── boards.go projects.go get.go search.go export.go
-│   ├── move.go log.go create.go comment.go assign.go update.go
+│   ├── move.go close.go delete.go sprint.go backlog.go
+│   ├── log.go create.go comment.go assign.go update.go
+│   ├── json.go                # Shared JSON/error envelope helpers
 │   └── config.go              # config init/set/get/path/test
 ├── internal/
 │   ├── jira/                  # Jira domain
