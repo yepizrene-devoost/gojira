@@ -28,7 +28,7 @@ func TestProjectsJSONList(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("method = %s, want GET", r.Method)
 				}
-				_, _ = fmt.Fprint(w, tc.response)
+				_, _ = fmt.Fprint(w, `{"isLast":true,"values":`+tc.response+`}`)
 			}))
 			defer srv.Close()
 			var stdout bytes.Buffer
@@ -53,7 +53,7 @@ func TestProjectsJSONList(t *testing.T) {
 
 func TestProjectsHumanOutputUnchanged(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `[{"key":"A","name":"Alpha"},{"key":"LONGKEY","name":"Second"}]`)
+		_, _ = fmt.Fprint(w, `{"isLast":true,"values":[{"key":"A","name":"Alpha"},{"key":"LONGKEY","name":"Second"}]}`)
 	}))
 	defer srv.Close()
 	var cobraOutput bytes.Buffer
@@ -90,7 +90,11 @@ func TestProjectsJSONFailure(t *testing.T) {
 				if tc.status != 0 {
 					w.WriteHeader(tc.status)
 				}
-				_, _ = fmt.Fprint(w, tc.response)
+				response := tc.response
+				if tc.writerError != nil {
+					response = `{"isLast":true,"values":` + response + `}`
+				}
+				_, _ = fmt.Fprint(w, response)
 			}))
 			defer srv.Close()
 			var stdout bytes.Buffer

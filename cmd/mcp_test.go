@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
@@ -43,7 +44,7 @@ func TestMCPStdioProcess(t *testing.T) {
 		}
 	}()
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil || len(tools.Tools) != 5 {
+	if err != nil || len(tools.Tools) != 6 {
 		t.Fatalf("stdio tools: %v %v", tools, err)
 	}
 	guide, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gojira://guide"})
@@ -53,6 +54,10 @@ func TestMCPStdioProcess(t *testing.T) {
 }
 
 func TestMCPReadOnlyProtocol(t *testing.T) {
+	oldLoad := contextConfig
+	contextConfig = func() (*config.Config, error) { return &config.Config{}, nil }
+	t.Cleanup(func() { contextConfig = oldLoad })
+	t.Setenv("GOJIRA_PROJECT", "MCP")
 	var requests atomic.Int64
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -61,8 +66,10 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/rest/api/3/project":
-			_, _ = w.Write([]byte(`[{"key":"DEMO","name":"Demo"}]`))
+		case "/rest/api/3/project/search":
+			_, _ = w.Write([]byte(`{"values":[{"key":"DEMO","name":"Demo"}],"isLast":true}`))
+		case "/rest/api/3/myself":
+			_, _ = w.Write([]byte(`{"accountId":"id","displayName":"Person","active":true,"emailAddress":"private@example.invalid"}`))
 		case "/rest/agile/1.0/board":
 			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
 		case "/rest/agile/1.0/board/1/sprint":
@@ -113,7 +120,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]map[string]any{"gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
+	expected := map[string]map[string]any{"gojira_context": {}, "gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
 	if len(list.Tools) != len(expected) {
 		t.Fatalf("tools: %v", list.Tools)
 	}
@@ -137,6 +144,12 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		if err := json.Unmarshal(b, &got); err != nil {
 			t.Fatal(err)
 		}
+		if tool.Name == "gojira_context" {
+			if got["schemaVersion"] != "v1" || got["needsProject"] != false || !reflect.DeepEqual(got["project"], map[string]any{"key": "MCP", "source": "env"}) || !reflect.DeepEqual(got["identity"], map[string]any{"accountId": "id", "displayName": "Person", "active": true}) {
+				t.Fatalf("context contract: %s", b)
+			}
+			continue
+		}
 		var wantData any = []any{}
 		switch tool.Name {
 		case "gojira_projects":
@@ -148,13 +161,14 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 			_ = json.Unmarshal(encoded, &wantData)
 		}
 		wantStatus := "unknown"
-		if tool.Name == "gojira_search" {
+		complete := tool.Name == "gojira_search" || tool.Name == "gojira_projects"
+		if complete {
 			wantStatus = "complete"
 		}
-		if got["completeness"] != wantStatus || (tool.Name != "gojira_search" && got["warning"] == "") {
+		if got["completeness"] != wantStatus || (!complete && got["warning"] == "") {
 			t.Fatalf("completeness status: %s", b)
 		}
-		if got["schemaVersion"] != "v1" || got["complete"] != (tool.Name == "gojira_search") || !reflect.DeepEqual(got["data"], wantData) {
+		if got["schemaVersion"] != "v1" || got["complete"] != complete || !reflect.DeepEqual(got["data"], wantData) {
 			t.Fatalf("%s output contract: %s; want data %#v", tool.Name, b, wantData)
 		}
 	}
@@ -173,6 +187,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		{"gojira_sprints", map[string]any{"boardId": -1}}, {"gojira_sprints", map[string]any{"boardId": "one"}},
 		{"gojira_search", map[string]any{"jql": " "}}, {"gojira_search", map[string]any{"jql": "x", "limit": 1001}},
 		{"gojira_projects", map[string]any{"key": "irrelevant"}},
+		{"gojira_context", map[string]any{"project": "MCP"}},
 		{"gojira_search", json.RawMessage(`{"jql":"x","limit":0}`)},
 		{"gojira_search", json.RawMessage(`{"jql":"x","limit":-0}`)},
 		{"gojira_search", json.RawMessage(`{"jql":"x","limit":null}`)},
