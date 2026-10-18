@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/yepizrene-devoost/gojira/internal/config"
+	"github.com/yepizrene-devoost/gojira/internal/projectctx"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -78,7 +78,7 @@ func newMCPServer(client *jira.Client, domain string) *mcp.Server {
 				case "gojira_context":
 					result, contextErr := readContext(client, "")
 					if contextErr != nil {
-						var invalid *config.ProjectValidationError
+						var invalid *projectctx.ProjectValidationError
 						if errors.As(contextErr, &invalid) {
 							return mcpValidation(invalid.Error())
 						}

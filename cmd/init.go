@@ -12,17 +12,23 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 	"github.com/yepizrene-devoost/gojira/internal/picker"
+	"github.com/yepizrene-devoost/gojira/internal/projectctx"
 )
 
 var isTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd()) }
 var pickProject = picker.Pick
 
+type projectReader interface {
+	GetProject(string) (*jira.Project, error)
+	GetProjects() ([]jira.Project, error)
+}
+
 type projectInitJSON struct {
-	SchemaVersion string                  `json:"schemaVersion"`
-	Project       string                  `json:"project"`
-	Written       string                  `json:"written"`
-	Effective     *config.ResolvedProject `json:"effective"`
-	Warning       string                  `json:"warning,omitempty"`
+	SchemaVersion string                      `json:"schemaVersion"`
+	Project       string                      `json:"project"`
+	Written       string                      `json:"written"`
+	Effective     *projectctx.ResolvedProject `json:"effective"`
+	Warning       string                      `json:"warning,omitempty"`
 }
 
 func newProjectInitCommand() *cobra.Command {
@@ -53,11 +59,12 @@ func runProjectInit(cmd *cobra.Command, _ []string) error {
 		return refuse("non-interactive init requires --project KEY --yes", nil)
 	}
 	if key != "" {
-		if _, err := config.ResolveProject(key, ""); err != nil {
+		if _, err := projectctx.ResolveProject(key, ""); err != nil {
 			return refuse(err.Error(), err)
 		}
 	}
-	client, _, err := buildClient()
+	concreteClient, _, err := buildClient()
+	var client projectReader = concreteClient
 	if err != nil {
 		return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", "", jira.MutationNotApplied, err)
 	}
@@ -78,7 +85,7 @@ func runProjectInit(cmd *cobra.Command, _ []string) error {
 			return picker.ErrCancelled
 		}
 	}
-	if _, err := config.ResolveProject(key, ""); err != nil {
+	if _, err := projectctx.ResolveProject(key, ""); err != nil {
 		return refuse(err.Error(), err)
 	}
 	if _, err := client.GetProject(key); err != nil {
@@ -91,11 +98,11 @@ func runProjectInit(cmd *cobra.Command, _ []string) error {
 	if cfg, err := config.Load(); err == nil {
 		userDefault = cfg.Project
 	}
-	effective, err := config.ResolveProject("", userDefault)
+	effective, err := projectctx.ResolveProject("", userDefault)
 	warning := ""
 	if err != nil {
 		warning = "local project was written, but effective project resolution failed: " + err.Error()
-	} else if effective == nil || effective.Key != key || effective.Source != config.ProjectSourceGit || effective.Scope != "local" {
+	} else if effective == nil || effective.Key != key || effective.Source != projectctx.ProjectSourceGit || effective.Scope != "local" {
 		warning = "local project was written, but no effective project could be resolved"
 		if effective != nil {
 			warning = fmt.Sprintf("local project %s was written, but effective project is %s (source: %s, scope: %s)", key, effective.Key, effective.Source, effective.Scope)

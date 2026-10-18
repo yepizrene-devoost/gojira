@@ -1,61 +1,10 @@
-package config
+package projectctx
 
 import (
-	"errors"
 	"os/exec"
 	"path/filepath"
 	"testing"
 )
-
-func TestResolveProject(t *testing.T) {
-	for _, tc := range []struct {
-		name, flag, env, git, user, key, source, scope string
-		invalid                                        bool
-	}{
-		{name: "flag", flag: "FLAG", env: "ENV", git: "local\tGIT", user: "USER", key: "FLAG", source: "flag"},
-		{name: "env", env: "ENV", git: "local\tGIT", user: "USER", key: "ENV", source: "env"},
-		{name: "git", git: "worktree\tGIT\n", user: "USER", key: "GIT", source: "git", scope: "worktree"},
-		{name: "user", user: "USER", key: "USER", source: "user"},
-		{name: "missing"},
-		{name: "empty git", git: "local\t\n", user: "USER", key: "USER", source: "user"},
-		{name: "invalid flag", flag: "bad", env: "ENV", invalid: true, source: "flag"},
-		{name: "invalid env", env: " bad ", user: "USER", invalid: true, source: "env"},
-		{name: "invalid git", git: "local\tbad", user: "USER", invalid: true, source: "git"},
-		{name: "invalid user", user: "bad", invalid: true, source: "user"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p, err := ResolveProjectWith(tc.flag, tc.user, func(string) string { return tc.env }, func() ([]byte, error) { return []byte(tc.git), nil })
-			if tc.invalid {
-				var invalid *ProjectValidationError
-				if !errors.As(err, &invalid) || string(invalid.Source) != tc.source {
-					t.Fatalf("error=%v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.key == "" {
-				if p != nil {
-					t.Fatalf("project=%+v", p)
-				}
-				return
-			}
-			if p == nil || p.Key != tc.key || string(p.Source) != tc.source || p.Scope != tc.scope {
-				t.Fatalf("project=%+v", p)
-			}
-		})
-	}
-}
-
-func TestResolveProjectGitUnavailable(t *testing.T) {
-	for _, err := range []error{exec.ErrNotFound, errors.New("exit status 1"), errors.New("not a repository")} {
-		p, e := ResolveProjectWith("", "USER", func(string) string { return "" }, func() ([]byte, error) { return nil, err })
-		if e != nil || p == nil || p.Key != "USER" {
-			t.Fatalf("project=%+v error=%v", p, e)
-		}
-	}
-}
 
 func TestResolveProjectRealGit(t *testing.T) {
 	git, err := exec.LookPath("git")
@@ -86,11 +35,11 @@ func TestResolveProjectRealGit(t *testing.T) {
 	run(repo, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "test")
 	check := func(dir, key, scope string) {
 		t.Helper()
-		p, e := ResolveProjectWith("", "", func(string) string { return "" }, func() ([]byte, error) {
+		p, e := ResolveProjectWith("", "", func(string) string { return "" }, gitFunc(func() ([]byte, error) {
 			c := exec.Command(git, "config", "--show-scope", "--get", "gojira.project")
 			c.Dir = dir
 			return c.Output()
-		})
+		}))
 		if e != nil || p == nil || p.Key != key || p.Scope != scope {
 			t.Fatalf("project=%+v error=%v", p, e)
 		}

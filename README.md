@@ -649,6 +649,8 @@ gojira/
 │   ├── boards.go projects.go get.go search.go export.go
 │   ├── move.go close.go delete.go sprint.go backlog.go
 │   ├── log.go create.go comment.go assign.go update.go
+│   ├── context.go init.go     # Project context: resolve, show, store
+│   ├── mcp.go                 # Read-only MCP server (stdio)
 │   ├── json.go                # Shared JSON/error envelope helpers
 │   └── config.go              # config init/set/get/path/test
 ├── internal/
@@ -662,12 +664,15 @@ gojira/
 │   │   ├── client_worklog.go  # Worklogs and comments
 │   │   ├── paths.go           # ALL API endpoints — single source of truth
 │   │   └── types.go           # Types + ADF parser + curated TicketJSON
+│   ├── projectctx/            # Project resolution policy and context use case
+│   │   ├── projectctx.go      # flag > env > git > user default; ReadContext
 │   │   └── git.go             # Git adapter behind the GitSource interface
+│   ├── picker/                # Standalone terminal project selector
 │   ├── tui/                   # Bubble Tea TUI (single model, no sub-model routing)
 │   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog, create, sprint
 │   │   ├── setup.go           # First-run configuration wizard
 │   │   └── tui_test.go        # Render geometry tests
-│   └── config/                # XDG config + keychain token storage
+│   └── config/                # XDG config + keychain token storage only
 │       └── config.go
 ├── scripts/                   # Linux/macOS and Windows release installers
 ├── tests/                     # Installer contracts and Go test support

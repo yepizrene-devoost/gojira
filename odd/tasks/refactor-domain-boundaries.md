@@ -13,7 +13,7 @@ Behavior-preserving refactor of the code added for #23, answering a SOLID audit.
 
 ## Tasks
 
-- [ ] R1 (S1, S4): `internal/projectctx` and call-site migration (second of three commits).
+- [x] R1 (S1, S4): `internal/projectctx` (policy, types, `ReadContext`, `GitSource` interface with a command adapter); `internal/config` keeps only persisted config and no longer imports `os/exec`; `cmd/context.go` and `cmd/init.go` are thin adapters, `init` reads the project through a consumer-side interface. Resolver tests moved with the code, assertions unchanged.
 - [x] R3 (S3): `internal/jira/client.go` 916 -> 228 lines plus six domain files. Pure move: the 120 top-level declarations are identical (exact diff, verbatim text) and `go doc -all ./internal/jira` is identical.
 - [ ] R2 (S2, S4): `internal/mcpserver` tool table, with the characterization tests first (third of three commits).
 - [ ] D (S5): differential and full verification, independent check, README structure and the user's review (closed in the third commit).
@@ -27,4 +27,4 @@ Risk: item 3 (the MCP tool surface and the exported client API are contracts oth
 - L3: Baseline captured before any change, from a temporary Git repository with `gojira.project = ARA` (not the user's repositories): a build of develop at `/tmp/gojira-base2`, `go doc -all` of `internal/jira` and `internal/config`, an MCP stdio smoke (initialize instructions, `tools/list`, guide resource and eight tool calls, as hashes) that is deterministic across two runs, and the CLI output of `projects`, `projects --json` and `context --json`.
 - L4: Both first-round workers stopped asking for write access outside their allowed edit surfaces (scratch files and a verification directory). Decision: workers write only inside their surfaces; the parent prepares the baselines beforehand and runs every differential itself, and workers compare read-only (stdout diffs).
 - L5: The parent's first exact declaration diff failed because the extractor keyed receivers with file positions (a defect of the parent's tool, not of the move). Fixed (keys by receiver name) and the baseline was retaken from `git archive HEAD`, not from the live tree.
-- L6: First of three commits (the user chose three stage, freeze and commit cycles): the Jira client split by domain (R3), a pure move.
+- L6: Second of three commits: `internal/projectctx` and the migration of its call sites (R1). The MCP adapter is rewritten in the third commit.
