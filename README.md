@@ -37,6 +37,9 @@ do not trigger permission pre-checks or automatic 4xx retries.
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
+  The TUI Backlog column uses Jira's backlog endpoint plus future-sprint issues.
+  Jira documents this endpoint as deprecated; if it fails, the app falls back to
+  computing the column from all board issues.
 - **Ticket workflows** — view, search, transition, close/reopen, delete, log work, comment, create, and manage sprint membership in both the CLI and the TUI; the CLI also supports assignment and field updates
 - **Sprint-aware** — create tickets straight into the active sprint, or pull backlog tickets into it (`n` / `a`)
 - **Agent-ready JSON** — curated ticket output (ADF flattened to text, RFC3339 dates, browse URLs, `statusCategory`) for AI agents and `jq` pipelines

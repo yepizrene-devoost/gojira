@@ -37,6 +37,7 @@ const (
 	pathBoardList    = "/rest/agile/1.0/board?maxResults=50"
 	pathBoardConfig  = "/rest/agile/1.0/board/%d/configuration"
 	pathSprintList   = "/rest/agile/1.0/board/%d/sprint"
+	pathBoardBacklog = "/rest/agile/1.0/board/%d/backlog"
 	pathBoardIssues  = "/rest/agile/1.0/board/%d/issue"
 	pathSprintIssues = "/rest/agile/1.0/board/%d/sprint/%d/issue"
 	pathSprintAdd    = "/rest/agile/1.0/sprint/%d/issue"

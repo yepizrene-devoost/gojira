@@ -296,16 +296,24 @@ func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 // request is capped by the API at maxResults, which silently truncates
 // large sprints.
 func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
+	path := fmt.Sprintf(pathBoardIssues, boardID)
+	if sprintID > 0 {
+		path = fmt.Sprintf(pathSprintIssues, boardID, sprintID)
+	}
+	return c.getAgileIssues(path)
+}
+
+// GetBoardBacklog returns ranked backlog issues from Jira's deprecated endpoint.
+func (c *Client) GetBoardBacklog(boardID int) ([]Issue, error) {
+	return c.getAgileIssues(fmt.Sprintf(pathBoardBacklog, boardID))
+}
+
+func (c *Client) getAgileIssues(endpoint string) ([]Issue, error) {
 	const page = 100
 	const maxIssues = 2000 // safety cap against servers that ignore startAt
 	var all []Issue
 	for startAt := 0; startAt < maxIssues; {
-		var path string
-		if sprintID > 0 {
-			path = fmt.Sprintf(pathSprintIssues+"?maxResults=%d&startAt=%d&fields=%s", boardID, sprintID, page, startAt, fieldsBasic)
-		} else {
-			path = fmt.Sprintf(pathBoardIssues+"?maxResults=%d&startAt=%d&fields=%s", boardID, page, startAt, fieldsBasic)
-		}
+		path := fmt.Sprintf("%s?maxResults=%d&startAt=%d&fields=%s", endpoint, page, startAt, fieldsBasic)
 		b, err := c.get(path)
 		if err != nil {
 			return nil, err
