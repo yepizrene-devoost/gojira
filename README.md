@@ -153,6 +153,8 @@ setup wizard, or connect to Jira.
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
+| `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
@@ -182,6 +184,10 @@ gojira create --project ARA --parent ARA-1892 --summary "Verify export" --json
 
 # Create a ticket straight into the active sprint (skip the backlog)
 gojira create --project ARA --type Task --summary "Sprint work" --board 1
+
+# List candidate sprints, then move exactly one issue
+gojira sprint list --board 1 --state active,future --json
+gojira sprint move ARA-1892 --to 42 --json
 
 # Move an issue from future and active sprints to the backlog
 gojira backlog ARA-1892 --json
@@ -218,6 +224,13 @@ and active sprint membership; preservation of closed sprint history has not
 been independently proven. A 204 response confirms the request succeeded, not
 independently verified backlog membership. No live Jira verification has been
 performed.
+
+Sprint movement sends exactly one write, never a synthetic multi-write loop to
+rewrite closed-sprint history. Board and sprint IDs must be positive integers.
+Human output confirms Jira accepted the request, not independently verified
+membership. Failed or ambiguous writes are never automatically retried; HTTP 500
+and transport drops retain mutation state `unknown`. No live Jira verification
+was performed for sprint selection or movement (local HTTP simulations only).
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
 The curated `TicketJSON` schema is used by `get --json`, `search --json`,
@@ -367,6 +380,8 @@ failure and never reports success.
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
+| `b` | From a selected card or ticket detail, move to backlog with one request |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |

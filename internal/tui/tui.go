@@ -50,6 +50,8 @@ var kanbanHelp = []helpEntry{
 	{keys: "t", action: "Transition ticket"},
 	{keys: "n", action: "Create issue"},
 	{keys: "a", action: "Add ticket to active sprint"},
+	{keys: "S", action: "Choose a future/active sprint"},
+	{keys: "b", action: "Move ticket to backlog"},
 	{keys: "C", action: "Copy column as JSON"},
 	{keys: "Esc or q", action: "Back to boards"},
 	{keys: "Ctrl+C", action: "Quit"},
@@ -127,6 +129,7 @@ const (
 	viewSearch
 	viewDescriptionEdit
 	viewFieldsEdit
+	viewSprintChoose
 )
 
 type column struct {
@@ -137,6 +140,15 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
+	sprintChoices []jira.Sprint
+	sprintChoiceCur int
+	sprintMoveKey string
+	sprintMoveReturn view
+	sprintMoveRequest uint64
+	sprintMoveBoard uint64
+	sprintMoveSearch uint64
+	sprintMoveLoading bool
+	sprintMoveSubmitting bool
 	client                        *jira.Client
 	domain                        string
 	view                          view
@@ -351,6 +363,9 @@ func (m Model) loadBoards() tea.Msg {
 }
 
 func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
+	m.sprintMoveRequest++
+	m.sprintMoveSubmitting = false
+	m.sprintMoveLoading = false
 	preserveTransitionSubmit := m.transitionSubmitting && m.transitionSubmitBoardID == board.ID
 	preserveTransitionError := m.transitionResultErrBoardID == board.ID
 
@@ -802,6 +817,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(4*time.Second))
 
+	case sprintChoiceMsg:
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveLoading { return m, nil }
+		m.sprintMoveLoading = false
+		if msg.err != nil { m.err = sprintMovementError(&jira.MutationError{State:jira.MutationNotApplied, Err:msg.err}); return m, nil }
+		m.sprintChoices = msg.sprints
+		return m, nil
+
+	case sprintMovementMsg:
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveSubmitting { return m, nil }
+		m.sprintMoveSubmitting = false
+		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		m.view = viewKanban
+		m.toast = "Jira accepted the request for " + m.sprintMoveKey
+		m.focusIssue = m.sprintMoveKey
+		loaded, refresh := m.startBoardLoad(m.boards[m.boardCur])
+		return loaded, refresh
+
 	case sprintDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -815,6 +847,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewSprintChoose:
+			return m.updateSprintChoose(msg)
 		case viewBoards:
 			return m.updateBoards(msg)
 		case viewKanban:
@@ -1097,6 +1131,10 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "S", "b":
+		if m.colCur >= 0 && m.colCur < len(cols) && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
+			return m.startSprintMovement(cols[m.colCur].issues[m.rowCur].Key, msg.String() == "b")
+		}
 	case "n":
 		return m.enterCreate()
 	case "a":
@@ -1122,8 +1160,83 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+type sprintChoiceMsg struct {
+	request, board, search uint64
+	sprints []jira.Sprint
+	err error
+}
+
+type sprintMovementMsg struct {
+	request, board, search uint64
+	err error
+}
+
+func sprintMovementError(err error) error {
+	code, _ := jira.ClassifyAPIError(err)
+	if code == "" { code = "request_failed" }
+	return fmt.Errorf("%s (mutation state: %s): %w", code, jira.MutationStateOf(err), err)
+}
+
+func (m Model) matchSprintMove(request, board, search uint64) bool {
+	return request == m.sprintMoveRequest && board == m.loadedBoardRequest && search == m.activeSearchRequest &&
+		m.view != viewBoards && m.activeBoardRequest == 0
+}
+
+func (m Model) startSprintMovement(key string, backlog bool) (tea.Model, tea.Cmd) {
+	if (m.sprintMoveSubmitting && m.sprintMoveBoard == m.loadedBoardRequest && m.sprintMoveSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	m.sprintMoveRequest++
+	m.sprintMoveKey = key
+	m.sprintMoveBoard, m.sprintMoveSearch = m.loadedBoardRequest, m.activeSearchRequest
+	m.sprintMoveReturn = m.view
+	m.err = nil
+	if backlog { return m.submitSprintMovement(0) }
+	m.view = viewSprintChoose
+	m.sprintChoiceCur = 0
+	m.sprintChoices = nil
+	m.sprintMoveLoading = true
+	client, boardID := m.client, m.boards[m.boardCur].ID
+	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
+	return m, func() tea.Msg {
+		sprints, err := client.GetSprintsByState(boardID, "active,future")
+		return sprintChoiceMsg{request:request, board:board, search:search, sprints:sprints, err:err}
+	}
+}
+
+func (m Model) submitSprintMovement(id int) (tea.Model, tea.Cmd) {
+	m.sprintMoveSubmitting = true
+	client, key := m.client, m.sprintMoveKey
+	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
+	return m, func() tea.Msg {
+		var err error
+		if id == 0 { err = client.MoveIssueToBacklog(key) } else { err = client.AddIssuesToSprint(id, []string{key}) }
+		return sprintMovementMsg{request:request, board:board, search:search, err:err}
+	}
+}
+
+func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c": return m, tea.Quit
+	case "esc", "q":
+		m.sprintMoveRequest++
+		m.sprintMoveSubmitting = false
+		m.sprintMoveLoading = false
+		m.view = m.sprintMoveReturn
+	case "down", "j":
+		m.sprintChoiceCur = min(m.sprintChoiceCur+1, max(0,len(m.sprintChoices)-1))
+	case "up", "k":
+		m.sprintChoiceCur = max(m.sprintChoiceCur-1,0)
+	case "enter":
+		if !m.sprintMoveLoading && !m.sprintMoveSubmitting && m.sprintChoiceCur < len(m.sprintChoices) && m.err == nil {
+			return m.submitSprintMovement(m.sprintChoices[m.sprintChoiceCur].ID)
+		}
+	}
+	return m, nil
+}
+
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "S", "b":
+		if m.detail != nil && !m.detailLoading { return m.startSprintMovement(m.detail.Key, msg.String() == "b") }
 	case "down", "j":
 		m = m.scrollDetail(1)
 	case "up", "k":
@@ -2000,6 +2113,19 @@ func (m Model) View() tea.View {
 			background = m.renderSearch()
 		}
 		b.WriteString(m.composeOverlay(background, m.renderDetail()))
+
+	case viewSprintChoose:
+		b.WriteString(titleStyle.Render("Choose sprint: " + m.sprintMoveKey))
+		b.WriteString("\n\n")
+		if m.sprintMoveLoading { b.WriteString("Loading sprints...\n") }
+		if !m.sprintMoveLoading && len(m.sprintChoices) == 0 { b.WriteString("No future or active sprints\n") }
+		for i, sprint := range m.sprintChoices {
+			prefix := "  "
+			if i == m.sprintChoiceCur { prefix = "→ " }
+			fmt.Fprintf(&b, "%s%s (%s)\n", prefix, sprint.Name, sprint.State)
+		}
+		if m.sprintMoveSubmitting { b.WriteString("Submitting once; awaiting Jira...\n") }
+		b.WriteString("[↑↓] Select  [Enter] Move  [Esc] Cancel")
 
 	case viewTransition:
 		b.WriteString(titleStyle.Render("🔄 Transition: " + m.transIssue))

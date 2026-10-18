@@ -15,7 +15,7 @@ This is the unimplemented remainder of [issue #9](https://github.com/yepizrene-d
 
 - [x] I20-1: Complete the all-command JSON/error audit. Check remaining commands including `version`, write-result readback and stable stderr/exit handling; document intentional non-JSON `config`/`tui` behavior. Preserve the existing approved TicketJSON v1 and raw Board/Project array shapes. Test failures with local HTTP and failing writers.
 - [x] I20-2: Show verified Done-category child progress on board cards and available JSON, plus sprint name/state on `get` and cards. Distinguish unavailable fields from genuine zero; avoid N+1 reads and do not infer undocumented Jira field shapes as fact.
-- [ ] I20-3: Support remaining CLI/TUI sprint selection and movement, including TUI backlog movement beyond add-to-active. Preserve request scoping, partial/unknown write states, and safe refresh behavior; closed-sprint history must not be rewritten by a synthetic multi-write loop.
+- [x] I20-3: Support remaining CLI/TUI sprint selection and movement, including TUI backlog movement beyond add-to-active. Preserve request scoping, partial/unknown write states, and safe refresh behavior; closed-sprint history must not be rewritten by a synthetic multi-write loop.
 - [ ] I20-4: Complete CLI/TUI lifecycle parity: close/reopen through transitions actually available on the selected issue and permanent delete with a clear, separate confirmation. Test only with local HTTP; no real-ticket deletion without a new explicit action authorization.
 - [ ] I20-5: Parse logged time/worklogs into TicketJSON, aggregate time on `get`, and complete TUI detail with readable dates, worklog/time summary, existing comments, and comment entry. Preserve ADF and detail navigation. Coordinate interaction design with #19 without treating that design issue as implementation authority.
 - [x] I20-7: Explicit, agent-readable permission/authentication errors across CLI JSON and human output (see "I20-7 Specs"). Added by user requirement L4/L5.
@@ -60,3 +60,22 @@ Audit found read-failure envelopes already correct for every JSON command. Three
 ## I20-2 / I20-7 evidence
 
 I20-2 (S1-S6) and I20-7 (S1-S7) were implemented by `gentle-ai-worker` and re-verified by the parent: `go vet ./...`, `go test ./...` and `golangci-lint run ./...` are green (0 issues). TUI gofmt-only noise from the worker was reverted so the diff keeps only behavior. The permission matrix (`cmd/permission_errors_test.go`) covers 13 commands with 401/403/404/500; `get` keeps working and reports `warnings` when the Agile sprint read is denied. All work is local and uncommitted at freeze time: a commit needs the user's explicit instruction (`AGENTS.md`, "Review Before Commit"). The review stage records only the freeze act and the declared expectation; verdict and approval live in the native receipt and Engram. No live Jira verification was performed.
+
+## I20-3 Specs
+
+- S1: New `gojira sprint` command group. `sprint list --board N [--state active,future,closed]` prints sprints (id, name, state) using the existing `GetSprints`-style Agile read, default states `active,future`; `--json` prints an array (`[]` when empty, never `null`) of `{id,name,state}`. `board` is required and validated as a positive integer.
+- S2: `sprint move KEY --to ID` moves ONE issue into sprint ID with one `POST /rest/agile/1.0/sprint/{id}/issue` (reuse `AddIssuesToSprint`). Validate KEY with the existing key pattern and ID as a positive integer before any request. It never loops over several writes and never touches closed-sprint history. Human output states that Jira accepted the request; `--json` re-fetches the issue through `writeMutationResult`.
+- S3: Errors use the existing `commandError`/envelope machinery: `validation_error`, `configuration_error`, `read_failed` (list), `mutation_failed` with `jira.MutationStateOf`, plus I20-7 classification (401/403/404 codes, `httpStatus`, `hint`). Nothing new in stdout on failure.
+- S4: Endpoints only via `internal/jira/paths.go`. `backlog KEY` is unchanged.
+- S5: TUI (single model, no sub-model routing): from ticket detail or the selected card, key `b` moves the issue to the backlog using `MoveIssueToBacklog`, and key `S` opens a sprint chooser listing future/active sprints of the loaded board; Enter moves the issue with `AddIssuesToSprint`. Use the existing request-id scoping pattern so a stale response after switching board/search is ignored; on success refresh the board; on error show the classified message and the applied/unknown state without auto-retry. Check existing key bindings in `internal/tui/tui.go` for conflicts and add the new keys to the help table.
+- S6: README: commands table, examples, TUI key table, and the statement that closed-sprint history is not rewritten and no live Jira verification was done.
+- S7: Tests (RED first, httptest only): sprint list (states filter, empty `[]`, 403 classified), sprint move (exactly one POST to the right path with `{"issues":[KEY]}`, invalid key/ID make zero requests, 500 gives `mutation_failed` not_applied, transport drop gives `unknown`, 403 classified), TUI (key opens chooser, Enter issues one POST, backlog key issues one POST, stale response ignored). `go vet`, `go test ./...`, `golangci-lint run ./...` green.
+
+## I20-3 Log
+
+- L6: User: "haz commit y continua" (commits da99e9b and 2b8bdeb made; reviewed tree ec214cd unchanged).
+- L7: User chose design "Comando `sprint`": `sprint list --board N` and `sprint move KEY --to ID`, one POST per move, TUI backlog key and sprint chooser.
+
+## I20-3 evidence
+
+Implemented by `gentle-ai-worker`, re-verified by the parent: `go vet ./...`, `go test ./...`, `golangci-lint run ./...` green (0 issues). `gojira sprint list/move` (CLI, one POST per move, `[]` when empty), TUI `S` chooser and `b` backlog with request-scoped results. Spec correction: HTTP 500 on a write stays `unknown` (the original S7 line saying `not_applied` was wrong; ambiguous writes are never assumed unapplied). No live Jira verification. Left uncommitted for user review.

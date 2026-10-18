@@ -18,6 +18,78 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestSprintMovementFailures(t *testing.T) {
+	for _, status := range []int{403,500} {
+		t.Run(fmt.Sprint(status),func(t *testing.T) {
+			writes:=0
+			srv:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) { writes++; w.WriteHeader(status) }))
+			defer srv.Close()
+			m:=Model{client:jira.NewClient(srv.URL,"email","token"),view:viewDetail,boards:[]jira.Board{{ID:1}},loadedBoardRequest:7,detail:&jira.Issue{Key:"A-1"}}
+			m,cmd:=updateModel(t,m,tea.KeyPressMsg{Code:'b',Text:"b"})
+			result:=cmd()
+			stale:=m
+			stale.activeSearchRequest++
+			stale,next:=updateModel(t,stale,result)
+			if next!=nil || stale.err!=nil {t.Fatal("search-stale result applied")}
+			m,next=updateModel(t,m,result)
+			state:="unknown"; code:="request_failed"
+			if status==403 {state="not_applied"; code="permission_denied"}
+			if next!=nil || m.err==nil || !strings.Contains(m.err.Error(),state) || !strings.Contains(m.err.Error(),code) || writes!=1 {t.Fatalf("err=%v writes=%d",m.err,writes)}
+		})
+	}
+}
+
+func TestSprintMovement(t *testing.T) {
+	for _, key := range []string{"S", "b"} {
+		for _, detail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/detail=%v", key, detail), func(t *testing.T) {
+				writes := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == "GET" {
+						if r.URL.Path != "/rest/agile/1.0/board/1/sprint" || r.URL.Query().Get("state") != "active,future" { t.Errorf("URL %s", r.URL) }
+						_, _ = fmt.Fprint(w, `{"values":[{"id":3,"name":"Next","state":"future"}]}`)
+						return
+					}
+					writes++
+					path := "/rest/agile/1.0/backlog/issue"
+					if key == "S" { path = "/rest/agile/1.0/sprint/3/issue" }
+					body, _ := io.ReadAll(r.Body)
+					if r.Method != "POST" || r.URL.Path != path || string(body) != `{"issues":["A-1"]}` { t.Errorf("request %s %s %s", r.Method, r.URL.Path, body) }
+					w.WriteHeader(204)
+				}))
+				defer srv.Close()
+				m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewKanban, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, columns:[]column{{name:"Todo",issues:[]jira.Issue{{Key:"A-1"}}}}}
+				if detail { m.view=viewDetail; m.detail=&jira.Issue{Key:"A-1"} }
+				m, cmd := updateModel(t,m,tea.KeyPressMsg{Code:rune(key[0]),Text:key})
+				if cmd == nil { t.Fatal("no movement command") }
+				if key == "S" {
+					if m.view != viewSprintChoose { t.Fatal("chooser not opened") }
+					choices := cmd()
+					staleChoices := m
+					staleChoices.loadedBoardRequest++
+					staleChoices,_ = updateModel(t,staleChoices,choices)
+					if len(staleChoices.sprintChoices) != 0 { t.Fatal("stale choices applied") }
+					m,_ = updateModel(t,m,choices)
+					if !strings.Contains(m.View().Content,"Next") { t.Fatal("missing sprint") }
+					m,cmd = updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEnter})
+				}
+				if key == "S" {
+					_, duplicate := updateModel(t,m,tea.KeyPressMsg{Code:tea.KeyEnter})
+					if duplicate != nil { t.Fatal("duplicate submit") }
+				}
+				result := cmd()
+				if writes != 1 { t.Fatalf("writes=%d",writes) }
+				stale := m
+				stale.loadedBoardRequest++
+				stale,refresh := updateModel(t,stale,result)
+				if refresh != nil || stale.toast != m.toast { t.Fatal("stale result applied") }
+				m,refresh = updateModel(t,m,result)
+				if refresh == nil || !strings.Contains(m.toast,"accepted") { t.Fatal("missing refresh/acceptance") }
+			})
+		}
+	}
+}
+
 func TestCardProgressAndOwnSprint(t *testing.T) {
 	var issue jira.Issue
 	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"sprint":{"id":7,"name":"Other Sprint","state":"future"},"subtasks":[{"key":"A-2","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-3","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-4","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-5","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-6","fields":{"status":{"statusCategory":{"key":"indeterminate"}}}}]}}`), &issue); err != nil {

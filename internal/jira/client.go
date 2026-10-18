@@ -253,6 +253,22 @@ func (c *Client) GetBoardConfig(id int) (BoardConfig, error) {
 	return cfg, nil
 }
 
+// GetSprintsByState lists the requested states without the legacy active fallback.
+func (c *Client) GetSprintsByState(boardID int, states string) ([]Sprint, error) {
+	b, err := c.get(fmt.Sprintf(pathSprintList, boardID) + "?state=" + url.QueryEscape(states) + "&maxResults=50")
+	if err != nil {
+		return nil, err
+	}
+	var r struct{ Values []Sprint }
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	if r.Values == nil {
+		r.Values = []Sprint{}
+	}
+	return r.Values, nil
+}
+
 func (c *Client) GetSprints(boardID int) ([]Sprint, error) {
 	b, err := c.get(fmt.Sprintf(pathSprintList+"?state=active&maxResults=50", boardID))
 	if err != nil {
