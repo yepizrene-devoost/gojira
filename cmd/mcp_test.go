@@ -66,7 +66,7 @@ func TestMCPSurfaceGolden(t *testing.T) {
 	}
 	for name, data := range map[string][]byte{"mcp_surface.golden.json": append(surface, '\n'), "mcp_guide.golden.txt": []byte(guide.Contents[0].Text)} {
 		path := filepath.Join("testdata", name)
-		if *updateMCPSurface {
+		if *updateMCPSurface && name == "mcp_surface.golden.json" {
 			if err := os.WriteFile(path, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -105,7 +105,7 @@ func TestMCPStdioProcess(t *testing.T) {
 		}
 	}()
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil || len(tools.Tools) != 6 {
+	if err != nil || len(tools.Tools) != 8 {
 		t.Fatalf("stdio tools: %v %v", tools, err)
 	}
 	guide, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gojira://guide"})
@@ -143,6 +143,8 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 			} else {
 				_, _ = w.Write([]byte(`{"issues":[],"isLast":true}`))
 			}
+		case "/rest/api/3/user/search":
+			_, _ = w.Write([]byte(`[]`))
 		case "/rest/api/3/search/approximate-count":
 			_, _ = w.Write([]byte(`{"count":2}`))
 		case "/rest/api/3/issue/AUTH":
@@ -182,6 +184,8 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := map[string]map[string]any{"gojira_context": {}, "gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
+	expected["gojira_users_search"] = map[string]any{"query": "Person"}
+	expected["gojira_report_time"] = map[string]any{"accountId": "id", "project": "DEMO", "from": "2025-01-01", "to": "2025-01-01", "timezone": "UTC"}
 	if len(list.Tools) != len(expected) {
 		t.Fatalf("tools: %v", list.Tools)
 	}
@@ -208,6 +212,15 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		if tool.Name == "gojira_context" {
 			if got["schemaVersion"] != "v1" || got["needsProject"] != false || !reflect.DeepEqual(got["project"], map[string]any{"key": "MCP", "source": "env"}) || !reflect.DeepEqual(got["identity"], map[string]any{"accountId": "id", "displayName": "Person", "active": true}) {
 				t.Fatalf("context contract: %s", b)
+			}
+			continue
+		}
+		if tool.Name == "gojira_users_search" || tool.Name == "gojira_report_time" {
+			if got["schemaVersion"] != "v1" || len(got["warnings"].([]any)) == 0 {
+				t.Fatalf("reporting contract: %s", b)
+			}
+			if tool.Name == "gojira_report_time" && (got["complete"] != true || got["totalSeconds"] != float64(0)) {
+				t.Fatalf("report: %s", b)
 			}
 			continue
 		}
