@@ -478,6 +478,12 @@ func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
 	return r.Transitions, nil
 }
 
+// DeleteIssue permanently deletes an issue without cascading to subtasks.
+func (c *Client) DeleteIssue(issueKey string) error {
+	_, err := c.mutate(http.MethodDelete, issuePath(pathIssue, issueKey), nil)
+	return err
+}
+
 func (c *Client) TransitionIssue(issueKey, transitionID string) error {
 	payload, _ := json.Marshal(map[string]map[string]string{
 		"transition": {"id": transitionID},

@@ -294,8 +294,9 @@ type Project struct {
 // ─── Transitions / Worklog ─────────────────────────────────────────────
 
 type Transition struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID   string       `json:"id"`
+	Name string       `json:"name"`
+	To   *StatusField `json:"to,omitempty"`
 }
 
 type Worklog struct {

@@ -18,6 +18,89 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestLifecycleTransitions(t *testing.T) {
+	for _, tc := range []struct{name, current, transitions string; posts int}{
+		{"close", "new", `[{"id":"9","name":"Finish","to":{"name":"Closed","statusCategory":{"key":"done"}}}]`, 1},
+		{"reopen", "done", `[{"id":"9","name":"Resume","to":{"name":"Working","statusCategory":{"key":"indeterminate"}}}]`, 1},
+		{"missing destination", "new", `[{"id":"9","name":"Done"}]`, 0},
+		{"ambiguous", "new", `[{"id":"9","to":{"statusCategory":{"key":"done"}}},{"id":"10","to":{"statusCategory":{"key":"done"}}}]`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			posts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet { _, _ = fmt.Fprintf(w, `{"transitions":%s}`, tc.transitions); return }
+				posts++
+				var body struct{ Transition struct{ ID string `json:"id"` } `json:"transition"` }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Transition.ID != "9" { t.Errorf("wrong transition: %+v, %v", body, err) }
+				w.WriteHeader(204)
+			}))
+			defer srv.Close()
+			var issue jira.Issue
+			if err := json.Unmarshal([]byte(fmt.Sprintf(`{"key":"A-1","fields":{"status":{"statusCategory":{"key":%q}}}}`, tc.current)), &issue); err != nil { t.Fatal(err) }
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewKanban, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, columns:[]column{{issues:[]jira.Issue{issue}}}}
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:'X', Text:"X"})
+			if cmd == nil { t.Fatal("X did not start lifecycle") }
+			m = updated.(Model)
+			result := cmd()
+			updated, _ = m.Update(result)
+			if posts != tc.posts { t.Fatalf("posts=%d want %d", posts, tc.posts) }
+			if tc.posts == 0 && (updated.(Model).err == nil || !strings.Contains(updated.(Model).err.Error(), "not_applied")) { t.Fatal("missing no-write error") }
+		})
+	}
+}
+
+func TestLifecycleDeleteFailures(t *testing.T) {
+	for _, status := range []int{400, 403, 500, 0} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			writes := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writes++
+				if status == 0 { conn, _, err := w.(http.Hijacker).Hijack(); if err != nil { t.Error(err); return }; _ = conn.Close(); return }
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, detail:&jira.Issue{Key:"A-1"}}
+			updated, _ := m.Update(tea.KeyPressMsg{Code:'D', Text:"D"}); m = updated.(Model)
+			m.deleteInput.SetValue("a-1")
+			if _, cmd := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); cmd != nil { t.Fatal("mismatched key submitted") }
+			m.deleteInput.SetValue("A-1")
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); m = updated.(Model)
+			updated, _ = m.Update(cmd()); m = updated.(Model)
+			state := "not_applied"; if status == 0 || status == 500 { state = "unknown" }
+			if writes != 1 || m.err == nil || !strings.Contains(m.err.Error(), state) { t.Fatalf("writes=%d error=%v", writes, m.err) }
+			if status == 403 && !strings.Contains(m.err.Error(), "permission_denied") { t.Fatal(m.err) }
+			if _, retry := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter}); retry != nil { t.Fatal("automatic retry allowed") }
+		})
+	}
+}
+
+func TestLifecycleDeleteConfirmation(t *testing.T) {
+	writes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/rest/api/3/issue/A-1" { t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path) }
+		writes++
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, boards:[]jira.Board{{ID:1}}, loadedBoardRequest:7, detail:&jira.Issue{Key:"A-1"}}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code:'D', Text:"D"})
+	m = updated.(Model)
+	if cmd != nil || m.view == viewDetail { t.Fatal("D must open confirmation without writing") }
+	updated, cmd = m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil { t.Fatal("empty confirmation submitted") }
+	for _, r := range "A-1" { updated, _ = m.Update(tea.KeyPressMsg{Code:r, Text:string(r)}); m = updated.(Model) }
+	updated, cmd = m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil { t.Fatal("exact confirmation did not submit") }
+	result := cmd()
+	_, duplicate := m.Update(tea.KeyPressMsg{Code:tea.KeyEnter})
+	if duplicate != nil || writes != 1 { t.Fatalf("delete repeated: %d", writes) }
+	m.activeSearchRequest++
+	updated, cmd = m.Update(result)
+	if cmd != nil || updated.(Model).view != m.view { t.Fatal("stale delete result accepted") }
+}
+
 func TestSprintMovementFailures(t *testing.T) {
 	for _, status := range []int{403,500} {
 		t.Run(fmt.Sprint(status),func(t *testing.T) {

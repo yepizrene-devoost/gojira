@@ -153,6 +153,8 @@ setup wizard, or connect to Jira.
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
+| `gojira close KEY` / `gojira reopen KEY` | Select the single available transition into Done / New or In Progress categories (`--json`); ambiguous or missing candidates produce no write |
+| `gojira delete KEY --confirm KEY` | Permanently delete one issue after exact key confirmation (`--json` returns `{schemaVersion,key,deleted:true}`) |
 | `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
 | `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
@@ -164,6 +166,18 @@ setup wizard, or connect to Jira.
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
 
+Lifecycle commands use only transitions currently available on the issue, never workflow names.
+Missing destination data is not a candidate; zero or multiple candidates are listed in a
+`validation_error` without writing. Use `move` to choose a transition manually.
+
+**Delete is permanent.** It does not cascade to subtasks (Jira may reject a parent),
+does not re-fetch the deleted issue, and is never retried automatically. A 5xx or
+transport failure has `mutationState: unknown`: verify before retrying. Permission
+errors use the existing classified error envelope. Lifecycle validation used local
+HTTP simulations only; no live Jira verification or deletion was performed.
+TUI lifecycle shortcuts and typed-key deletion confirmation are not implemented yet;
+the existing `t` transition picker remains available.
+
 ### Agent usage examples
 
 ```bash
@@ -172,6 +186,13 @@ gojira export --board 1 | jq '.[] | select(.assignee == "René")'
 
 # What can this ticket become? (transition picker as JSON)
 gojira move ARA-1892 --json
+
+# Close/reopen only when exactly one destination-category candidate is available
+gojira close ARA-1892 --json
+gojira reopen ARA-1892 --json
+
+# PERMANENT deletion: confirmation must match the issue key exactly
+gojira delete ARA-1892 --confirm ARA-1892 --json
 
 # Full requirement context as JSON
 gojira get ARA-1892 --json
@@ -382,6 +403,8 @@ failure and never reports success.
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
 | `b` | From a selected card or ticket detail, move to backlog with one request |
+| `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
+| `D` | Permanently delete a selected card/detail: type its exact key and press Enter; Esc cancels before submission. One DELETE, never automatically retried |
 | `C` | Copy column as JSON to clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |

@@ -48,6 +48,8 @@ var kanbanHelp = []helpEntry{
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search all Jira tickets"},
 	{keys: "t", action: "Transition ticket"},
+	{keys: "X", action: "Close/reopen by status category"},
+	{keys: "D", action: "Permanently delete (type exact key)"},
 	{keys: "n", action: "Create issue"},
 	{keys: "a", action: "Add ticket to active sprint"},
 	{keys: "S", action: "Choose a future/active sprint"},
@@ -130,6 +132,7 @@ const (
 	viewDescriptionEdit
 	viewFieldsEdit
 	viewSprintChoose
+	viewDeleteConfirm
 )
 
 type column struct {
@@ -140,6 +143,13 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
+	lifecycleRequest uint64
+	lifecycleBoard uint64
+	lifecycleSearch uint64
+	lifecycleBusy bool
+	lifecycleKey string
+	lifecycleReturn view
+	deleteInput textinput.Model
 	sprintChoices []jira.Sprint
 	sprintChoiceCur int
 	sprintMoveKey string
@@ -817,6 +827,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(4*time.Second))
 
+	case lifecycleDoneMsg:
+		if msg.request != m.lifecycleRequest || msg.board != m.loadedBoardRequest || msg.search != m.activeSearchRequest || m.activeBoardRequest != 0 || m.view == viewBoards || !m.lifecycleBusy { return m, nil }
+		m.lifecycleBusy = false
+		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		m.view = viewKanban
+		m.detail = nil
+		m.toast = "Jira accepted the request for " + m.lifecycleKey + " (mutation state: applied)"
+		return m.startBoardLoad(m.boards[m.boardCur])
+
 	case sprintChoiceMsg:
 		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveLoading { return m, nil }
 		m.sprintMoveLoading = false
@@ -847,6 +866,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewDeleteConfirm:
+			return m.updateDeleteConfirm(msg)
 		case viewSprintChoose:
 			return m.updateSprintChoose(msg)
 		case viewBoards:
@@ -1131,6 +1152,10 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "X", "D":
+		if m.colCur >= 0 && m.colCur < len(cols) && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
+			return m.startLifecycle(cols[m.colCur].issues[m.rowCur], msg.String() == "D")
+		}
 	case "S", "b":
 		if m.colCur >= 0 && m.colCur < len(cols) && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
 			return m.startSprintMovement(cols[m.colCur].issues[m.rowCur].Key, msg.String() == "b")
@@ -1157,6 +1182,70 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return sprintDoneMsg{issueKey: key, err: err}
 		}
 	}
+	return m, nil
+}
+
+type lifecycleDoneMsg struct {
+	request, board, search uint64
+	err error
+}
+
+func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.Cmd) {
+	if (m.lifecycleBusy && m.lifecycleBoard == m.loadedBoardRequest && m.lifecycleSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	m.lifecycleRequest++
+	m.lifecycleBoard, m.lifecycleSearch = m.loadedBoardRequest, m.activeSearchRequest
+	m.lifecycleKey, m.lifecycleReturn = issue.Key, m.view
+	m.err = nil
+	if deleting {
+		m.deleteInput = textinput.New()
+		m.deleteInput.CharLimit = 128
+		m.deleteInput.Focus()
+		m.view = viewDeleteConfirm
+		return m, nil
+	}
+	if issue.Fields.Status == nil || issue.Fields.Status.Category == nil {
+		m.err = fmt.Errorf("validation_error (mutation state: not_applied): current status category unavailable; use t")
+		return m, nil
+	}
+	reopen := issue.Fields.Status.Category.Key == "done"
+	m.lifecycleBusy = true
+	client, key := m.client, issue.Key
+	request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
+	return m, func() tea.Msg {
+		transitions, err := client.GetTransitions(key)
+		if err != nil { return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:err}} }
+		var candidates []jira.Transition
+		var labels []string
+		for _, tr := range transitions {
+			if tr.To == nil || tr.To.Category == nil { continue }
+			category := tr.To.Category.Key
+			if (!reopen && category == "done") || (reopen && (category == "new" || category == "indeterminate")) {
+				candidates = append(candidates, tr)
+				labels = append(labels, fmt.Sprintf("%s %s -> %s (%s)", tr.ID, tr.Name, tr.To.Name, category))
+			}
+		}
+		if len(candidates) != 1 {
+			return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:fmt.Errorf("validation_error: expected one candidate, got %d: [%s]; use t", len(candidates), strings.Join(labels, "; "))}}
+		}
+		return lifecycleDoneMsg{request, board, search, client.TransitionIssue(key, candidates[0].ID)}
+	}
+}
+
+func (m Model) updateDeleteConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c": return m, tea.Quit
+	case "esc":
+		// A submitted write cannot be cancelled or retried from this dialog.
+		if !m.lifecycleBusy { m.view = m.lifecycleReturn; m.err = nil }
+		return m, nil
+	case "enter":
+		if m.lifecycleBusy || m.err != nil || m.deleteInput.Value() != m.lifecycleKey { return m, nil }
+		m.lifecycleBusy = true
+		client, key := m.client, m.lifecycleKey
+		request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
+		return m, func() tea.Msg { return lifecycleDoneMsg{request, board, search, client.DeleteIssue(key)} }
+	}
+	if !m.lifecycleBusy { var cmd tea.Cmd; m.deleteInput, cmd = m.deleteInput.Update(msg); return m, cmd }
 	return m, nil
 }
 
@@ -1235,6 +1324,8 @@ func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "X", "D":
+		if m.detail != nil && !m.detailLoading { return m.startLifecycle(*m.detail, msg.String() == "D") }
 	case "S", "b":
 		if m.detail != nil && !m.detailLoading { return m.startSprintMovement(m.detail.Key, msg.String() == "b") }
 	case "down", "j":
@@ -2114,6 +2205,12 @@ func (m Model) View() tea.View {
 		}
 		b.WriteString(m.composeOverlay(background, m.renderDetail()))
 
+	case viewDeleteConfirm:
+		b.WriteString(titleStyle.Render("Permanently delete " + m.lifecycleKey))
+		b.WriteString("\nThis cannot be undone. Type the exact issue key, then Enter. Esc cancels.\n")
+		b.WriteString(m.deleteInput.View())
+		if m.lifecycleBusy { b.WriteString("\nSubmitting once; awaiting Jira...") }
+		if m.err != nil { b.WriteString("\n" + errStyle.Render(m.err.Error())) }
 	case viewSprintChoose:
 		b.WriteString(titleStyle.Render("Choose sprint: " + m.sprintMoveKey))
 		b.WriteString("\n\n")
