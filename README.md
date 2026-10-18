@@ -643,14 +643,14 @@ An HTTP request already dispatched cannot be undone by exiting the TUI.
 ```
 gojira/
 ├── main.go                    # Entry point
-├── cmd/                       # Cobra CLI commands
+├── cmd/                       # Cobra CLI: thin adapters over internal/*
 │   ├── root.go                # Root command + credential resolution
 │   ├── tui.go                 # TUI launcher + first-run wizard
 │   ├── boards.go projects.go get.go search.go export.go
 │   ├── move.go close.go delete.go sprint.go backlog.go
 │   ├── log.go create.go comment.go assign.go update.go
 │   ├── context.go init.go     # Project context: resolve, show, store
-│   ├── mcp.go                 # Read-only MCP server (stdio)
+│   ├── mcp.go                 # Wiring of the MCP server (stdio)
 │   ├── json.go                # Shared JSON/error envelope helpers
 │   └── config.go              # config init/set/get/path/test
 ├── internal/
@@ -667,6 +667,10 @@ gojira/
 │   ├── projectctx/            # Project resolution policy and context use case
 │   │   ├── projectctx.go      # flag > env > git > user default; ReadContext
 │   │   └── git.go             # Git adapter behind the GitSource interface
+│   ├── mcpserver/             # Read-only MCP adapter: one table entry per tool
+│   │   ├── server.go          # Server wiring, dependency injection
+│   │   ├── tools.go           # Tool table: schema, validation, handler
+│   │   └── schema.go
 │   ├── picker/                # Standalone terminal project selector
 │   ├── tui/                   # Bubble Tea TUI (single model, no sub-model routing)
 │   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog, create, sprint
