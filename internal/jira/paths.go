@@ -29,6 +29,7 @@ const (
 	pathIssueAssign            = "/rest/api/3/issue/%s/assignee"
 	pathSearchJQL              = "/rest/api/3/search/jql"
 	pathSearchApproximateCount = "/rest/api/3/search/approximate-count"
+	pathReportingUsers         = "/rest/api/3/user/search"
 	pathUserByAccountID        = "/rest/api/3/user?accountId=%s"
 	pathCreateMeta             = "/rest/api/3/issue/createmeta?projectKeys=%s"
 	// Email lookup: /rest/api/3/user/username was removed by Atlassian and

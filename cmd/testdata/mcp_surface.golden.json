@@ -84,6 +84,43 @@
           "idempotentHint": true,
           "readOnlyHint": true
         },
+        "description": "Sum visible worklogs by explicit account, project, inclusive dates and IANA timezone. Inspect complete and warnings; partial totals are not all time. Bounded to 1000 issues and 2000 page requests.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accountId": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            },
+            "timezone": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "accountId",
+            "project",
+            "from",
+            "to",
+            "timezone"
+          ],
+          "type": "object"
+        },
+        "name": "gojira_report_time"
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "readOnlyHint": true
+        },
         "description": "Read Jira data. Requires jql; optional limit (default 50, maximum 1000). Observe complete.",
         "inputSchema": {
           "additionalProperties": false,
@@ -127,6 +164,27 @@
           "type": "object"
         },
         "name": "gojira_sprints"
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Find visible active user candidates; never silently select an account. Permission-limited empty results do not prove no user exists.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "name": "gojira_users_search"
       }
     ]
   }

@@ -64,6 +64,7 @@ func New(options Options) *mcp.Server {
 	a := adapter{options}
 	server := mcp.NewServer(&mcp.Implementation{Name: "gojira", Version: "1"}, &mcp.ServerOptions{Instructions: Guide})
 	a.register(server, a.tools())
+	a.registerReporting(server)
 	server.AddResource(&mcp.Resource{URI: "gojira://guide", Name: "Gojira usage guide", MIMEType: "text/plain"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: "gojira://guide", MIMEType: "text/plain", Text: Guide}}}, nil
 	})
