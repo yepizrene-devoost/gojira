@@ -15,18 +15,19 @@ import (
 
 const (
 	// ─── Platform API v3 ──────────────────────────────────────────
-	pathServerInfo       = "/rest/api/3/serverInfo"
-	pathProjects         = "/rest/api/3/project?maxResults=100"
-	pathIssue            = "/rest/api/3/issue/%s"
-	pathIssueCreate      = "/rest/api/3/issue"
-	pathIssueEditMeta    = "/rest/api/3/issue/%s/editmeta"
-	pathIssueTransitions = "/rest/api/3/issue/%s/transitions"
-	pathIssueWorklog     = "/rest/api/3/issue/%s/worklog"
-	pathIssueComment     = "/rest/api/3/issue/%s/comment"
-	pathIssueAssign      = "/rest/api/3/issue/%s/assignee"
-	pathSearchJQL        = "/rest/api/3/search/jql"
-	pathUserByAccountID  = "/rest/api/3/user?accountId=%s"
-	pathCreateMeta       = "/rest/api/3/issue/createmeta?projectKeys=%s"
+	pathServerInfo             = "/rest/api/3/serverInfo"
+	pathProjects               = "/rest/api/3/project?maxResults=100"
+	pathIssue                  = "/rest/api/3/issue/%s"
+	pathIssueCreate            = "/rest/api/3/issue"
+	pathIssueEditMeta          = "/rest/api/3/issue/%s/editmeta"
+	pathIssueTransitions       = "/rest/api/3/issue/%s/transitions"
+	pathIssueWorklog           = "/rest/api/3/issue/%s/worklog"
+	pathIssueComment           = "/rest/api/3/issue/%s/comment"
+	pathIssueAssign            = "/rest/api/3/issue/%s/assignee"
+	pathSearchJQL              = "/rest/api/3/search/jql"
+	pathSearchApproximateCount = "/rest/api/3/search/approximate-count"
+	pathUserByAccountID        = "/rest/api/3/user?accountId=%s"
+	pathCreateMeta             = "/rest/api/3/issue/createmeta?projectKeys=%s"
 	// Email lookup: /rest/api/3/user/username was removed by Atlassian and
 	// users/search no longer exposes emails. The v2 picker still matches email
 	// queries server-side; pathUserByAccountID verifies the exact match.

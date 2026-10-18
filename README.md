@@ -153,7 +153,7 @@ setup wizard, or connect to Jira.
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
 | `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments, parent and subtasks when returned (`--json`); add `--story-points-field customfield_N` to include that numeric field |
-| `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`) |
+| `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`, `--limit`, `--all`, `--meta`) |
 | `gojira export` | Export board/sprint tickets as JSON (`--board`, `--sprint`) |
 | `gojira move <KEY> --to <STATUS>` | Transition a ticket (`--json`; no `--to` lists available transitions) |
 | `gojira close KEY` / `gojira reopen KEY` | Select the single available transition into Done / New or In Progress categories (`--json`); ambiguous or missing candidates produce no write |
@@ -257,6 +257,34 @@ and transport drops retain mutation state `unknown`. No live Jira verification
 was performed for sprint selection or movement (local HTTP simulations only).
 
 JSON modes write one valid JSON document to stdout, with diagnostics on stderr.
+### Search completeness
+
+Search defaults to 50 issues; `--limit <= 0` also means 50. Jira caps each
+page at 100, so larger limits follow `nextPageToken` across pages.
+`--all` fetches up to a safety cap of 10,000 issues and cannot be combined
+with an explicit `--limit`. Pagination fails on repeated tokens or after
+1,000 pages rather than silently claiming completeness.
+
+Default `--json` stdout remains the bare TicketJSON v1 array. A truncated
+result exits successfully and writes one warning object to stderr:
+
+```json
+{"schemaVersion":"v1","code":"results_truncated","returned":50,"estimatedTotal":696,"hint":"Rerun with --all or a larger --limit, or narrow the JQL; do not report this list as complete."}
+```
+
+`estimatedTotal` is optional: truncated searches make one best-effort
+approximate-count request with the same JQL. This is an **estimate**, requires
+bounded JQL, and is omitted if counting fails. Counting with `ORDER BY` has
+not been verified. Human output uses a plain `Warning:` on stderr instead.
+Complete results emit no warning.
+
+`--meta` implies JSON and emits
+`{"schemaVersion":"v1","issues":[],"returned":0,"truncated":false}`
+on stdout, with optional `estimatedTotal` and no stderr warning. Use this
+metadata to check completeness, including when `--all` reaches its cap.
+Search uses `/rest/api/3/search/jql`; the old `/rest/api/3/search`
+GET/POST endpoints are marked by Atlassian as currently being removed.
+
 The curated `TicketJSON` schema is used by `get --json`, `search --json`,
 `export`, TUI ticket/column copy, and successful JSON mutations. `get --json`,
 ticket copy, and `create`/`update`/`assign`/`move --to`/`backlog`/`comment`/`log` with
