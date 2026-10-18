@@ -121,3 +121,19 @@ Implemented by `gentle-ai-worker` in three passes and re-verified by the parent:
 ## I20-6 evidence
 
 README now has a CLI/TUI parity matrix, updated feature and project-structure lists. Claims were checked against the code: every CLI command except `config`/`tui` exposes `--json` (checked with `--help`), and the TUI has no assign action (only displays the assignee). `go vet`, `go test ./... -count=1` and `golangci-lint run ./...` run green on the final tree. Reviews: I20-1 `review-660fb6334152ed91`, I20-2/I20-7 `review-df91a17724b554d8`, I20-5 `review-cae5377db1cb9bd2`; I20-3 (`79e07fb`) and I20-4 (`5a68909`) were committed without native review. No live Jira verification of any command; deletion in particular is untested against a real instance. Publishing, PR, issue closure, tagging and release remain separate user decisions.
+
+## Commit identity
+
+Work-unit commits on `develop` (merged through `f7c025c`, feature branch deleted):
+
+| Unit | Commit(s) | Native review |
+|---|---|---|
+| I20-1 JSON audit | `850ebd3`, identity `9f4811c` | `review-660fb6334152ed91` approved |
+| AGENTS.md review-before-commit rule | `da99e9b` | `review-df91a17724b554d8` approved |
+| I20-2 progress and sprint, I20-7 permission errors | `2b8bdeb` | `review-df91a17724b554d8` approved |
+| I20-3 sprint list/move, TUI `S`/`b` | `79e07fb` | none (committed on user instruction) |
+| I20-4 close/reopen, confirmed delete, TUI `X`/`D` | `5a68909` | none (committed on user instruction) |
+| I20-5 time/worklogs/comments, TUI `m` | `c9a4843` | `review-cae5377db1cb9bd2` approved |
+| I20-6 parity matrix docs | `1ffef7b` | none |
+
+This record carries SHAs only; verdicts live in the native receipts and Engram. No live Jira verification was performed for any unit; permanent deletion in particular is untested against a real instance.
