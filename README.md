@@ -49,7 +49,7 @@ do not trigger permission pre-checks or automatic 4xx retries.
 
 ## Project context
 
-GoJira can resolve which Jira project you work on without creating any file in
+GoJira can remember which Jira project you work on, without creating any file in
 your repository. The effective project is resolved in this order:
 
 1. the `--project` flag (where a command supports it),
@@ -59,13 +59,23 @@ your repository. The effective project is resolved in this order:
 
 Empty layers fall through; a value that is not a Jira project key (for example
 `demo`) fails with an error naming the layer instead of silently falling back.
-Outside a Git repository the Git layer is ignored. To set the Git layer by hand
-use `git config --local gojira.project KEY`, which only touches the untracked
-`.git/config` of the current clone.
+Outside a Git repository the Git layer is ignored.
 
 ```sh
+gojira init                          # pick a project from a list (terminal)
+gojira init --project ARA --yes      # no terminal: explicit key, e.g. an agent
 gojira context --json                # resolved project, its source and who you are
 ```
+
+`gojira init` writes `[gojira] project = KEY` to the local, untracked
+`.git/config` of the current clone with `git config --local`. It never edits
+tracked files and never stores credentials. With a terminal it shows a project
+list: arrows (or `k`/`j`) move, typing filters by key or name, Enter selects,
+Esc or Ctrl+C cancels without writing. Without a terminal it needs
+`--project KEY --yes`. The key is checked against Jira before it is written.
+If a higher-priority layer still wins (for example `GOJIRA_PROJECT`, or a
+global or worktree Git value), `init` says so instead of implying the new value
+is in force.
 
 `gojira context --json` prints `schemaVersion`, `project` (`key`, `source`, and
 the Git `scope` when applicable) or `null`, `needsProject`, and `identity`
@@ -217,6 +227,7 @@ setup wizard, or connect to Jira.
 | `gojira tui` | Launch the interactive TUI (including first-run setup and connection checks) |
 | `gojira boards` | List boards with project context (`--json`) |
 | `gojira projects` | List Jira projects (`--json`) |
+| `gojira init` | Remember the project for this clone: picker with a terminal, `--project KEY --yes` without one (`--json`) |
 | `gojira context` | Show the resolved project, its source and the authenticated identity (`--project`, `--json`) |
 | `gojira get <KEY>` | Full ticket details: project, labels, components, fix versions, due date, comments, parent and subtasks when returned (`--json`); add `--story-points-field customfield_N` to include that numeric field |
 | `gojira search <JQL>` | JQL search, e.g. `gojira search "assignee = currentUser()"` (`--json`, `--limit`, `--all`, `--meta`) |
