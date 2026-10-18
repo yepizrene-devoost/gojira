@@ -12,6 +12,7 @@ import (
 
 	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
+	"github.com/yepizrene-devoost/gojira/internal/projectctx"
 )
 
 func TestContextJSON(t *testing.T) {
@@ -49,14 +50,14 @@ func TestContextJSON(t *testing.T) {
 			if stderr.Len() != 0 || strings.Contains(out.String(), "email") || strings.Contains(out.String(), "token") {
 				t.Fatalf("unsafe output")
 			}
-			var got ContextJSON
+			var got projectctx.ContextJSON
 			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
 			if got.SchemaVersion != "v1" || got.NeedsProject != (project == "") || got.Identity.AccountID != "id" || !got.Identity.Active {
 				t.Fatalf("context=%+v", got)
 			}
-			if project != "" && (got.Project == nil || got.Project.Key != project || got.Project.Source != config.ProjectSourceFlag) {
+			if project != "" && (got.Project == nil || got.Project.Key != project || got.Project.Source != projectctx.ProjectSourceFlag) {
 				t.Fatalf("project=%+v", got.Project)
 			}
 			if project == "" && got.Project != nil {

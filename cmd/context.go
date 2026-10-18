@@ -7,39 +7,18 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
+	"github.com/yepizrene-devoost/gojira/internal/projectctx"
 )
 
 var contextConfig = config.Load
 
-// ContextIdentity deliberately omits private fields from Jira's UserRef.
-type ContextIdentity struct {
-	AccountID   string `json:"accountId"`
-	DisplayName string `json:"displayName"`
-	Active      bool   `json:"active"`
-}
-
-type ContextJSON struct {
-	SchemaVersion string                  `json:"schemaVersion"`
-	Project       *config.ResolvedProject `json:"project"`
-	NeedsProject  bool                    `json:"needsProject"`
-	Identity      ContextIdentity         `json:"identity"`
-}
-
 // readContext is shared by CLI and MCP, using the process environment and cwd.
-func readContext(client *jira.Client, flag string) (*ContextJSON, error) {
+func readContext(client projectctx.IdentityReader, flag string) (*projectctx.ContextJSON, error) {
 	cfg, err := contextConfig()
 	if err != nil {
 		return nil, err
 	}
-	project, err := config.ResolveProject(flag, cfg.Project)
-	if err != nil {
-		return nil, err
-	}
-	user, err := client.GetMyself()
-	if err != nil {
-		return nil, err
-	}
-	return &ContextJSON{SchemaVersion: jsonSchemaVersion, Project: project, NeedsProject: project == nil, Identity: ContextIdentity{AccountID: user.AccountID, DisplayName: user.DisplayName, Active: user.Active}}, nil
+	return projectctx.ReadContext(client, flag, cfg.Project, jsonSchemaVersion)
 }
 
 func newContextCommand() *cobra.Command {
@@ -52,7 +31,7 @@ func newContextCommand() *cobra.Command {
 		result, err := readContext(client, flag)
 		if err != nil {
 			code, message := "read_failed", "context could not be read"
-			var invalid *config.ProjectValidationError
+			var invalid *projectctx.ProjectValidationError
 			if errors.As(err, &invalid) {
 				code, message = "validation_error", invalid.Error()
 			}

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -19,6 +21,65 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+var updateMCPSurface = flag.Bool("update", false, "update MCP contract golden files")
+
+func TestMCPSurfaceGolden(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	st, ct := mcp.NewInMemoryTransports()
+	ss, err := newMCPServer(nil, "example.invalid").Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := ss.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "golden", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := cs.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	tools, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface, err := json.MarshalIndent(struct {
+		Instructions string               `json:"instructions"`
+		Tools        *mcp.ListToolsResult `json:"tools"`
+	}{cs.InitializeResult().Instructions, tools}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gojira://guide"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guide.Contents) != 1 {
+		t.Fatalf("guide: %#v", guide)
+	}
+	for name, data := range map[string][]byte{"mcp_surface.golden.json": append(surface, '\n'), "mcp_guide.golden.txt": []byte(guide.Contents[0].Text)} {
+		path := filepath.Join("testdata", name)
+		if *updateMCPSurface {
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, want) {
+			t.Fatalf("%s differs; update intentionally with -update", path)
+		}
+	}
+}
 
 func TestMCPStdioProcess(t *testing.T) {
 	if os.Getenv("GOJIRA_MCP_TEST_PROCESS") == "1" {
@@ -183,6 +244,12 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		name string
 		args any
 	}{
+		{"gojira_projects", json.RawMessage(`null`)},
+		{"gojira_boards", json.RawMessage(`[]`)},
+		{"gojira_get", json.RawMessage(`{"key":null}`)},
+		{"gojira_sprints", map[string]any{}},
+		{"gojira_sprints", map[string]any{"boardId": 0}},
+		{"gojira_search", map[string]any{}},
 		{"gojira_get", map[string]any{}}, {"gojira_get", map[string]any{"key": " "}},
 		{"gojira_sprints", map[string]any{"boardId": -1}}, {"gojira_sprints", map[string]any{"boardId": "one"}},
 		{"gojira_search", map[string]any{"jql": " "}}, {"gojira_search", map[string]any{"jql": "x", "limit": 1001}},
