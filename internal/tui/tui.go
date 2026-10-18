@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
@@ -450,15 +451,26 @@ func boardEstimationField(board jira.Board, cfg jira.BoardConfig) string {
 func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 	result := boardLoadMsg{requestID: requestID, boardID: board.ID}
 
-	cfg, err := m.client.GetBoardConfig(board.ID)
-	if err != nil {
-		result.err = err
+	var cfg jira.BoardConfig
+	var sprints []jira.Sprint
+	var cfgErr, sprintErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cfg, cfgErr = m.client.GetBoardConfig(board.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		sprints, sprintErr = m.client.GetSprints(board.ID)
+	}()
+	wg.Wait()
+	if cfgErr != nil {
+		result.err = cfgErr
 		return result
 	}
-
-	sprints, err := m.client.GetSprints(board.ID)
-	if err != nil {
-		result.err = err
+	if sprintErr != nil {
+		result.err = sprintErr
 		return result
 	}
 
@@ -471,34 +483,55 @@ func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 	}
 
 	var issues []jira.Issue
+	var err error
 	var backlog []jira.Issue
 	sprintName := "All issues"
 	sprintID := 0
 	if activeSprint != nil {
 		sprintName = activeSprint.Name
 		sprintID = activeSprint.ID
-		issues, err = m.client.GetBoardIssues(board.ID, activeSprint.ID)
+		var ranked, future []jira.Issue
+		var backlogErr error
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			issues, err = m.client.GetBoardIssues(board.ID, sprintID)
+		}()
+		go func() {
+			defer wg.Done()
+			ranked, backlogErr = m.client.GetBoardBacklog(board.ID)
+		}()
+		go func() {
+			defer wg.Done()
+			if sprints, serr := m.client.GetSprintsByState(board.ID, "future"); serr == nil {
+				for _, sprint := range sprints {
+					if fetched, ferr := m.client.GetBoardIssues(board.ID, sprint.ID); ferr == nil {
+						future = append(future, fetched...)
+					}
+				}
+			}
+		}()
+		wg.Wait()
 		if err != nil {
 			result.err = err
 			return result
 		}
-		// Backlog = board issues outside the active sprint. Best-effort:
-		// a board/issue failure must not break the sprint view.
-		if all, berr := m.client.GetBoardIssues(board.ID, 0); berr == nil {
-			inSprint := make(map[string]bool, len(issues))
-			for _, i := range issues {
-				inSprint[i.Key] = true
-			}
-			for _, i := range all {
-				if inSprint[i.Key] {
+		if backlogErr != nil {
+			// One legacy fallback supplies the complete column, or none on failure.
+			ranked, _ = m.client.GetBoardIssues(board.ID, 0)
+			future = nil
+		}
+		seen := make(map[string]bool, len(issues))
+		for _, issue := range issues {
+			seen[issue.Key] = true
+		}
+		for _, source := range [][]jira.Issue{ranked, future} {
+			for _, issue := range source {
+				if seen[issue.Key] || (issue.Fields.Status != nil && issue.Fields.Status.Category != nil && issue.Fields.Status.Category.Key == "done") {
 					continue
 				}
-				// Done issues sitting in closed sprints are not backlog either.
-				if i.Fields.Status != nil && i.Fields.Status.Category != nil &&
-					i.Fields.Status.Category.Key == "done" {
-					continue
-				}
-				backlog = append(backlog, i)
+				seen[issue.Key] = true
+				backlog = append(backlog, issue)
 			}
 		}
 	} else {

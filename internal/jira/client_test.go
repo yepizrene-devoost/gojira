@@ -170,6 +170,30 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // GetBoardIssues must page through the Agile endpoint: a single request is
 // capped server-side and silently truncates large sprints (the bug that hid
 // a freshly created ticket beyond the first page).
+func TestGetBoardBacklogPaginates(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.URL.Path != "/rest/agile/1.0/board/7/backlog" || r.URL.Query().Get("maxResults") != "100" || r.URL.Query().Get("fields") != fieldsBasic {
+			t.Errorf("unexpected request: %s", r.URL)
+		}
+		switch r.URL.Query().Get("startAt") {
+		case "0":
+			_, _ = fmt.Fprint(w, `{"total":2,"issues":[{"key":"A-1"}]}`)
+		case "1":
+			_, _ = fmt.Fprint(w, `{"total":2,"issues":[{"key":"A-2"}]}`)
+		default:
+			t.Errorf("unexpected offset: %s", r.URL)
+			_, _ = fmt.Fprint(w, `{"issues":[]}`)
+		}
+	}))
+	defer srv.Close()
+	issues, err := NewClient(srv.URL, "email", "token").GetBoardBacklog(7)
+	if err != nil || len(issues) != 2 || hits != 2 {
+		t.Fatalf("issues=%v err=%v hits=%d", issues, err, hits)
+	}
+}
+
 func TestGetBoardIssuesPaginates(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

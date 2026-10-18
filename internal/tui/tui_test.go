@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -17,6 +19,75 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
+
+func TestBoardLoadBacklogSources(t *testing.T) {
+	for _, scenario := range []string{"optimized", "fallback", "all optional fail", "future fails", "active fails", "config fails", "sprints fail", "no active"} {
+		t.Run(scenario, func(t *testing.T) {
+			var mu sync.Mutex
+			inflight, peak, fullReads := 0, 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				inflight++
+				if inflight > peak { peak = inflight }
+				mu.Unlock()
+				defer func() { mu.Lock(); inflight--; mu.Unlock() }()
+				time.Sleep(10 * time.Millisecond)
+				path := strings.TrimPrefix(r.URL.Path, "/rest/agile/1.0/board/7/")
+				fail := func() { w.WriteHeader(http.StatusForbidden) }
+				switch path {
+				case "configuration":
+					if scenario == "config fails" { fail(); return }
+					_, _ = fmt.Fprint(w, `{}`)
+				case "sprint":
+					if r.URL.Query().Get("state") == "future" {
+						if scenario == "all optional fail" || scenario == "future fails" { fail(); return }
+						_, _ = fmt.Fprint(w, `{"values":[{"id":12,"state":"future"},{"id":13,"state":"future"}]}`)
+					} else {
+						if scenario == "sprints fail" { fail(); return }
+						if scenario == "no active" { _, _ = fmt.Fprint(w, `{"values":[]}`); return }
+						_, _ = fmt.Fprint(w, `{"values":[{"id":11,"state":"active","name":"Current"}]}`)
+					}
+				case "sprint/11/issue":
+					if scenario == "active fails" { fail(); return }
+					_, _ = fmt.Fprint(w, `{"isLast":true,"issues":[{"key":"ACTIVE"}]}`)
+				case "backlog":
+					if scenario == "fallback" || scenario == "all optional fail" { fail(); return }
+					_, _ = fmt.Fprint(w, `{"isLast":true,"issues":[{"key":"BACK"},{"key":"ACTIVE"},{"key":"DONE","fields":{"status":{"statusCategory":{"key":"done"}}}}]}`)
+				case "sprint/12/issue":
+					_, _ = fmt.Fprint(w, `{"isLast":true,"issues":[{"key":"FUTURE1"},{"key":"BACK"},{"key":"ACTIVE"},{"key":"DONE","fields":{"status":{"statusCategory":{"key":"done"}}}}]}`)
+				case "sprint/13/issue":
+					_, _ = fmt.Fprint(w, `{"isLast":true,"issues":[{"key":"FUTURE2"},{"key":"FUTURE1"}]}`)
+				case "issue":
+					mu.Lock(); fullReads++; mu.Unlock()
+					if scenario == "all optional fail" { fail(); return }
+					_, _ = fmt.Fprint(w, `{"isLast":true,"issues":[{"key":"ACTIVE"},{"key":"BACK"},{"key":"FUTURE1"},{"key":"FUTURE2"},{"key":"DONE","fields":{"status":{"statusCategory":{"key":"done"}}}}]}`)
+				default:
+					t.Errorf("unexpected request: %s", r.URL); fail()
+				}
+			}))
+			defer srv.Close()
+			m := New(jira.NewClient(srv.URL, "email", "token"), "")
+			got := m.loadBoardData(jira.Board{ID: 7}, 42).(boardLoadMsg)
+			fatal := scenario == "active fails" || scenario == "config fails" || scenario == "sprints fail"
+			if (got.err != nil) != fatal { t.Fatalf("err=%v", got.err) }
+			if fatal { return }
+			if got.requestID != 42 || got.boardID != 7 { t.Fatalf("scope lost: %+v", got) }
+			mu.Lock(); reads, overlap := fullReads, peak; mu.Unlock()
+			wantReads := 0
+			if scenario == "fallback" || scenario == "all optional fail" || scenario == "no active" { wantReads = 1 }
+			if reads != wantReads { t.Errorf("full board reads=%d want=%d", reads, wantReads) }
+			if scenario == "no active" { if got.sprintID != 0 || len(got.columns[0].issues) != 5 { t.Fatalf("no-active changed: %+v", got) }; return }
+			if overlap < 2 { t.Errorf("peak in-flight=%d, want >=2", overlap) }
+			var keys []string
+			for _, col := range got.columns { if col.name == "Backlog" { for _, issue := range col.issues { keys = append(keys, issue.Key) } } }
+			var want []string
+			if scenario != "all optional fail" { want = []string{"BACK", "FUTURE1", "FUTURE2"} }
+			if scenario == "future fails" { want = []string{"BACK"} }
+			if !reflect.DeepEqual(keys, want) { t.Errorf("backlog=%v want=%v", keys, want) }
+			if len(got.columns[0].issues) != 1 || got.columns[0].issues[0].Key != "ACTIVE" { t.Errorf("sprint view lost: %+v", got) }
+		})
+	}
+}
 
 func TestCommentEntry(t *testing.T) {
 	for _, status := range []int{200, 201, 401, 403, 404, 500, 0} {
