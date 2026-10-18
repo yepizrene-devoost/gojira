@@ -225,25 +225,38 @@ type IssueHierarchyRef struct {
 	} `json:"fields"`
 }
 
+// These optional embedded shapes were not confirmed in the official worklog
+// and comment pages consulted. Preserve only supplied values; never infer totals.
+type TimeTrackingField struct {
+	TimeSpent string `json:"timeSpent"`
+}
+
+type WorklogField struct {
+	Total    *int      `json:"total"`
+	Worklogs []Worklog `json:"worklogs"`
+}
+
 type IssueFieldData struct {
-	Sprint      *Sprint              `json:"sprint,omitempty"`
-	Parent      *IssueHierarchyRef   `json:"parent,omitempty"`
-	Subtasks    *[]IssueHierarchyRef `json:"subtasks,omitempty"`
-	Summary     string               `json:"summary"`
-	Status      *StatusField         `json:"status,omitempty"`
-	Priority    *PriorityField       `json:"priority,omitempty"`
-	Assignee    *AssigneeField       `json:"assignee,omitempty"`
-	Reporter    *ReporterField       `json:"reporter,omitempty"`
-	IssueType   *IssueTypeField      `json:"issuetype,omitempty"`
-	Project     *ProjectField        `json:"project,omitempty"`
-	Labels      []string             `json:"labels,omitempty"`
-	Components  []ComponentField     `json:"components,omitempty"`
-	FixVersions []FixVersionField    `json:"fixVersions,omitempty"`
-	DueDate     *string              `json:"duedate"`
-	Created     string               `json:"created"`
-	Updated     string               `json:"updated"`
-	Description *DescriptionField    `json:"description,omitempty"`
-	Comment     *CommentField        `json:"comment,omitempty"`
+	TimeTracking *TimeTrackingField   `json:"timetracking,omitempty"`
+	Worklog      *WorklogField        `json:"worklog,omitempty"`
+	Sprint       *Sprint              `json:"sprint,omitempty"`
+	Parent       *IssueHierarchyRef   `json:"parent,omitempty"`
+	Subtasks     *[]IssueHierarchyRef `json:"subtasks,omitempty"`
+	Summary      string               `json:"summary"`
+	Status       *StatusField         `json:"status,omitempty"`
+	Priority     *PriorityField       `json:"priority,omitempty"`
+	Assignee     *AssigneeField       `json:"assignee,omitempty"`
+	Reporter     *ReporterField       `json:"reporter,omitempty"`
+	IssueType    *IssueTypeField      `json:"issuetype,omitempty"`
+	Project      *ProjectField        `json:"project,omitempty"`
+	Labels       []string             `json:"labels,omitempty"`
+	Components   []ComponentField     `json:"components,omitempty"`
+	FixVersions  []FixVersionField    `json:"fixVersions,omitempty"`
+	DueDate      *string              `json:"duedate"`
+	Created      string               `json:"created"`
+	Updated      string               `json:"updated"`
+	Description  *DescriptionField    `json:"description,omitempty"`
+	Comment      *CommentField        `json:"comment,omitempty"`
 }
 
 type Issue struct {
@@ -308,6 +321,43 @@ type Worklog struct {
 	Started   string `json:"started"`
 }
 
+// UnmarshalJSON accepts documented v3 ADF comments and legacy plain strings.
+// Marshaling retains the existing flattened-string log --show JSON contract.
+func (w *Worklog) UnmarshalJSON(data []byte) error {
+	type plain Worklog
+	var raw struct {
+		*plain
+		Comment json.RawMessage `json:"comment"`
+	}
+	var decoded Worklog
+	raw.plain = (*plain)(&decoded)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if len(raw.Comment) > 0 && string(raw.Comment) != "null" {
+		if raw.Comment[0] == '"' {
+			if err := json.Unmarshal(raw.Comment, &decoded.Comment); err != nil {
+				return err
+			}
+		} else {
+			var doc ADFDoc
+			if err := json.Unmarshal(raw.Comment, &doc); err != nil {
+				return err
+			}
+			decoded.Comment = doc.Flatten()
+		}
+	}
+	*w = decoded
+	return nil
+}
+
+type WorklogJSON struct {
+	Author    string `json:"author"`
+	TimeSpent string `json:"timeSpent"`
+	Started   string `json:"started"`
+	Comment   string `json:"comment"`
+}
+
 // ─── TicketJSON (curated for agent consumption) ────────────────────────
 
 type TicketJSON struct {
@@ -331,6 +381,8 @@ type TicketJSON struct {
 	Created         string               `json:"created"`
 	Updated         string               `json:"updated"`
 	TimeLogged      string               `json:"timeLogged,omitempty"`
+	Worklogs        []WorklogJSON        `json:"worklogs,omitempty"`
+	WorklogsTotal   *int                 `json:"worklogsTotal,omitempty"`
 	Comments        []CommentJSON        `json:"comments,omitempty"`
 	Parent          *HierarchyJSON       `json:"parent,omitempty"`
 	Subtasks        *[]HierarchyJSON     `json:"subtasks,omitempty"`
@@ -487,6 +539,15 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 		Updated:       normalizeDate(iss.Fields.Updated),
 		Assignee:      "Unassigned",
 		Labels:        iss.Fields.Labels,
+	}
+	if iss.Fields.TimeTracking != nil {
+		t.TimeLogged = iss.Fields.TimeTracking.TimeSpent
+	}
+	if iss.Fields.Worklog != nil {
+		t.WorklogsTotal = iss.Fields.Worklog.Total
+		for _, w := range iss.Fields.Worklog.Worklogs {
+			t.Worklogs = append(t.Worklogs, WorklogJSON{Author: w.Author.DisplayName, TimeSpent: w.TimeSpent, Started: normalizeDate(w.Started), Comment: w.Comment})
+		}
 	}
 	if iss.Fields.Status != nil {
 		t.Status = iss.Fields.Status.Name

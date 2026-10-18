@@ -46,7 +46,7 @@ const (
 // Issue fields for different contexts.
 const (
 	fieldsBasic  = "summary,status,priority,assignee,issuetype,subtasks,sprint"
-	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks"
+	fieldsFull   = "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks,timetracking"
 	fieldsSearch = "summary,status,priority,assignee,issuetype,project,labels,created,updated"
 	fieldsExport = "summary,status,priority,assignee,issuetype,subtasks,sprint"
 )

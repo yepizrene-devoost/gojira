@@ -45,6 +45,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "←/→ or h/l", action: "Move between columns"},
 	{keys: "↑/↓ or k/j", action: "Move within a column"},
 	{keys: "Enter", action: "Open ticket detail"},
+	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search all Jira tickets"},
 	{keys: "t", action: "Transition ticket"},
@@ -202,6 +203,7 @@ type Model struct {
 	activeWorklogRequest          uint64
 	descriptionInput              textarea.Model
 	descriptionOriginal           string
+	commentEntry                  bool
 	descriptionSubmitting         bool
 	descriptionApplied            bool
 	descriptionErr                error
@@ -739,11 +741,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = msg.err
+			if m.commentEntry && msg.applied { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied); detail refresh failed: %w", msg.err) }
 			return m, nil
 		}
 		if msg.issue == nil || msg.issue.Key != msg.issueKey {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = fmt.Errorf("description was updated, but Jira returned no refreshed ticket")
+			if m.commentEntry { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied), but Jira returned no refreshed ticket") }
 			return m, nil
 		}
 		m.descriptionApplied = false
@@ -754,6 +758,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.descriptionInput.Blur()
 		m.view = viewDetail
 		m.toast = "Description updated"
+		if m.commentEntry { m.toast = "Comment added" }
 		return m, clearToastAfter(3 * time.Second)
 
 	case fieldLoadedMsg:
@@ -1098,7 +1103,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.activeDetailRequest = detailRequest
 				m.err = nil
 				return m, func() tea.Msg {
-					iss, err := m.client.GetIssue(key)
+					iss, err := m.client.GetIssueFull(key)
 					return detailMsg{issue: iss, issueKey: key, boardRequest: boardRequest, detailRequest: detailRequest, err: err}
 				}
 			}
@@ -1379,13 +1384,15 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "E":
 		if m.detail != nil { return m.openFieldsEdit() }
-	case "e":
+	case "e", "m":
 		if m.detail != nil {
+			m.commentEntry = msg.String() == "m"
 			input := textarea.New()
 			input.Placeholder = "Ticket description (plain text)"
 			input.ShowLineNumbers = false
 			description := ""
-			if m.detail.Fields.Description != nil {
+			if m.commentEntry { input.Placeholder = "Comment (plain text; no mentions)" }
+			if !m.commentEntry && m.detail.Fields.Description != nil {
 				description = m.detail.Fields.Description.Flatten()
 				input.SetValue(description)
 			}
@@ -1672,6 +1679,7 @@ func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.descriptionApplied {
 			m.descriptionApplied = false
 			m.toast = "Description updated; detail was not refreshed"
+			if m.commentEntry { m.toast = "Comment applied; detail was not refreshed" }
 			return m, clearToastAfter(4 * time.Second)
 		}
 		return m, nil
@@ -1682,7 +1690,11 @@ func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.descriptionApplied {
 			return m.startDescriptionRefresh()
 		}
-		if m.descriptionInput.Value() == m.descriptionOriginal {
+		if m.commentEntry && strings.TrimSpace(m.descriptionInput.Value()) == "" {
+			m.descriptionErr = fmt.Errorf("comment cannot be empty (mutation state: not_applied)")
+			return m, nil
+		}
+		if !m.commentEntry && m.descriptionInput.Value() == m.descriptionOriginal {
 			m.descriptionInput.Blur()
 			m.descriptionErr = nil
 			m.view = viewDetail
@@ -1712,8 +1724,12 @@ func (m Model) startDescriptionUpdate() (tea.Model, tea.Cmd) {
 	m.descriptionSubmitting = true
 	m.descriptionErr = nil
 	client := m.client
+	comment := m.commentEntry
 	return m, func() tea.Msg {
-		if err := client.UpdateIssue(issueKey, map[string]interface{}{"description": description}); err != nil {
+		var writeErr error
+		if comment { writeErr = client.AddComment(issueKey, jira.TextToADF(text)) } else { writeErr = client.UpdateIssue(issueKey, map[string]interface{}{"description": description}) }
+		if err := writeErr; err != nil {
+			if comment { err = sprintMovementError(err) }
 			return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, err: err}
 		}
 		issue, err := client.GetIssueFull(issueKey)
@@ -2785,12 +2801,14 @@ func (m Model) renderDescriptionEdit() string {
 		key = m.detail.Key
 	}
 	var b strings.Builder
-	b.WriteString(keyStyle.Render("✎ Edit description · " + key))
+	title := "✎ Edit description · "
+	if m.commentEntry { title = "Add comment · " }
+	b.WriteString(keyStyle.Render(title + key))
 	b.WriteString("\n\n")
 	b.WriteString(m.descriptionInput.View())
 	if m.descriptionApplied {
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed."))
+		if m.commentEntry { b.WriteString(subStyle.Render("The comment was applied in Jira; only the detail refresh failed.")) } else { b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed.")) }
 	}
 	if m.descriptionErr != nil {
 		b.WriteString("\n")
@@ -2801,7 +2819,7 @@ func (m Model) renderDescriptionEdit() string {
 		if m.descriptionApplied {
 			b.WriteString(subStyle.Render("Refreshing ticket detail...  [ctrl+c] Quit"))
 		} else {
-			b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit"))
+			if m.commentEntry { b.WriteString(subStyle.Render("Adding comment...  [ctrl+c] Quit")) } else { b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit")) }
 		}
 	} else if m.descriptionApplied {
 		b.WriteString(subStyle.Render("[ctrl+s] Retry refresh only  [esc] Close (update remains applied)"))
@@ -2809,6 +2827,11 @@ func (m Model) renderDescriptionEdit() string {
 		b.WriteString(subStyle.Render("[ctrl+s] Confirm  [esc] Cancel"))
 	}
 	return m.modalStyle().Render(b.String())
+}
+
+func readableDetailDate(value string) string {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil { return parsed.Format("2006-01-02 15:04") }
+	return value
 }
 
 func (m Model) detailContent() (string, string) {
@@ -2860,8 +2883,26 @@ func (m Model) detailContent() (string, string) {
 	} else {
 		b.WriteString("Assignee: Unassigned\n")
 	}
-	_, _ = fmt.Fprintf(&b, "Created:  %s\n", iss.Fields.Created)
-	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", iss.Fields.Updated)
+	ticket := jira.IssueToTicketJSON(*iss, "")
+	_, _ = fmt.Fprintf(&b, "Created:  %s\n", readableDetailDate(ticket.Created))
+	_, _ = fmt.Fprintf(&b, "Updated:  %s\n", readableDetailDate(ticket.Updated))
+	if ticket.TimeLogged != "" {
+		_, _ = fmt.Fprintf(&b, "Time logged: %s", ticket.TimeLogged)
+		if ticket.WorklogsTotal != nil && *ticket.WorklogsTotal > len(ticket.Worklogs) {
+			_, _ = fmt.Fprintf(&b, " (showing %d of %d worklogs)", len(ticket.Worklogs), *ticket.WorklogsTotal)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n── Worklogs ──\n")
+	if len(ticket.Worklogs) == 0 { b.WriteString("No worklogs available\n") }
+	for _, w := range ticket.Worklogs {
+		_, _ = fmt.Fprintf(&b, "%s · %s · %s\n%s\n", w.Author, readableDetailDate(w.Started), w.TimeSpent, w.Comment)
+	}
+	b.WriteString("\n── Comments ──\n")
+	if len(ticket.Comments) == 0 { b.WriteString("No comments\n") }
+	for _, c := range ticket.Comments {
+		_, _ = fmt.Fprintf(&b, "%s · %s\n%s\n", c.Author, readableDetailDate(c.Created), c.Body)
+	}
 	if iss.Fields.Description != nil {
 		b.WriteString("\n── Description ──\n")
 		for _, block := range iss.Fields.Description.Content {
@@ -2873,5 +2914,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Description  [E] Fields  [w] Log  [o] Open  [esc] Close"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close"
 }

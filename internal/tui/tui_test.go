@@ -18,6 +18,56 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestCommentEntry(t *testing.T) {
+	for _, status := range []int{200, 201, 401, 403, 404, 500, 0} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			posts, reads := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					posts++
+					if r.URL.Path != "/rest/api/3/issue/A-1/comment" { t.Errorf("path=%s", r.URL.Path) }
+					var body struct { Body jira.ADFDoc `json:"body"` }
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Body.Flatten() != "Hello\nWorld" { t.Errorf("invalid ADF: %+v %v", body, err) }
+					if status == 0 { conn, _, err := w.(http.Hijacker).Hijack(); if err != nil { t.Error(err); return }; _ = conn.Close(); return }
+					w.WriteHeader(status)
+					return
+				}
+				reads++
+				if status == 200 { _, _ = io.WriteString(w, `{"key":"A-1","fields":{}}`); return }
+				w.WriteHeader(403)
+			}))
+			defer srv.Close()
+			m := Model{client:jira.NewClient(srv.URL,"email","token"), view:viewDetail, detail:&jira.Issue{Key:"A-1"}}
+			updated, _ := m.Update(tea.KeyPressMsg{Code:'m', Text:"m"}); m = updated.(Model)
+			if m.view != viewDescriptionEdit || posts != 0 { t.Fatal("m must open editor without writing") }
+			m.descriptionInput.SetValue("  \n ")
+			updated, cmd := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+			if cmd != nil || posts != 0 || m.descriptionErr == nil { t.Fatal("blank comment must fail locally") }
+			m.descriptionInput.SetValue("Hello\nWorld")
+			updated, cmd = m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+			if cmd == nil { t.Fatal("missing submit") }
+			if _, duplicate := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); duplicate != nil { t.Fatal("double submit") }
+			result := cmd()
+			stale := m; stale.view = viewKanban
+			ignored, _ := stale.Update(result)
+			if ignored.(Model).view != viewKanban { t.Fatal("stale result changed view") }
+			updated, _ = m.Update(result); m = updated.(Model)
+			if status == 200 { if posts != 1 || reads != 1 || m.view != viewDetail || m.descriptionErr != nil { t.Fatalf("success: posts=%d reads=%d view=%v error=%v", posts, reads, m.view, m.descriptionErr) }; return }
+			if posts != 1 || m.descriptionErr == nil { t.Fatalf("posts=%d error=%v", posts, m.descriptionErr) }
+			if status == 201 {
+				if !m.descriptionApplied { t.Fatal("write must remain applied") }
+				updated, retry := m.Update(tea.KeyPressMsg{Code:'s', Mod:tea.ModCtrl}); m = updated.(Model)
+				if retry == nil { t.Fatal("missing refresh retry") }; updated, _ = m.Update(retry()); m = updated.(Model)
+				if posts != 1 || reads != 2 { t.Fatalf("posts=%d reads=%d", posts, reads) }
+			} else {
+				want := "unknown"; if status == 403 { want = "permission_denied" }; if status == 401 { want = "authentication_failed" }; if status == 404 { want = "not_found_or_no_permission" }
+				if !strings.Contains(m.descriptionErr.Error(), want) { t.Fatal(m.descriptionErr) }
+				if status == 403 && !strings.Contains(m.descriptionErr.Error(), "not_applied") { t.Fatal(m.descriptionErr) }
+			}
+		})
+	}
+}
+
 func TestLifecycleTransitions(t *testing.T) {
 	for _, tc := range []struct{name, current, transitions string; posts int}{
 		{"close", "new", `[{"id":"9","name":"Finish","to":{"name":"Closed","statusCategory":{"key":"done"}}}]`, 1},
@@ -2709,4 +2759,18 @@ func TestDescriptionEditExplicitEmptySendsNullAndRefreshes(t *testing.T) {
 	if m.view != viewDetail || m.detail == nil || m.detail.Fields.Description != nil {
 		t.Fatalf("empty update did not refresh cleared detail: view=%v detail=%#v", m.view, m.detail)
 	}
+}
+
+func TestDetailTimeAndComments(t *testing.T) {
+ var issue jira.Issue
+ err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"created":"2021-01-17T12:34:00.000+0000","updated":"2021-01-18T13:45:00.000+0000","timetracking":{"timeSpent":"3h"},"worklog":{"total":41,"worklogs":[{"timeSpent":"1h"}]},"comment":{"comments":[{"author":{"displayName":"Ada"},"created":"2021-01-17T12:34:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}]}}]}}}`), &issue)
+ if err != nil { t.Fatal(err) }
+ m := Model{detail: &issue, width: 100, height: 30}
+ content, _ := m.detailContent()
+ for _, want := range []string{"2021-01-17 12:34", "2021-01-18 13:45", "Time logged: 3h (showing 1 of 41 worklogs)", "── Comments ──", "Ada", "Hello", "── Worklogs ──", "1h"} {
+  if !strings.Contains(content, want) { t.Errorf("missing %q in %s",want,content) }
+ }
+ issue.Fields.Comment = nil
+ content, _ = m.detailContent()
+ if !strings.Contains(content,"No comments") { t.Fatal(content) }
 }

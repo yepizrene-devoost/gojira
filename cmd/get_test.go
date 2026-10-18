@@ -217,7 +217,7 @@ func TestGetHierarchyJSONAndHumanFromTwoGETs(t *testing.T) {
 					_, _ = fmt.Fprint(w, `{"fields":{"sprint":{"id":7,"name":"Sprint Seven","state":"active"}}}`)
 					return
 				}
-				if r.URL.Path != "/rest/api/3/issue/A-1" || r.URL.Query().Get("fields") != "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks" {
+				if r.URL.Path != "/rest/api/3/issue/A-1" || r.URL.Query().Get("fields") != "summary,status,priority,assignee,reporter,issuetype,project,labels,components,fixVersions,duedate,created,updated,description,comment,worklog,parent,subtasks,timetracking" {
 					t.Errorf("primary request = %s", r.URL)
 				}
 				for _, field := range []string{"parent", "subtasks"} {
@@ -418,5 +418,36 @@ func TestRenderIssueFullTruncatesComments(t *testing.T) {
 	}
 	if !utf8.ValidString(out) {
 		t.Fatal("rendered output is not valid utf-8")
+	}
+}
+
+func TestGetJSONLoggedTime(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if strings.HasPrefix(r.URL.Path, "/rest/agile/") {
+			_, _ = fmt.Fprint(w, `{"fields":{}}`)
+			return
+		}
+		if !strings.Contains(","+r.URL.Query().Get("fields")+",", ",timetracking,") {
+			t.Error("full issue read missing timetracking")
+		}
+		_, _ = fmt.Fprint(w, `{"key":"A-1","fields":{"summary":"Main","timetracking":{"timeSpent":"3h"},"worklog":{"total":41,"worklogs":[{"timeSpent":"1h","comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Worked"}]}]}}]}}}`)
+	}))
+	defer srv.Close()
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "get", "A-1", "--json")
+	if code != 0 || stderr != "" || calls != 2 {
+		t.Fatalf("code=%d calls=%d stderr=%s", code, calls, stderr)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["timeLogged"] != "3h" || got["worklogsTotal"] != float64(41) {
+		t.Fatal(stdout)
+	}
+	logs := got["worklogs"].([]interface{})
+	if logs[0].(map[string]interface{})["comment"] != "Worked" {
+		t.Fatal(stdout)
 	}
 }

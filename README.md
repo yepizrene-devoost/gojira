@@ -262,6 +262,21 @@ write. Search, export, and column copy produce a top-level array. Each ticket
 object carries `schemaVersion: "v1"`. Human mutation output is unchanged when
 `--json` is omitted.
 
+TUI ticket detail shows readable created/updated dates, supplied logged time,
+embedded worklog entries (with a truncation count when a total is supplied), and
+existing comments in Jira order, including an explicit empty state. The existing
+scrolling and navigation keys are unchanged. TUI comment entry is not implemented
+in this slice.
+
+Full issue reads request optional `timetracking` and `worklog` fields; board,
+search and export field sets are unchanged. The embedded `fields.worklog` shape
+and `fields.timetracking.timeSpent` were **not confirmed** in the official
+Atlassian v3 worklog/comment pages consulted: only supplied values are exposed,
+with no inferred total or pagination requests. Those pages document ADF worklog
+comments; `log --show --json` continues to emit flattened string comments and
+also accepts legacy strings or missing comments. No live Jira verification was
+performed (local tests only).
+
 ### TicketJSON v1 contract
 
 All field types are stable JSON types. A field marked **always** is present even
@@ -292,7 +307,9 @@ date formats are preserved verbatim.
 | `description` | string | Always; flattened ADF text, or empty string when unavailable. |
 | `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
-| `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
+| `timeLogged` | string | Optional `fields.timetracking.timeSpent` from full issue reads (`get` and mutation re-fetch); omitted when absent or empty, never calculated from entries. |
+| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
+| `worklogsTotal` | integer | Only included when Jira supplies `fields.worklog.total`, including zero. Entries may be truncated; absence is not zero. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
 | `sprint` | object | Omitted when absent/null; integer `id`, string `name` and `state` supplied by Agile Jira. |
@@ -447,10 +464,17 @@ where search started.
 | `↑/↓` or `k/j`, `PgUp/PgDn` | Scroll long ticket details within the modal |
 | `c` | Copy ticket as JSON to clipboard |
 | `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
+| `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+Comment entry converts plain text to ADF (mentions are not supported) and rejects
+empty comments locally. After a successful write, a failed detail refresh offers
+only a refresh retry, never a second comment POST. Write failures show the
+classified error and `not_applied` or `unknown` mutation state; writes are never
+automatically retried. No live Jira verification was done.
 
 The description editor accepts multiple lines and converts an actual plain-text
 edit to Jira ADF. Replacing a description this way may discard rich ADF formatting
