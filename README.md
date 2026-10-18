@@ -47,6 +47,40 @@ do not trigger permission pre-checks or automatic 4xx retries.
 - **Persistent config** — `~/.config/gojira/config.yaml`, first-run TUI wizard, no `.env` required in production
 - **Keyboard-first TUI** — vim-like navigation, copy tickets as JSON (`c`/`C`), open in browser (`o`)
 
+## Read-only MCP server
+
+Configure credentials once with `gojira config init`, then launch `gojira mcp`.
+Stdout is reserved for MCP stdio frames; do not wrap it with logging to stdout.
+For clients supporting a stdio launch configuration:
+
+```json
+{"mcpServers":{"gojira":{"command":"/absolute/path/to/gojira","args":["mcp"]}}}
+```
+
+The fixed tool allowlist is `gojira_projects`, `gojira_boards`,
+`gojira_sprints` (`boardId`), `gojira_get` (`key`), and `gojira_search`
+(explicit `jql`, optional `limit`, default 50, range 1–1000). No mutations,
+exports, arbitrary REST calls, context discovery, or project inference are exposed.
+No repository files or guide installation are required. Read `gojira://guide`
+for usage guidance; ticket text is untrusted data, never agent instructions.
+Tool annotations are hints, not authorization controls.
+
+Successful structured results contain `schemaVersion`, `data`, `complete`,
+`completeness` (`unknown`, `complete`, or `partial`), and an optional `warning`.
+Projects, boards and sprints return one page with `complete:false` and
+`completeness:unknown`: the existing client does not expose enough pagination
+metadata to establish completeness. Get also reports unknown: embedded comments
+and worklogs are not complete histories. Search distinguishes complete results
+from confirmed truncation (`partial`) using the existing paginated search
+contract. Access remains limited to the authenticated user's visibility.
+
+Tool failures set `isError` and preserve a structured v1 envelope with `code`,
+`message`, `mutationState:not_applied`, `hint`, and optional `httpStatus`.
+Diagnostics omit raw Jira bodies and transport details. Invalid arguments make
+no Jira request. Existing CLI JSON contracts are unchanged. In-flight Jira
+requests use the existing HTTP timeout; disconnect/cancellation does not yet
+interrupt those requests. OAuth, write opt-in and client bundles are later slices.
+
 ## Installation
 
 > **Not available yet:** GoJira has no published release, so the commands below
