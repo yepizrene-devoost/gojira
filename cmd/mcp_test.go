@@ -37,7 +37,11 @@ func TestMCPStdioProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close stdio session: %v", err)
+		}
+	}()
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil || len(tools.Tools) != 5 {
 		t.Fatalf("stdio tools: %v %v", tools, err)
@@ -52,7 +56,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 	var requests atomic.Int64
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Method != "GET" && !(r.Method == "POST" && r.URL.Path == "/rest/api/3/search/approximate-count") {
+		if r.Method != "GET" && (r.Method != "POST" || r.URL.Path != "/rest/api/3/search/approximate-count") {
 			t.Errorf("unexpected method %s", r.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -74,11 +78,11 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		case "/rest/api/3/search/approximate-count":
 			_, _ = w.Write([]byte(`{"count":2}`))
 		case "/rest/api/3/issue/AUTH":
-			http.Error(w, "private upstream secret", 401)
+			http.Error(w, "private upstream secret", http.StatusUnauthorized)
 		case "/rest/api/3/issue/MISSING":
-			http.Error(w, "private upstream secret", 404)
+			http.Error(w, "private upstream secret", http.StatusNotFound)
 		default:
-			http.Error(w, "private upstream secret", 403)
+			http.Error(w, "private upstream secret", http.StatusForbidden)
 		}
 	}))
 	defer api.Close()
@@ -90,13 +94,21 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() {
+		if err := ss.Close(); err != nil {
+			t.Errorf("close server session: %v", err)
+		}
+	}()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
 	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() {
+		if err := cs.Close(); err != nil {
+			t.Errorf("close client session: %v", err)
+		}
+	}()
 	list, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		t.Fatal(err)
