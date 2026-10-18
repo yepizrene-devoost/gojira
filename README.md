@@ -652,10 +652,17 @@ gojira/
 │   ├── json.go                # Shared JSON/error envelope helpers
 │   └── config.go              # config init/set/get/path/test
 ├── internal/
-│   ├── jira/                  # Jira domain
-│   │   ├── client.go          # HTTP client (GET/POST/PUT)
+│   ├── jira/                  # Jira domain: one file per area, one Client type
+│   │   ├── client.go          # Client, HTTP transport, retries, errors
+│   │   ├── client_issues.go   # Issue reads and writes, transitions
+│   │   ├── client_boards.go   # Boards, sprints, backlog
+│   │   ├── client_search.go   # JQL and text search with pagination
+│   │   ├── client_projects.go # Paginated projects
+│   │   ├── client_users.go    # Identity and account lookup
+│   │   ├── client_worklog.go  # Worklogs and comments
 │   │   ├── paths.go           # ALL API endpoints — single source of truth
 │   │   └── types.go           # Types + ADF parser + curated TicketJSON
+│   │   └── git.go             # Git adapter behind the GitSource interface
 │   ├── tui/                   # Bubble Tea TUI (single model, no sub-model routing)
 │   │   ├── tui.go             # Model: boards, kanban, detail, transition, worklog, create, sprint
 │   │   ├── setup.go           # First-run configuration wizard
