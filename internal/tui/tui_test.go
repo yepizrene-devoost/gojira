@@ -18,6 +18,29 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestCardProgressAndOwnSprint(t *testing.T) {
+	var issue jira.Issue
+	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"sprint":{"id":7,"name":"Other Sprint","state":"future"},"subtasks":[{"key":"A-2","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-3","fields":{"status":{"statusCategory":{"key":"done"}}}},{"key":"A-4","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-5","fields":{"status":{"statusCategory":{"key":"new"}}}},{"key":"A-6","fields":{"status":{"statusCategory":{"key":"indeterminate"}}}}]}}`), &issue); err != nil {
+		t.Fatal(err)
+	}
+	m := Model{sprintName: "Active Sprint"}
+	out := strings.Join(m.renderCardLines(issue, false, 100), "\n")
+	if !strings.Contains(out, "2/5") || !strings.Contains(out, "Other Sprint") {
+		t.Fatalf("card = %s", out)
+	}
+	m.sprintName = "Other Sprint"
+	issue.Fields.Subtasks = nil
+	out = strings.Join(m.renderCardLines(issue, true, 100), "\n")
+	if strings.Contains(out, "2/5") || strings.Contains(out, "0/0") || strings.Contains(out, "Other Sprint") {
+		t.Fatalf("unavailable/same sprint = %s", out)
+	}
+	issue.Fields.Sprint = nil
+	out = strings.Join(m.renderCardLines(issue, false, 100), "\n")
+	if strings.Contains(out, "Sprint") {
+		t.Fatalf("fabricated sprint = %s", out)
+	}
+}
+
 func fieldEditorServer(t *testing.T, failRefresh bool) (*httptest.Server, *[]string, *[]byte) {
 	t.Helper()
 	calls := &[]string{}

@@ -4,6 +4,25 @@
 
 <h1 align="center">GoJira</h1>
 
+### Jira access errors for agents
+
+CLI JSON failures remain one v1 error envelope on stderr, with empty stdout
+and exit 1. HTTP 401 uses `authentication_failed`, 403 `permission_denied`,
+and 404 `not_found_or_no_permission` (Jira can hide inaccessible resources).
+These envelopes add `httpStatus` and an actionable `hint`; `mutationState`
+still distinguishes `not_applied`, `applied`, and `unknown`. Never repeat an
+applied write, or retry an unknown write without verification. A
+`partial_failure` retains its code and adds the classified `cause` instead.
+Other failures retain their existing codes and fields. Human output appends
+the same hint after the existing error line on stderr.
+
+`get` still succeeds when its optional Agile sprint read fails. Its JSON
+adds `warnings: [{code, message, httpStatus?}]` with code `sprint_unavailable`;
+classified causes appear in `message`. Warnings are omitted when empty, and
+no sprint is fabricated. Human mode sends warnings to stderr. Access errors
+do not trigger permission pre-checks or automatic 4xx retries.
+
+
 <p align="center">
   <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
   <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
@@ -242,8 +261,9 @@ date formats are preserved verbatim.
 | `timeLogged` | string | Omitted when empty; reserved curated time-log summary when supplied by a read surface. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
-| `subtasks` | array of objects | `get` children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
-| `subtaskProgress` | object | `get` only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
+| `sprint` | object | Omitted when absent/null; integer `id`, string `name` and `state` supplied by Agile Jira. |
+| `subtasks` | array of objects | `get`, board/export/TUI children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
+| `subtaskProgress` | object | Available only when Jira supplies a non-null `subtasks` list and every child has a key and recognized status category (`new`, `indeterminate`, `done`); integer `done` and `total`, including `0/0` for `[]`. Done uses the category key case-insensitively, never the status name. Unknown child categories retain the children but omit progress. |
 
 Read surfaces can only populate fields requested and returned by their Jira
 endpoint. In particular, board-backed export and TUI column copy request basic
@@ -253,9 +273,15 @@ Sparse Jira responses preserve the required empty-string fields and the
 `YYYY-MM-DD` string or `null`. `storyPoints` is omitted unless a field selector
 was supplied; with a selector it is always a JSON number or `null`. A selected
 field missing from Jira's response, or returned as another JSON type, is a read
-error rather than an omitted property. Hierarchy is requested by the full issue
-GET used by `get`, not by board/export/TUI reads; availability of nested child
-status categories depends on Jira's response. Synthetic tests cover this shape;
+error rather than an omitted property. `get` keeps its full issue GET and adds
+exactly one best-effort Agile issue GET (`fields=sprint`, no retry); failure or
+missing sprint evidence omits `sprint` without failing the command. Human output
+shows `Sprint: name (state)` only when known. Board/export/TUI reads request
+`subtasks` and `sprint` in bulk, without per-card reads; search is unchanged.
+Cards show verified `done/total` progress and their own sprint name only when it
+differs from the board's active sprint. Missing progress is not zero.
+Availability of nested child status categories depends on Jira's response.
+Synthetic tests cover this shape;
 live Jira Cloud compatibility has not been verified.
 
 `boards --json` and `projects --json` expose their own list shapes.

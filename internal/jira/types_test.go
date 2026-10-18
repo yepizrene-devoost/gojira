@@ -7,6 +7,44 @@ import (
 	"testing"
 )
 
+func TestSprintAndProgressContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		sprint       bool
+		progress     string
+	}{
+		{"absent", `{}`, false, "null"},
+		{"null", `{"sprint":null,"subtasks":null}`, false, "null"},
+		{"empty", `{"sprint":{"id":7,"name":"Seven","state":"active"},"subtasks":[]}`, true, `{"done":0,"total":0}`},
+		{"category not name", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done","statusCategory":{"key":"new"}}}}]}`, false, `{"done":0,"total":1}`},
+		{"done category", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Review","statusCategory":{"key":"done"}}}}]}`, false, `{"done":1,"total":1}`},
+		{"unknown", `{"subtasks":[{"key":"A-2","fields":{"status":{"name":"Done"}}}]}`, false, "null"},
+		{"missing key", `{"subtasks":[{"fields":{"status":{"statusCategory":{"key":"done"}}}}]}`, false, "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var issue Issue
+			if err := json.Unmarshal([]byte(`{"fields":`+tc.fields+`}`), &issue); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(IssueToTicketJSON(issue, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := out["sprint"]; ok != tc.sprint {
+				t.Errorf("sprint presence: %s", data)
+			}
+			got, _ := json.Marshal(SubtaskProgress(issue.Fields.Subtasks))
+			if string(got) != tc.progress {
+				t.Errorf("progress = %s, want %s", got, tc.progress)
+			}
+		})
+	}
+}
+
 func TestBoardConfigEstimationFieldFromOfficialShape(t *testing.T) {
 	var cfg BoardConfig
 	if err := json.Unmarshal([]byte(`{"estimation":{"field":{"displayName":"Story Points","fieldId":"customfield_10002"},"type":"field"}}`), &cfg); err != nil {

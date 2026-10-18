@@ -38,8 +38,12 @@ const (
 )
 
 func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
+	return c.requestWithAttempts(method, path, payload, maxRequestAttempts)
+}
+
+func (c *Client) requestWithAttempts(method, path string, payload []byte, attempts int) ([]byte, error) {
 	idempotent := method == http.MethodGet
-	for attempt := 0; attempt < maxRequestAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		var body io.Reader
 		if payload != nil {
 			body = bytes.NewReader(payload)
@@ -56,7 +60,7 @@ func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			if !idempotent || attempt+1 == maxRequestAttempts {
+			if !idempotent || attempt+1 == attempts {
 				return nil, err
 			}
 			time.Sleep(initialBackoff * time.Duration(1<<attempt))
@@ -70,8 +74,8 @@ func (c *Client) request(method, path string, payload []byte) ([]byte, error) {
 		if resp.StatusCode < 400 {
 			return responseBody, nil
 		}
-		if !idempotent || !isRetryableStatus(resp.StatusCode) || attempt+1 == maxRequestAttempts {
-			return nil, fmt.Errorf("API %d: %s", resp.StatusCode, string(responseBody[:minInt(len(responseBody), 200)]))
+		if !idempotent || !isRetryableStatus(resp.StatusCode) || attempt+1 == attempts {
+			return nil, &APIError{Status: resp.StatusCode, Body: string(responseBody[:minInt(len(responseBody), 200)])}
 		}
 		time.Sleep(retryDelay(resp, attempt))
 	}
@@ -113,6 +117,32 @@ const (
 	MutationNotApplied MutationState = "not_applied"
 	MutationUnknown    MutationState = "unknown"
 )
+
+// APIError preserves the HTTP status and bounded response body from Jira.
+type APIError struct {
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("API %d: %s", e.Status, e.Body) }
+
+// ClassifyAPIError identifies authentication and visibility failures through wrapping.
+func ClassifyAPIError(err error) (string, int) {
+	var api *APIError
+	if !errors.As(err, &api) {
+		return "", 0
+	}
+	switch api.Status {
+	case 401:
+		return "authentication_failed", api.Status
+	case 403:
+		return "permission_denied", api.Status
+	case 404:
+		return "not_found_or_no_permission", api.Status
+	default:
+		return "", 0
+	}
+}
 
 // MutationError preserves whether Jira confirmed or rejected a write. A
 // transport error after dispatch is always unknown because the server may have
@@ -168,7 +198,7 @@ func (c *Client) mutate(method, path string, payload []byte) ([]byte, error) {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, &MutationError{
 			State: mutationResponseState(resp.StatusCode),
-			Err:   fmt.Errorf("API %d: %s", resp.StatusCode, string(responseBody[:minInt(len(responseBody), 200)])),
+			Err:   &APIError{Status: resp.StatusCode, Body: string(responseBody[:minInt(len(responseBody), 200)])},
 		}
 	}
 	return responseBody, nil
@@ -282,6 +312,19 @@ func (c *Client) GetBoardIssues(boardID, sprintID int) ([]Issue, error) {
 		}
 	}
 	return all, nil
+}
+
+// GetIssueSprint reads only Agile sprint evidence, without retries.
+func (c *Client) GetIssueSprint(issueKey string) (*Sprint, error) {
+	b, err := c.requestWithAttempts(http.MethodGet, issuePath(pathAgileIssue, issueKey)+"?fields=sprint", nil, 1)
+	if err != nil {
+		return nil, err
+	}
+	var issue Issue
+	if err := json.Unmarshal(b, &issue); err != nil {
+		return nil, err
+	}
+	return issue.Fields.Sprint, nil
 }
 
 func (c *Client) GetIssue(issueKey string) (*Issue, error) {
@@ -557,6 +600,14 @@ func (c *Client) UpdateIssue(issueKey string, fields map[string]interface{}) err
 	return err
 }
 
+type lookupError struct {
+	message string
+	cause   error
+}
+
+func (e *lookupError) Error() string { return e.message }
+func (e *lookupError) Unwrap() error { return e.cause }
+
 // ResolveAccountID looks up a Jira user by email and returns their
 // accountId and display name.
 //
@@ -606,7 +657,8 @@ func (c *Client) ResolveAccountID(email string) (accountID, displayName string, 
 		reasons = append(reasons, fmt.Sprintf("jql: %v", jqlErr))
 	}
 	if len(reasons) > 0 {
-		return "", "", fmt.Errorf("no user found for %s (%s)", email, strings.Join(reasons, "; "))
+		message := fmt.Sprintf("no user found for %s (%s)", email, strings.Join(reasons, "; "))
+		return "", "", &lookupError{message: message, cause: errors.Join(pickerErr, jqlErr)}
 	}
 	return "", "", fmt.Errorf("no user found for %s", email)
 }

@@ -117,12 +117,12 @@ func TestExportJSONFailures(t *testing.T) {
 		builderError, writerError error
 	}{
 		{name: "configuration", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "configuration_error", builderError: errors.New("client unavailable")},
-		{name: "boards HTTP 4xx", args: []string{"export"}, wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "boards HTTP 4xx", args: []string{"export"}, wantCode: "permission_denied", status: http.StatusForbidden},
 		{name: "boards parse", args: []string{"export"}, wantCode: "read_failed", response: `{broken`},
 		{name: "no boards", args: []string{"export"}, wantCode: "validation_error", response: `{"values":[]}`},
 		{name: "sprints HTTP 5xx", args: []string{"export", "--board", "7"}, wantCode: "read_failed", status: http.StatusInternalServerError},
 		{name: "sprints parse", args: []string{"export", "--board", "7"}, wantCode: "read_failed", response: `{broken`},
-		{name: "issues HTTP 4xx", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "read_failed", status: http.StatusForbidden},
+		{name: "issues HTTP 4xx", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "permission_denied", status: http.StatusForbidden},
 		{name: "issues HTTP 5xx", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "read_failed", status: http.StatusInternalServerError},
 		{name: "issues parse", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "read_failed", response: `{broken`},
 		{name: "writer", args: []string{"export", "--board", "7", "--sprint", "9"}, wantCode: "output_failed", response: `{"issues":[{"key":"ARA-10"}],"total":1}`, writerError: errors.New("output unavailable")},
@@ -161,6 +161,9 @@ func TestExportJSONFailures(t *testing.T) {
 				t.Fatalf("plain root error in stderr: %q", stderr)
 			}
 			got := decodeMutationError(t, stderr)
+			if tc.status == http.StatusForbidden && (got.HTTPStatus != tc.status || got.Hint == "") {
+				t.Fatalf("missing access details: %+v", got)
+			}
 			if got.Code != tc.wantCode || got.MutationState != jira.MutationNotApplied || got.IssueKey != "" || got.SchemaVersion != "v1" {
 				t.Fatalf("error=%+v, want %s/not_applied/no issueKey/v1", got, tc.wantCode)
 			}

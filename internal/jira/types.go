@@ -226,6 +226,7 @@ type IssueHierarchyRef struct {
 }
 
 type IssueFieldData struct {
+	Sprint      *Sprint              `json:"sprint,omitempty"`
 	Parent      *IssueHierarchyRef   `json:"parent,omitempty"`
 	Subtasks    *[]IssueHierarchyRef `json:"subtasks,omitempty"`
 	Summary     string               `json:"summary"`
@@ -333,6 +334,7 @@ type TicketJSON struct {
 	Parent          *HierarchyJSON       `json:"parent,omitempty"`
 	Subtasks        *[]HierarchyJSON     `json:"subtasks,omitempty"`
 	SubtaskProgress *SubtaskProgressJSON `json:"subtaskProgress,omitempty"`
+	Sprint          *Sprint              `json:"sprint,omitempty"`
 }
 
 // HierarchyJSON preserves the nested issue evidence without fetching each child.
@@ -346,6 +348,27 @@ type HierarchyJSON struct {
 type SubtaskProgressJSON struct {
 	Done  int `json:"done"`
 	Total int `json:"total"`
+}
+
+// SubtaskProgress returns verified Done-category progress, or nil when unavailable.
+func SubtaskProgress(children *[]IssueHierarchyRef) *SubtaskProgressJSON {
+	if children == nil {
+		return nil
+	}
+	progress := &SubtaskProgressJSON{Total: len(*children)}
+	for _, child := range *children {
+		if child.Key == "" || child.Fields.Status == nil || child.Fields.Status.Category == nil {
+			return nil
+		}
+		switch strings.ToLower(child.Fields.Status.Category.Key) {
+		case "done":
+			progress.Done++
+		case "new", "indeterminate":
+		default:
+			return nil
+		}
+	}
+	return progress
 }
 
 func hierarchyJSON(ref IssueHierarchyRef) HierarchyJSON {
@@ -454,6 +477,7 @@ func TextToADF(text string) ADFDoc {
 
 func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	t := TicketJSON{
+		Sprint:        iss.Fields.Sprint,
 		SchemaVersion: "v1",
 		Key:           iss.Key,
 		URL:           browseURL(domain, iss.Key),
@@ -504,25 +528,11 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	}
 	if iss.Fields.Subtasks != nil {
 		children := make([]HierarchyJSON, len(*iss.Fields.Subtasks))
-		progress := &SubtaskProgressJSON{Total: len(children)}
-		complete := true
 		for i, child := range *iss.Fields.Subtasks {
 			children[i] = hierarchyJSON(child)
-			if child.Key == "" {
-				complete = false
-			}
-			switch strings.ToLower(children[i].StatusCategory) {
-			case "done":
-				progress.Done++
-			case "new", "indeterminate":
-			default:
-				complete = false
-			}
 		}
 		t.Subtasks = &children
-		if complete {
-			t.SubtaskProgress = progress
-		}
+		t.SubtaskProgress = SubtaskProgress(iss.Fields.Subtasks)
 	}
 	if iss.Fields.Description != nil {
 		t.Description = iss.Fields.Description.Flatten()

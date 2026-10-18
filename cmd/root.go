@@ -63,6 +63,12 @@ func runRootCommand(root *cobra.Command, args []string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(root.ErrOrStderr(), "Error: %v\n", err)
+	var human *humanPermissionError
+	if errors.As(err, &human) {
+		_, _ = fmt.Fprintln(root.ErrOrStderr(), human.hint)
+	} else if _, _, hint := permissionHint(err, jira.MutationStateOf(err)); hint != "" {
+		_, _ = fmt.Fprintln(root.ErrOrStderr(), hint)
+	}
 	return 1
 }
 

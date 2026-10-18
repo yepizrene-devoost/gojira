@@ -69,17 +69,41 @@ var getCmd = &cobra.Command{
 			return commandError(cmd, "read_failed", "issue could not be read", issueKey, jira.MutationNotApplied, err)
 		}
 
+		var warnings []getWarning
+		iss.Fields.Sprint, err = client.GetIssueSprint(issueKey)
+		if err != nil {
+			code, status := jira.ClassifyAPIError(err)
+			message := "Sprint could not be read: " + err.Error()
+			if code != "" {
+				message = code + ": " + message
+			}
+			warnings = append(warnings, getWarning{Code: "sprint_unavailable", Message: message, HTTPStatus: status})
+		}
+
 		if wantsJSON(cmd) {
-			if err := writeGetJSON(cmd, *iss, domain); err != nil {
+			result := struct {
+				jira.TicketJSON
+				Warnings []getWarning `json:"warnings,omitempty"`
+			}{jira.IssueToTicketJSON(*iss, domain), warnings}
+			if err := writeJSON(cmd, result); err != nil {
 				return reportJSONError(cmd, "output_failed", "issue JSON could not be written", issueKey, jira.MutationNotApplied, err)
 			}
 			return nil
 		}
 
+		for _, warning := range warnings {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s: %s\n", warning.Code, warning.Message)
+		}
 		// Render readable output
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), renderIssueFull(iss))
 		return err
 	},
+}
+
+type getWarning struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"httpStatus,omitempty"`
 }
 
 func writeGetJSON(cmd *cobra.Command, issue jira.Issue, domain string) error {
@@ -104,6 +128,9 @@ func renderIssueFull(iss *jira.Issue) string {
 
 	// Metadata table
 	rows := [][2]string{}
+	if sprint := iss.Fields.Sprint; sprint != nil {
+		rows = append(rows, [2]string{"Sprint", fmt.Sprintf("%s (%s)", sprint.Name, sprint.State)})
+	}
 	if iss.Fields.IssueType != nil {
 		rows = append(rows, [2]string{"Type", iss.Fields.IssueType.Name})
 	}

@@ -2533,7 +2533,14 @@ func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
 	if iss.Fields.Assignee != nil {
 		who = iss.Fields.Assignee.DisplayName
 	}
-	meta := truncateRunes(fmt.Sprintf(" %s • %s", pri, who), cw-2)
+	metaText := fmt.Sprintf(" %s • %s", pri, who)
+	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
+		metaText += fmt.Sprintf(" • %d/%d", progress.Done, progress.Total)
+	}
+	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
+		metaText += " • " + sprint.Name
+	}
+	meta := truncateRunes(metaText, cw-2)
 	metaLine := metaStyle.Render(meta)
 	if selected {
 		metaLine = lipgloss.NewStyle().Background(selBg).Render(padRight(metaLine, cw))
