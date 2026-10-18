@@ -17,6 +17,9 @@ const (
 	// ─── Platform API v3 ──────────────────────────────────────────
 	pathServerInfo             = "/rest/api/3/serverInfo"
 	pathProjects               = "/rest/api/3/project?maxResults=100"
+	pathProjectSearch          = "/rest/api/3/project/search?startAt=%d&maxResults=50"
+	pathProjectByKey           = "/rest/api/3/project/%s"
+	pathMyself                 = "/rest/api/3/myself"
 	pathIssue                  = "/rest/api/3/issue/%s"
 	pathIssueCreate            = "/rest/api/3/issue"
 	pathIssueEditMeta          = "/rest/api/3/issue/%s/editmeta"
