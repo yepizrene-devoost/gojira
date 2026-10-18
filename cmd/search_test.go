@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -77,6 +79,133 @@ func TestSearchJSONErrors(t *testing.T) {
 	}
 }
 
+func TestSearchCompletenessCLI(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		flags         []string
+		response      string
+		warning, meta bool
+		code          int
+	}{
+		{"complete", []string{"--json"}, `{"issues":[],"isLast":true}`, false, false, 0},
+		{"truncated", []string{"--json", "--limit", "1"}, `{"issues":[{"key":"A-1"}],"nextPageToken":"next"}`, true, false, 0},
+		{"metadata empty", []string{"--meta"}, `{"issues":[],"isLast":true}`, false, true, 0},
+		{"conflict", []string{"--json", "--all", "--limit", "50"}, ``, false, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method == http.MethodPost {
+					_, _ = fmt.Fprint(w, `{"count":10}`)
+					return
+				}
+				_, _ = fmt.Fprint(w, tc.response)
+			}))
+			defer srv.Close()
+			var stdout bytes.Buffer
+			code, stderr := runReadCLI(t, append([]string{"search", "project = A"}, tc.flags...), func() (*jira.Client, string, error) {
+				return jira.NewClient(srv.URL, "email", "token"), "jira.example", nil
+			}, &stdout)
+			if code != tc.code {
+				t.Fatalf("code=%d stderr=%s", code, stderr)
+			}
+			if tc.code == 1 {
+				if requests != 0 || decodeMutationError(t, stderr).Code != "validation_error" {
+					t.Fatalf("requests=%d stderr=%s", requests, stderr)
+				}
+				return
+			}
+			if tc.meta {
+				var envelope struct {
+					SchemaVersion string
+					Issues        []jira.TicketJSON
+					Returned      int
+					Truncated     bool
+				}
+				assertSingleJSONDocument(t, stdout.Bytes(), &envelope)
+				if envelope.SchemaVersion != "v1" || envelope.Issues == nil || envelope.Returned != 0 || envelope.Truncated {
+					t.Fatalf("envelope=%+v", envelope)
+				}
+			} else {
+				var tickets []jira.TicketJSON
+				assertSingleJSONDocument(t, stdout.Bytes(), &tickets)
+			}
+			if tc.warning {
+				var warning struct {
+					Code           string
+					Returned       int
+					EstimatedTotal int
+					Hint           string
+				}
+				assertSingleJSONDocument(t, []byte(stderr), &warning)
+				if warning.Code != "results_truncated" || warning.Returned != 1 || warning.EstimatedTotal != 10 || warning.Hint == "" {
+					t.Fatalf("warning=%+v", warning)
+				}
+			} else if stderr != "" {
+				t.Fatalf("stderr=%s", stderr)
+			}
+		})
+	}
+}
+
+func TestSearchAllAndHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		total            int
+		flags            []string
+		want             int
+		truncated, human bool
+	}{
+		{"all pages", 250, []string{"--all", "--meta"}, 250, false, false},
+		{"all cap", 10001, []string{"--all", "--meta"}, 10000, true, false},
+		{"human complete", 2, nil, 2, false, true},
+		{"human truncated", 60, nil, 50, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			returned := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				var size int
+				_, _ = fmt.Sscan(r.URL.Query().Get("maxResults"), &size)
+				n := min(size, tc.total-returned)
+				returned += n
+				_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]jira.Issue, n), "isLast": returned == tc.total, "nextPageToken": fmt.Sprint(returned)})
+			}))
+			defer srv.Close()
+			var stdout bytes.Buffer
+			code, stderr := runReadCLI(t, append([]string{"search", "project = A"}, tc.flags...), func() (*jira.Client, string, error) {
+				return jira.NewClient(srv.URL, "email", "token"), "jira.example", nil
+			}, &stdout)
+			if code != 0 {
+				t.Fatalf("exit=%d stderr=%s", code, stderr)
+			}
+			if tc.human {
+				if !strings.Contains(stdout.String(), fmt.Sprintf("Showing %d issues", tc.want)) || strings.Contains(stdout.String(), "Found") || strings.Contains(stdout.String(), "... and") || strings.Contains(stdout.String(), "in total") {
+					t.Fatalf("output=%s", stdout.String())
+				}
+				if strings.Contains(stderr, "Warning:") != tc.truncated {
+					t.Fatalf("stderr=%s", stderr)
+				}
+			} else {
+				var envelope struct {
+					Issues         []jira.TicketJSON
+					Returned       int
+					Truncated      bool
+					EstimatedTotal *int
+				}
+				assertSingleJSONDocument(t, stdout.Bytes(), &envelope)
+				if len(envelope.Issues) != tc.want || envelope.Returned != tc.want || envelope.Truncated != tc.truncated || envelope.EstimatedTotal != nil || stderr != "" {
+					t.Fatalf("returned=%d truncated=%t stderr=%s", envelope.Returned, envelope.Truncated, stderr)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteSearchJSONUsesCobraOutputAsTopLevelArray(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd := &cobra.Command{}
@@ -96,5 +225,22 @@ func TestWriteSearchJSONUsesCobraOutputAsTopLevelArray(t *testing.T) {
 		if ticket.SchemaVersion != "v1" {
 			t.Errorf("ticket %d SchemaVersion = %q, want v1", i, ticket.SchemaVersion)
 		}
+	}
+}
+
+func TestSearchAllWithLimitFailsInHumanMode(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+	}))
+	defer srv.Close()
+
+	code, stdout, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "search", "x", "--all", "--limit", "5")
+	if code != 1 || stdout != "" || requests != 0 {
+		t.Fatalf("exit = %d, stdout = %q, requests = %d, want exit 1 with no output and no requests", code, stdout, requests)
+	}
+	if !strings.Contains(stderr, "--all cannot be combined with --limit") {
+		t.Fatalf("stderr = %q, want the conflict message", stderr)
 	}
 }

@@ -741,6 +741,114 @@ func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
 	}
 }
 
+func TestSearchIssuesPagination(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		limit, total int
+		countBody    string
+		truncated    bool
+	}{
+		{"partial page", 125, 160, `{"count":160}`, true},
+		{"exact total", 160, 160, ``, false},
+		{"first page last", 50, 2, ``, false},
+		{"count unavailable", 50, 60, `{broken`, true},
+		{"count missing", 50, 60, `{}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			returned, counts := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					counts++
+					if r.URL.Path != pathSearchApproximateCount {
+						t.Errorf("count path = %s", r.URL.Path)
+					}
+					var body map[string]string
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["jql"] != "project = A" {
+						t.Errorf("count body = %v, %v", body, err)
+					}
+					_, _ = fmt.Fprint(w, tc.countBody)
+					return
+				}
+				var size int
+				_, _ = fmt.Sscan(r.URL.Query().Get("maxResults"), &size)
+				if size > 100 || size != min(100, tc.limit-returned) {
+					t.Errorf("page size = %d", size)
+				}
+				if returned > 0 && r.URL.Query().Get("nextPageToken") != fmt.Sprint(returned) {
+					t.Error("missing token")
+				}
+				n := min(size, tc.total-returned)
+				issues := make([]Issue, n)
+				returned += n
+				_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "isLast": returned == tc.total, "nextPageToken": fmt.Sprint(returned)})
+			}))
+			defer srv.Close()
+			result, err := NewClient(srv.URL, "email", "token").SearchIssues("project = A", tc.limit)
+			if err != nil || len(result.Issues) != min(tc.limit, tc.total) || result.Truncated != tc.truncated {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if counts != map[bool]int{true: 1, false: 0}[tc.truncated] {
+				t.Fatalf("counts=%d", counts)
+			}
+			if (result.EstimatedTotal != nil) != (tc.countBody == `{"count":160}`) {
+				t.Fatalf("estimate=%v", result.EstimatedTotal)
+			}
+		})
+	}
+}
+
+func TestSearchWrappersPaginate(t *testing.T) {
+	for _, text := range []bool{false, true} {
+		t.Run(fmt.Sprint(text), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if requests == 1 {
+					_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]Issue, 100), "nextPageToken": "next"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]Issue, 25), "isLast": true, "total": 125})
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			search := client.SearchJQL
+			if text {
+				search = client.SearchText
+			}
+			issues, total, err := search("query", 125)
+			if err != nil || len(issues) != 125 || total != 0 || requests != 2 {
+				t.Fatalf("issues=%d total=%d err=%v requests=%d", len(issues), total, err, requests)
+			}
+		})
+	}
+}
+
+func TestSearchPageSafetyLimit(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": []Issue{}, "nextPageToken": fmt.Sprint(requests)})
+	}))
+	defer srv.Close()
+	_, err := NewClient(srv.URL, "email", "token").SearchIssues("project = A", 50)
+	if err == nil || requests != 1000 {
+		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
+func TestSearchIssuesTokenLoop(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = fmt.Fprint(w, `{"issues":[],"nextPageToken":"same"}`)
+	}))
+	defer srv.Close()
+	_, err := NewClient(srv.URL, "email", "token").SearchIssues("project = A", 200)
+	if err == nil || requests > 3 {
+		t.Fatalf("err=%v requests=%d", err, requests)
+	}
+}
+
 func TestSearchJQLPreservesQueryAtServerBoundary(t *testing.T) {
 	const wantJQL = `project = "A&B" AND summary ~ "50% + #tag"`
 
