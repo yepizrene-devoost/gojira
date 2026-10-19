@@ -250,12 +250,12 @@ mutation or report persistence is provided.
 
 ## Installation
 
-> **Not available yet:** GoJira has no published release, so the commands below
-> cannot install GoJira until the first release separately publishes the installer,
-> archive, and checksum assets. (A shell pipeline may still exit successfully if the download fails.) There is currently no supported no-Go installation route.
+GoJira publishes release archives for Linux, macOS, and Windows on amd64 and
+arm64, with a `checksums.txt` and installer scripts, on the
+[releases page](https://github.com/yepizrene-devoost/gojira/releases). The first
+public release is `v0.1.0`. No Go toolchain or repository checkout is needed.
 
-After that release is published, Linux and macOS users can install without Go or
-a repository checkout:
+Linux and macOS users can install with:
 
 ```bash
 curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh | sh
@@ -268,10 +268,10 @@ choose another destination:
 
 ```bash
 curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
-  | GOJIRA_VERSION=v1.2.3 GOJIRA_INSTALL_DIR="$HOME/bin" sh
+  | GOJIRA_VERSION=v0.1.0 GOJIRA_INSTALL_DIR="$HOME/bin" sh
 ```
 
-After that release is published, Windows users can run this in PowerShell:
+Windows users can run this in PowerShell:
 
 ```powershell
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
@@ -282,7 +282,7 @@ directory to the user `PATH`; open a new terminal afterward. Set overrides in
 the same PowerShell session before running the one-liner:
 
 ```powershell
-$env:GOJIRA_VERSION = 'v1.2.3'
+$env:GOJIRA_VERSION = 'v0.1.0'
 $env:GOJIRA_INSTALL_DIR = "$HOME\bin"
 $env:GOJIRA_SKIP_PATH_UPDATE = '1'
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
@@ -844,8 +844,7 @@ by Git.
 Unlike `make release`, `make build-all` does not read `.env`, create tags,
 or invoke GoReleaser to publish anything. Go may still download missing modules
 or toolchains during a local build; run with `GOPROXY=off GOTOOLCHAIN=local` if
-network access must be prohibited. The installer one-liners above remain
-unavailable until the first release is published separately.
+network access must be prohibited.
 
 `make lint` requires an already installed `golangci-lint` v2.11.4 and fails on a
 missing or different version; it does not install tools. The lint command covers
