@@ -16,6 +16,22 @@ applied write, or retry an unknown write without verification. A
 Other failures retain their existing codes and fields. Human output appends
 the same hint after the existing error line on stderr.
 
+Failed Jira mutations in CLI JSON and opt-in MCP write tools additionally expose
+`httpStatus`, and optional `errors` (field-to-message object) and `errorMessages`
+(string array). For example, a rejected create may include
+`"httpStatus": 400, "errors": {"summary": "Summary is required"}` without changing
+`code`, `message`, or `mutationState`. Only these structured Jira error fields
+are parsed, from at most 64 KiB; oversized, malformed, non-JSON, or unreadable
+error bodies yield only the HTTP status. Each collection has at most eight
+entries; keys and messages are limited to 256 UTF-8 bytes after redaction.
+Configured email, token, and Basic-auth encoded credentials are replaced in
+both keys and messages before truncation. Arbitrary unrelated secrets are not
+recognized: treat Jira messages as untrusted data. Full raw response bodies and
+unfiltered mutation transport errors are never exposed. Human CLI errors use
+the same sanitized details. Transport failures remain generic with an unknown
+outcome and no HTTP status. Writes are never automatically retried; verify an
+unknown outcome in Jira before deciding whether to retry.
+
 `get` still succeeds when its optional Agile sprint read fails. Its JSON
 adds `warnings: [{code, message, httpStatus?}]` with code `sprint_unavailable`;
 classified causes appear in `message`. Warnings are omitted when empty, and

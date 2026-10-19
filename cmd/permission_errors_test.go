@@ -37,7 +37,12 @@ func TestPermissionErrors(t *testing.T) {
 					t.Fatalf("exit=%d out=%s err=%s", exit, out, stderr)
 				}
 				if status == 500 {
-					if envelope.Hint != "" || envelope.HTTPStatus != 0 {
+					wantStatus := 0
+					switch args[0] {
+					case "update", "comment", "log", "backlog", "create":
+						wantStatus = status
+					}
+					if envelope.Hint != "" || envelope.HTTPStatus != wantStatus {
 						t.Fatalf("unclassified: %s", stderr)
 					}
 					return

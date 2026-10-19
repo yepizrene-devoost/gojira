@@ -38,6 +38,8 @@ func permissionHint(cause error, state jira.MutationState) (string, int, string)
 
 type mutationErrorJSON struct {
 	HTTPStatus    int                `json:"httpStatus,omitempty"`
+	Errors        map[string]string  `json:"errors,omitempty"`
+	ErrorMessages []string           `json:"errorMessages,omitempty"`
 	Hint          string             `json:"hint,omitempty"`
 	Cause         string             `json:"cause,omitempty"`
 	SchemaVersion string             `json:"schemaVersion"`
@@ -91,6 +93,10 @@ func reportJSONError(cmd *cobra.Command, code, message, issueKey string, state j
 		IssueKey:      issueKey,
 		MutationState: state,
 	}
+	diagnostics := jira.MutationDiagnostics(cause)
+	envelope.HTTPStatus = diagnostics.HTTPStatus
+	envelope.Errors = diagnostics.Errors
+	envelope.ErrorMessages = diagnostics.ErrorMessages
 	classified, status, hint := permissionHint(cause, state)
 	if classified != "" {
 		if code == "partial_failure" {

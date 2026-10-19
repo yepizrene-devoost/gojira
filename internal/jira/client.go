@@ -116,13 +116,20 @@ const (
 	MutationUnknown    MutationState = "unknown"
 )
 
-// APIError preserves the HTTP status and bounded response body from Jira.
+// APIError preserves HTTP status. Mutation failures retain only sanitized diagnostics.
 type APIError struct {
-	Status int
-	Body   string
+	Status      int
+	Body        string
+	Diagnostics *Diagnostics
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("API %d: %s", e.Status, e.Body) }
+func (e *APIError) Error() string {
+	if e.Diagnostics != nil {
+		detail, _ := json.Marshal(e.Diagnostics)
+		return fmt.Sprintf("API %d: %s", e.Status, detail)
+	}
+	return fmt.Sprintf("API %d: %s", e.Status, e.Body)
+}
 
 // ClassifyAPIError identifies authentication and visibility failures through wrapping.
 func ClassifyAPIError(err error) (string, int) {
@@ -172,7 +179,7 @@ func (c *Client) mutate(method, path string, payload []byte) ([]byte, error) {
 	}
 	req, err := http.NewRequest(method, c.baseURL+path, body)
 	if err != nil {
-		return nil, &MutationError{State: MutationNotApplied, Err: err}
+		return nil, &MutationError{State: MutationNotApplied, Err: errors.New("invalid Jira mutation request")}
 	}
 	req.SetBasicAuth(c.auth, "")
 	req.Header.Set("Accept", "application/json")
@@ -186,18 +193,24 @@ func (c *Client) mutate(method, path string, payload []byte) ([]byte, error) {
 	}
 	resp, err := writeClient.Do(req)
 	if err != nil {
-		return nil, &MutationError{State: MutationUnknown, Err: err}
+		return nil, &MutationError{State: MutationUnknown, Err: errors.New("jira mutation transport failed")}
 	}
-	responseBody, readErr := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if readErr != nil {
-		return nil, &MutationError{State: mutationResponseState(resp.StatusCode), Err: readErr}
-	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxDiagnosticBody+1))
+		if readErr != nil {
+			responseBody = nil
+		}
+		diagnostics := c.diagnostics(resp.StatusCode, responseBody)
+		// Never retain the raw response in the error chain.
 		return nil, &MutationError{
 			State: mutationResponseState(resp.StatusCode),
-			Err:   &APIError{Status: resp.StatusCode, Body: string(responseBody[:minInt(len(responseBody), 200)])},
+			Err:   &APIError{Status: resp.StatusCode, Diagnostics: &diagnostics},
 		}
+	}
+	responseBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, &MutationError{State: MutationApplied, Err: errors.New("reading Jira mutation response failed")}
 	}
 	return responseBody, nil
 }
