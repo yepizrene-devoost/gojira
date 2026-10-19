@@ -1,0 +1,18 @@
+# Issue #14 — Config and token storage safety
+
+- [x] Add focused config and token storage tests with deterministic keyring seams.
+- [x] Propagate token/config persistence errors and handle wizard input read errors.
+- [x] Run focused and broader Go checks; record evidence and commit identity.
+
+## Evidence
+
+- `go test ./internal/config`, `go test ./cmd`, `go test ./...`, `go vet ./...`, and `git diff --check` — passed.
+- Native RDD reliability review — approved; authority burned.
+- Work-unit commit: `3fe360a`.
+
+## Scope
+
+- `internal/config/config.go`
+- `internal/config/config_test.go`
+- `cmd/config.go`
+- `cmd/config_test.go` (if needed for wizard input coverage)

@@ -1,0 +1,12 @@
+# Local Pi runtime state
+.atl/
+.env
+/gojira
+/bin/
+*.exe
+/dist/
+.DS_Store
+
+# Regenerable release documents produced by Make targets
+CHANGELOG.draft.md
+RELEASE_NOTES.md

@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a new feature or enhancement for gojira
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature. The more context, the better.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or missing capability are you hitting today?
+      placeholder: "gojira can't search tickets without knowing JQL..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe what you'd like gojira to do.
+      placeholder: "Add a `/` quick filter to the TUI that searches by key or summary..."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why they don't fit.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of gojira does this affect?
+      options:
+        - TUI (Bubble Tea interface)
+        - CLI (cobra commands)
+        - Jira client / API layer
+        - Configuration / auth
+        - Agent JSON output
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Diagrams, links, screenshots, or anything else that helps reviewers.

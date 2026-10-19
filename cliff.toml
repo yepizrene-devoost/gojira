@@ -1,0 +1,45 @@
+# git-cliff configuration for gojira.
+#
+# Commits follow `type(scope): description` (see AGENTS.md): lowercase type,
+# optional scope, no ticket prefixes and no file paths in the message.
+# Regenerate the draft with `make changelog`.
+
+[changelog]
+# This is reference material for manual curation: no changelog title, release
+# heading, version heading, or date is generated here.
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}\n
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+    # ODD bookkeeping is useful in Git history but not in a release draft.
+    { message = "^docs\\(odd\\)", skip = true },
+    { message = "^feat", group = "Features" },
+    { message = "^fix", group = "Bug Fixes" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^style", group = "Styles" },
+    { message = "^refactor", group = "Refactoring" },
+    { message = "^test", group = "Tests" },
+    { message = "^chore", group = "Chores" },
+    { message = "^revert", group = "Reverts" },
+    # Catch-all, last so it never shadows a named group. AGENTS.md documents
+    # seven conventional types; a commit that uses any other (build:, ci:,
+    # perf:, ...) lands here explicitly instead of letting git-cliff derive an
+    # unstated lowercase group from the raw type.
+    { message = ".*", group = "Other" },
+]
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
