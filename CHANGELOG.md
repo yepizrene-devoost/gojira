@@ -4,6 +4,21 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.1.1 – Documentation update
+
+This release changes documentation only. The binaries contain no code changes
+from v0.1.0.
+
+### Documentation
+
+- Reordered the README so installation, API token, and configuration come
+  before the CLI reference, TUI shortcuts, and the agent-oriented sections
+  (project context, MCP server, reports, and the optional agent guide).
+- Updated the README installation section now that v0.1.0 is published, with
+  pinned-version examples.
+- Documented that release tags in this repository are signed, annotated tags,
+  and how to create and verify one without opening an editor.
+
 ## 📦 v0.1.0 – First public release
 
 ### Interactive Jira workflow
