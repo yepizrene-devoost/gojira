@@ -100,6 +100,40 @@ the Git `scope` when applicable) or `null`, `needsProject`, and `identity`
 instead of guessing. Commands such as `create`, `search` and `backlog` are not
 yet wired to this resolution; keep passing their explicit arguments.
 
+## Optional agent guide
+
+Nothing is installed unless you explicitly run `gojira guide install --yes`.
+Printing or previewing the guide does not create files or directories.
+
+```sh
+gojira guide                                      # print Markdown to stdout
+gojira guide install --path docs/gojira-guide.md --exclude        # preview only
+gojira guide install --path docs/gojira-guide.md --exclude --yes  # install
+```
+
+The preview shows the destination, content size in bytes, and the exclusion line
+when `--exclude` is selected. Installation creates parent directories (`0755`)
+and a new guide file (`0644`). Existing targets are refused without modification;
+there is no overwrite flag. Empty paths, directories, and filenames `AGENTS.md`
+or `CLAUDE.md` (case-insensitive) are always refused.
+
+Choose a per-user location with `--path`, or use `--exclude` for a repository-local
+file. Exclusion requires the destination to be inside a Git working tree and adds
+its repository-relative path once to the local exclude file resolved by Git
+(including linked worktrees), preserving existing lines. Exclusion errors stop
+installation before the guide is written. The exclusion is an anchored, literal
+pattern, so it matches only that file. To keep the guide from being staged by
+accident, a target inside a Git working tree is refused unless `--exclude` is
+passed (the preview refuses it too); if Git cannot be run, the state is unknown and
+the installation is refused. After applying `--exclude` the installer asks Git whether the
+guide is effectively ignored; Git gives the local exclude file the lowest precedence, so
+a negation in the repository ignore rules (for example `!guide.md`) overrides it, and in
+that case the installation is refused and the guide is not written. The exclusion line
+already added stays in the local exclude file; it is harmless and can be removed by hand.
+A path outside any repository needs no flag. No Jira
+connection is needed.
+For a file-free alternative, read the MCP resource `gojira://guide`.
+
 ## Read-only MCP server
 
 Configure credentials once with `gojira config init`, then launch `gojira mcp`.
