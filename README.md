@@ -124,8 +124,43 @@ Diagnostics omit raw Jira bodies and transport details. Invalid arguments make
 no Jira request. Existing CLI JSON contracts are unchanged. In-flight Jira
 requests use the existing HTTP timeout; disconnect/cancellation does not yet
 interrupt those requests for the original tools. The two reporting tools propagate
-context cancellation into in-flight requests. OAuth, write opt-in and client bundles
-are later slices.
+context cancellation into in-flight requests. OAuth and client bundles are later slices.
+
+### Opt-in guarded writes
+
+Run `gojira mcp --allow-writes` to add the following tools; without this flag,
+all existing read-only tools, instructions and results remain unchanged.
+
+| Tool | Arguments |
+| --- | --- |
+| `gojira_create` | `project`, `issueType`, `summary`, optional `description` |
+| `gojira_comment` | `key`, `body` |
+| `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
+| `gojira_assign` | `key`, `accountId` |
+| `gojira_move` | `key`, exact unambiguous `status` |
+| `gojira_update` | `key`, `fields` containing non-empty `summary` and/or `priority` names |
+| `gojira_delete` | `key`, optional `confirmationToken` |
+
+Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
+the CLI, it does not resolve an email. Creation never places an issue in a sprint.
+Updates never replace rich descriptions; prefer appending comments. Create,
+comment and log_work are non-idempotent. No write is automatically retried.
+Results report `schemaVersion:v1`, `action`, optional `issueKey`, and
+`mutationState` (`applied`, `not_applied`, `unknown`), with optional `data` or
+sanitized `code`, `message`, and `hint`. Verify unknown outcomes in Jira before
+retrying; a failed response does not prove that a mutation failed.
+
+Delete first returns a preview containing only action and normalized issue key,
+plus an opaque confirmation token in `data.confirmationToken`. Send the same key
+and token to execute. Tokens live only in server memory, expire after two minutes,
+and are consumed atomically once (including a wrong-key attempt). Restarting the
+server invalidates them. No valid token means no deletion. Ticket text remains
+untrusted. The token forces a deliberate second call and prevents a single-call
+accidental delete. It is NOT proof of human approval: the same agent receives and
+redeems it. The server cannot guarantee client-side human confirmation;
+annotations are hints, not proof of consent.
+Cancellation is checked before execution but cannot interrupt in-flight calls
+through the existing Jira write client.
 
 ## User candidates and time reports
 
