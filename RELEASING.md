@@ -8,7 +8,7 @@ Every merge, tag, push, and publication remains a separate maintainer decision.
 
 1. Prepare and review a `release/vX.Y.Z` branch from `develop`.
 2. Promote that branch to `main` through a pull request.
-3. On an up-to-date, clean `main`, create the local `vX.Y.Z` tag.
+3. On an up-to-date, clean `main`, create the local signed `vX.Y.Z` tag.
 4. Extract and inspect the curated notes with `make release-notes`.
 5. Push the tag only after separately confirming that external action.
 6. Publish with `make release` only after a separate explicit approval.
@@ -95,8 +95,17 @@ The worktree must be clean and `HEAD` must be the reviewed release commit:
 git branch --show-current
 git status --short
 git log -1 --oneline
-git tag vX.Y.Z
+git tag -m "vX.Y.Z" vX.Y.Z
+git tag -v vX.Y.Z
 ```
+
+Commits and release tags in this public repository are GPG-signed. The
+maintainer's local Git configuration enables `commit.gpgsign` and `tag.gpgsign`;
+GitHub branch protection does not currently enforce signatures, so the signature
+is a maintainer practice, not a platform check. With `tag.gpgsign` enabled, a
+plain `git tag vX.Y.Z` creates an annotated tag and opens an editor for its
+message, which stalls a non-interactive shell. Pass `-m` as shown, and confirm
+`git tag -v` reports a good signature before continuing.
 
 Do not tag a release branch. The Makefile intentionally checks for an exact tag
 but does not prove that the commit belongs to `main`; that operator check happens
@@ -129,6 +138,8 @@ publishing action: it creates or replaces the GitHub release and its assets.
 
 - Confirm the GitHub release title, curated notes, and target commit.
 - Confirm archives exist for Linux, macOS, and Windows on amd64 and arm64.
+- Confirm the pushed tag is the signed annotated tag and peels to the reviewed
+  `main` commit: `git ls-remote --tags origin vX.Y.Z`.
 - Verify downloaded archives against `checksums.txt`.
 - Run `gojira version --json` from an archive and confirm the release version.
 
@@ -143,7 +154,7 @@ it locally before retrying:
 
 ```bash
 git tag -d vX.Y.Z
-git tag vX.Y.Z <reviewed-main-commit>
+git tag -m "vX.Y.Z" vX.Y.Z <reviewed-main-commit>
 make release-notes VERSION=vX.Y.Z
 make release
 ```
