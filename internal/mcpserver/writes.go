@@ -98,13 +98,25 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 			if state == jira.MutationUnknown {
 				hint = "Verify the issue in Jira before retrying; outcome unknown. Never retry automatically."
 			}
-			return writeResult(entry.action, key, state, nil, code, "Jira operation failed", hint), nil
+			return writeResult(entry.action, key, state, nil, code, "Jira operation failed", hint, jira.MutationDiagnostics(err)), nil
 		}
 		return writeResult(entry.action, key, jira.MutationApplied, nil, "", "", ""), nil
 	}
 }
-func writeResult(action, key string, state jira.MutationState, data any, code, message, hint string) *mcp.CallToolResult {
+func writeResult(action, key string, state jira.MutationState, data any, code, message, hint string, diagnostics ...jira.Diagnostics) *mcp.CallToolResult {
 	payload := map[string]any{"schemaVersion": "v1", "action": action, "mutationState": state}
+	if len(diagnostics) > 0 {
+		d := diagnostics[0]
+		if d.HTTPStatus != 0 {
+			payload["httpStatus"] = d.HTTPStatus
+		}
+		if len(d.Errors) > 0 {
+			payload["errors"] = d.Errors
+		}
+		if len(d.ErrorMessages) > 0 {
+			payload["errorMessages"] = d.ErrorMessages
+		}
+	}
 	if key != "" {
 		payload["issueKey"] = key
 	}
