@@ -4,6 +4,31 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.2.0 – Safer onboarding and MCP setup
+
+### Configuration
+
+- Mask typed and pasted API tokens with asterisks in the `gojira config init`
+  terminal prompt. Esc or Ctrl+C cancels the prompt without saving.
+- Add `--token-stdin` for non-interactive token input, with explicit `--domain`
+  and `--email`. Existing line-based input without a terminal remains supported.
+- Keep `--token` compatible but warn that command-line arguments can expose
+  credentials through shell history and process lists.
+
+### Agent integration
+
+- Add `gojira mcp config --client codex|json` to print ready-to-paste client
+  configuration using the running executable's absolute path, without credentials
+  or file writes. Output is read-only by default; `--allow-writes` is explicit.
+
+### Documentation
+
+- Add linked English and Spanish integration guides covering API tokens,
+  local configuration, identity checks, and CLI, TUI, and MCP onboarding.
+- Update the README and both guides for masked input and `--token-stdin`.
+- Clarify that `config init` and `config test` check site connectivity, not
+  credential validity. Use `gojira context` to verify the effective identity.
+
 ## 📦 v0.1.1 – Documentation update
 
 This release changes documentation only. The binaries contain no code changes
