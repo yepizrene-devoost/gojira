@@ -15,6 +15,13 @@
   output for automation and AI agents.
 </p>
 
+<p align="center">
+  <strong>New here?</strong> Follow the integration guide — from an Atlassian API token to
+  your first query and your AI client:
+  <a href="docs/integration-guide.md">English</a> ·
+  <a href="docs/integration-guide.es.md">Español</a>
+</p>
+
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
@@ -85,8 +92,14 @@ asset, and it does not remove the need to trust the installer script itself.
 ## Getting your Jira API token
 
 1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Click **Create API token**
-3. Name it (e.g. "GoJira") and copy it
+2. Click **Create API token** (the plain one, not "with scopes": GoJira calls your site
+   address, and Atlassian documents a different base address for scoped tokens)
+3. Name it (e.g. "GoJira"), pick an expiration date (1 to 365 days; Atlassian defaults to
+   one year) and copy the token: Atlassian shows it only once
+
+When a token expires, create a new one and run `gojira config init` again. The
+step-by-step guide, with troubleshooting and AI-client setup, is the
+[integration guide](docs/integration-guide.md) ([Español](docs/integration-guide.es.md)).
 
 ## Configuration
 
@@ -96,11 +109,26 @@ Run the setup wizard once — it stores your domain and email in `~/.config/goji
 gojira config init
 ```
 
-Or non-interactively:
+On a terminal the token prompt is masked: what you type or paste appears as `*` and is
+never displayed (Esc or Ctrl+C cancels without saving). Without a terminal (pipes,
+scripts) it reads one line as before.
+
+To configure without the prompt, pipe the token in instead of passing it as an argument
+(`--domain` and `--email` are then required):
 
 ```bash
-gojira config init --domain mycompany.atlassian.net --email me@example.com --token <API_TOKEN>
+pbpaste | gojira config init --domain mycompany.atlassian.net --email me@example.com --token-stdin
 ```
+
+`pbpaste` prints the clipboard on macOS; use `Get-Clipboard` in PowerShell, `wl-paste` or
+`xclip -o -selection clipboard` on Linux, or the command line of your password manager.
+`--token <API_TOKEN>` still works but is discouraged: it stays in your shell history and
+in the process list, and GoJira prints a warning when you use it.
+
+`config init` ends with a connection line, and `gojira config test` repeats that check,
+but both only prove that the site answers (Jira's server-info endpoint needs no
+credentials). To confirm the email and token are valid, run `gojira context`: it asks
+Jira who you are.
 
 Environment variables still work and take precedence over the config file (useful for CI):
 
@@ -619,11 +647,31 @@ yet wired to this resolution; keep passing their explicit arguments.
 
 Configure credentials once with `gojira config init`, then launch `gojira mcp`.
 Stdout is reserved for MCP stdio frames; do not wrap it with logging to stdout.
-For clients supporting a stdio launch configuration:
+Any MCP client that can launch a local stdio command can use it. Let gojira print
+the entry for you, already pointing at this binary:
 
-```json
-{"mcpServers":{"gojira":{"command":"/absolute/path/to/gojira","args":["mcp"]}}}
+```bash
+gojira mcp config                  # mcpServers JSON (default)
+gojira mcp config --client codex   # Codex config.toml entry
+gojira mcp config --allow-writes   # also grants the guarded write tools
 ```
+
+The output contains no credentials, so it is safe to paste or share; the server
+reads them from `gojira config init`. Without `--allow-writes` the connected
+agent can only read. To let it create tickets, comment, log work or move issues
+(for example for a PM), print the entry with `--allow-writes`; the tools it
+enables and their limits are listed under
+[Opt-in guarded writes](#opt-in-guarded-writes). Where to paste it:
+
+- **Codex** (desktop app, CLI and IDE share it): append the TOML to
+  `~/.codex/config.toml`, or use Settings → MCP servers → Add server → STDIO
+  with the binary path and the argument `mcp`, then restart.
+- **Other clients** (for example Claude Desktop, Cursor, Windsurf, Gemini CLI):
+  paste the JSON into the client's MCP configuration file. The `mcpServers`
+  shape is the common convention, but check your client's documentation for the
+  file location; only Codex has been checked against its official docs.
+
+Web-only chat clients cannot launch local processes and are not supported.
 
 The fixed tool allowlist is `gojira_context`, `gojira_projects`, `gojira_boards`,
 `gojira_sprints` (`boardId`), `gojira_get` (`key`), `gojira_search`
