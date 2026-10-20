@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,75 +14,6 @@ var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage GoJira configuration",
 	Long:  "Initialize, read, or update your GoJira configuration (~/.config/gojira/config.yaml).",
-}
-
-// ─── config init ───────────────────────────────────────────────────────
-
-var configInitCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Set up GoJira configuration interactively",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		domain, _ := cmd.Flags().GetString("domain")
-		email, _ := cmd.Flags().GetString("email")
-		token, _ := cmd.Flags().GetString("token")
-
-		reader := bufio.NewReader(os.Stdin)
-
-		if domain == "" {
-			fmt.Print("Jira domain (e.g. mycompany.atlassian.net): ")
-			value, err := readConfigInput(reader, "domain")
-			if err != nil {
-				return err
-			}
-			domain = value
-		}
-		if email == "" {
-			fmt.Print("Jira email: ")
-			value, err := readConfigInput(reader, "email")
-			if err != nil {
-				return err
-			}
-			email = value
-		}
-		if token == "" {
-			fmt.Print("Jira API token: ")
-			value, err := readConfigInput(reader, "token")
-			if err != nil {
-				return err
-			}
-			token = value
-		}
-
-		if domain == "" || email == "" || token == "" {
-			return fmt.Errorf("domain, email, and token are all required")
-		}
-
-		// Save config
-		cfg := &config.Config{Domain: domain, Email: email}
-		if err := cfg.Save(); err != nil {
-			return fmt.Errorf("saving config: %w", err)
-		}
-		if err := config.SaveToken(token); err != nil {
-			return fmt.Errorf("saving token: %w", err)
-		}
-
-		// Test connection with the just-saved credentials
-		client, _, err := BuildClient()
-		if err != nil {
-			fmt.Printf("⚠ Config saved but could not build client: %v\n", err)
-			fmt.Println("  Try: gojira config test")
-			return nil
-		}
-		info, err := client.TestConnection()
-		if err != nil {
-			fmt.Printf("⚠ Config saved but connection failed: %v\n", err)
-			fmt.Println("  Check your credentials and try: gojira config test")
-			return nil
-		}
-
-		fmt.Printf("✓ Configured and connected to %s\n", info)
-		return nil
-	},
 }
 
 // ─── config set ────────────────────────────────────────────────────────
@@ -220,10 +150,6 @@ func readConfigInput(reader *bufio.Reader, field string) (string, error) {
 }
 
 func init() {
-	configInitCmd.Flags().String("domain", "", "Jira domain (e.g. mycompany.atlassian.net)")
-	configInitCmd.Flags().String("email", "", "Jira email")
-	configInitCmd.Flags().String("token", "", "Jira API token")
-
 	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configGetCmd)

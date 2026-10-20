@@ -109,11 +109,21 @@ Run the setup wizard once — it stores your domain and email in `~/.config/goji
 gojira config init
 ```
 
-Or non-interactively:
+On a terminal the token prompt is masked: what you type or paste appears as `*` and is
+never displayed (Esc or Ctrl+C cancels without saving). Without a terminal (pipes,
+scripts) it reads one line as before.
+
+To configure without the prompt, pipe the token in instead of passing it as an argument
+(`--domain` and `--email` are then required):
 
 ```bash
-gojira config init --domain mycompany.atlassian.net --email me@example.com --token <API_TOKEN>
+pbpaste | gojira config init --domain mycompany.atlassian.net --email me@example.com --token-stdin
 ```
+
+`pbpaste` prints the clipboard on macOS; use `Get-Clipboard` in PowerShell, `wl-paste` or
+`xclip -o -selection clipboard` on Linux, or the command line of your password manager.
+`--token <API_TOKEN>` still works but is discouraged: it stays in your shell history and
+in the process list, and GoJira prints a warning when you use it.
 
 `config init` ends with a connection line, and `gojira config test` repeats that check,
 but both only prove that the site answers (Jira's server-info endpoint needs no

@@ -10,7 +10,7 @@ GoJira talks to Jira Cloud with **your own Atlassian API token**, keeps that tok
 |---|---|---|
 | 1 | [Install GoJira](../README.md#installation) | `gojira version` prints a version |
 | 2 | [Create an Atlassian API token](#2-create-an-atlassian-api-token) | a long token, shown **once** |
-| 3 | `gojira config init` | the prompts for domain, email and token |
+| 3 | `gojira config init` | the prompts for domain, email and token (the token is masked) |
 | 4 | `gojira context` | a line `Identity: <your display name> (active: true)` |
 | 5 | `gojira projects` | the projects you can see |
 
@@ -50,7 +50,7 @@ It asks for three things:
 | `Jira email` | The email of the Atlassian account that created the token |
 | `Jira API token` | The token you copied |
 
-> The token prompt does **not** hide what you type or paste. Do it where nobody can see your screen, and clear the terminal afterwards.
+> The token prompt is **masked**: what you type or paste appears as `*` and is never displayed, so you can paste it safely. Press Esc or Ctrl+C to cancel without saving anything. Without a terminal (a pipe or a script) the token is read as a plain line.
 
 Then verify it with `gojira context`. Without a selected project it prints `Project: not configured; ask the human for a project.` on the first line; that is normal. What matters is the second line, `Identity: <your display name> (active: true)`: it proves the email and token are valid.
 
@@ -69,7 +69,15 @@ export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="..."
 ```
 
-Avoid `gojira config init --token <TOKEN>` on shared machines: shell history keeps the whole command line. GoJira also reads a `.env` file in the folder where you run it.
+To configure without the prompt (scripts, CI), pipe the token in instead of passing it as an argument. `--domain` and `--email` are then required:
+
+```bash
+pbpaste | gojira config init --domain mycompany.atlassian.net --email you@example.com --token-stdin
+```
+
+`pbpaste` prints the clipboard on macOS; use `Get-Clipboard` in PowerShell, `wl-paste` or `xclip -o -selection clipboard` on Linux, or your password manager's command line. Clear the clipboard afterwards. `--token <TOKEN>` still works but is discouraged: it stays in your shell history and in the process list, and GoJira prints a warning when you use it.
+
+GoJira also reads a `.env` file in the folder where you run it.
 
 ## 4. Use it
 
@@ -99,7 +107,7 @@ gojira mcp config --client codex   # the Codex config.toml entry
 - [ ] The token lives in a password manager, not in a note, a commit or a chat.
 - [ ] I picked an expiry and know when to renew it.
 - [ ] I revoke tokens I no longer use.
-- [ ] I use the prompt or environment variables instead of `--token`.
+- [ ] I use the masked prompt or `--token-stdin` instead of `--token`.
 - [ ] My MCP entry is read-only unless I need writes.
 
 ## Troubleshooting
