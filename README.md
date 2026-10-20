@@ -15,6 +15,13 @@
   output for automation and AI agents.
 </p>
 
+<p align="center">
+  <strong>New here?</strong> Follow the integration guide — from an Atlassian API token to
+  your first query and your AI client:
+  <a href="docs/integration-guide.md">English</a> ·
+  <a href="docs/integration-guide.es.md">Español</a>
+</p>
+
 ## Features
 
 - **Kanban board view** — contextual board/sprint/column/page status, active sprint auto-detected, backlog column, horizontal pagination, cursor-following scroll
@@ -85,8 +92,14 @@ asset, and it does not remove the need to trust the installer script itself.
 ## Getting your Jira API token
 
 1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-2. Click **Create API token**
-3. Name it (e.g. "GoJira") and copy it
+2. Click **Create API token** (the plain one, not "with scopes": GoJira calls your site
+   address, and Atlassian documents a different base address for scoped tokens)
+3. Name it (e.g. "GoJira"), pick an expiration date (1 to 365 days; Atlassian defaults to
+   one year) and copy the token: Atlassian shows it only once
+
+When a token expires, create a new one and run `gojira config init` again. The
+step-by-step guide, with troubleshooting and AI-client setup, is the
+[integration guide](docs/integration-guide.md) ([Español](docs/integration-guide.es.md)).
 
 ## Configuration
 
@@ -101,6 +114,11 @@ Or non-interactively:
 ```bash
 gojira config init --domain mycompany.atlassian.net --email me@example.com --token <API_TOKEN>
 ```
+
+`config init` ends with a connection line, and `gojira config test` repeats that check,
+but both only prove that the site answers (Jira's server-info endpoint needs no
+credentials). To confirm the email and token are valid, run `gojira context`: it asks
+Jira who you are.
 
 Environment variables still work and take precedence over the config file (useful for CI):
 
