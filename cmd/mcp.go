@@ -38,5 +38,6 @@ func init() {
 		return newMCPServer(client, domain, allowWrites).Run(cmd.Context(), &mcp.StdioTransport{})
 	}}
 	command.Flags().Bool("allow-writes", false, "Enable guarded Jira write tools (default read-only)")
+	command.AddCommand(newMCPConfigCommand())
 	rootCmd.AddCommand(command)
 }

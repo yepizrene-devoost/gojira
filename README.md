@@ -619,11 +619,31 @@ yet wired to this resolution; keep passing their explicit arguments.
 
 Configure credentials once with `gojira config init`, then launch `gojira mcp`.
 Stdout is reserved for MCP stdio frames; do not wrap it with logging to stdout.
-For clients supporting a stdio launch configuration:
+Any MCP client that can launch a local stdio command can use it. Let gojira print
+the entry for you, already pointing at this binary:
 
-```json
-{"mcpServers":{"gojira":{"command":"/absolute/path/to/gojira","args":["mcp"]}}}
+```bash
+gojira mcp config                  # mcpServers JSON (default)
+gojira mcp config --client codex   # Codex config.toml entry
+gojira mcp config --allow-writes   # also grants the guarded write tools
 ```
+
+The output contains no credentials, so it is safe to paste or share; the server
+reads them from `gojira config init`. Without `--allow-writes` the connected
+agent can only read. To let it create tickets, comment, log work or move issues
+(for example for a PM), print the entry with `--allow-writes`; the tools it
+enables and their limits are listed under
+[Opt-in guarded writes](#opt-in-guarded-writes). Where to paste it:
+
+- **Codex** (desktop app, CLI and IDE share it): append the TOML to
+  `~/.codex/config.toml`, or use Settings → MCP servers → Add server → STDIO
+  with the binary path and the argument `mcp`, then restart.
+- **Other clients** (for example Claude Desktop, Cursor, Windsurf, Gemini CLI):
+  paste the JSON into the client's MCP configuration file. The `mcpServers`
+  shape is the common convention, but check your client's documentation for the
+  file location; only Codex has been checked against its official docs.
+
+Web-only chat clients cannot launch local processes and are not supported.
 
 The fixed tool allowlist is `gojira_context`, `gojira_projects`, `gojira_boards`,
 `gojira_sprints` (`boardId`), `gojira_get` (`key`), `gojira_search`
