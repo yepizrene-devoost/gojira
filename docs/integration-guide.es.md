@@ -12,7 +12,7 @@ GoJira se conecta a Jira Cloud con **tu propio token de API de Atlassian**, guar
 |---|---|---|
 | 1 | [Instalar GoJira](../README.md#installation) | `gojira version` muestra una versión |
 | 2 | [Crear un token de API de Atlassian](#2-crear-un-token-de-api-de-atlassian) | un token largo, mostrado **una sola vez** |
-| 3 | `gojira config init` | las preguntas de dominio, correo y token |
+| 3 | `gojira config init` | las preguntas de dominio, correo y token (el token se enmascara) |
 | 4 | `gojira context` | una línea `Identity: <tu nombre en Jira> (active: true)` |
 | 5 | `gojira projects` | los proyectos que puedes ver |
 
@@ -52,7 +52,7 @@ Te pide tres datos:
 | `Jira email` | El correo de la cuenta de Atlassian que creó el token |
 | `Jira API token` | El token que copiaste |
 
-> La pregunta del token **no oculta** lo que escribes o pegas. Hazlo donde nadie vea tu pantalla y limpia la terminal después.
+> La pregunta del token está **enmascarada**: lo que escribes o pegas aparece como `*` y nunca se muestra, así que puedes pegarlo con seguridad. Pulsa Esc o Ctrl+C para cancelar sin guardar nada. Sin terminal (una tubería o un script), el token se lee como una línea normal.
 
 Después verifica con `gojira context`. Si no hay un proyecto seleccionado, la primera línea será `Project: not configured; ask the human for a project.`; es normal. Lo que importa es la segunda línea, `Identity: <tu nombre en Jira> (active: true)`: demuestra que el correo y el token son válidos.
 
@@ -71,7 +71,15 @@ export JIRA_EMAIL="tu@ejemplo.com"
 export JIRA_API_TOKEN="..."
 ```
 
-Evita `gojira config init --token <TOKEN>` en equipos compartidos: el historial del shell conserva la línea de comandos completa. GoJira también lee un archivo `.env` en la carpeta donde lo ejecutas.
+Para configurar sin la pregunta (scripts, CI), pasa el token por una tubería en lugar de ponerlo como argumento. Entonces `--domain` y `--email` son obligatorios:
+
+```bash
+pbpaste | gojira config init --domain miempresa.atlassian.net --email tu@ejemplo.com --token-stdin
+```
+
+`pbpaste` imprime el portapapeles en macOS; usa `Get-Clipboard` en PowerShell, `wl-paste` o `xclip -o -selection clipboard` en Linux, o la línea de comandos de tu gestor de contraseñas. Limpia el portapapeles después. `--token <TOKEN>` sigue funcionando pero no se recomienda: queda en el historial del shell y en la lista de procesos, y GoJira muestra una advertencia cuando lo usas.
+
+GoJira también lee un archivo `.env` en la carpeta donde lo ejecutas.
 
 ## 4. Usarlo
 
@@ -101,7 +109,7 @@ gojira mcp config --client codex   # la entrada de config.toml de Codex
 - [ ] El token está en un gestor de contraseñas, no en una nota, un commit ni un chat.
 - [ ] Elegí una caducidad y sé cuándo renovarlo.
 - [ ] Reviso y revoco los tokens que ya no uso.
-- [ ] Uso la pregunta de `config init` o las variables de entorno en lugar de `--token`.
+- [ ] Uso la pregunta enmascarada o `--token-stdin` en lugar de `--token`.
 - [ ] Mi entrada de MCP es de solo lectura, salvo que necesite escrituras.
 
 ## Solución de problemas
