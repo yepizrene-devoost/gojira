@@ -9,7 +9,7 @@ import (
 
 // SearchText searches Jira's text index while treating query as a JQL string
 // literal rather than executable JQL.
-func (c *Client) SearchText(query string, maxResults int) ([]Issue, int, error) {
+func (c *Client) SearchText(query string, maxResults int) (SearchResult, error) {
 	escaped := strings.ReplaceAll(query, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	return c.SearchJQL(fmt.Sprintf(`text ~ "%s"`, escaped), maxResults)
@@ -90,7 +90,6 @@ func (c *Client) searchEstimate(jql string) *int {
 	return response.Count
 }
 
-func (c *Client) SearchJQL(jql string, maxResults int) ([]Issue, int, error) {
-	result, err := c.SearchIssues(jql, maxResults)
-	return result.Issues, 0, err
+func (c *Client) SearchJQL(jql string, maxResults int) (SearchResult, error) {
+	return c.SearchIssues(jql, maxResults)
 }

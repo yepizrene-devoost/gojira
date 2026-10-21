@@ -731,6 +731,8 @@ func testIssue(key string) jira.Issue {
 	}
 }
 
+func ptrInt(v int) *int { return &v }
+
 func IssueFields(summary string) jira.IssueFieldData {
 	return jira.IssueFieldData{
 		Summary:  summary,
@@ -1594,7 +1596,7 @@ func TestLocalFilterEnterSearchesJiraAndRoundTripsToFilteredBoard(t *testing.T) 
 	}
 	requestID := m.activeSearchRequest
 	results := []jira.Issue{{Key: "ARA-1", Fields: IssueFields("Login result")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 1})
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results})
 	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 	if m.view != viewKanban || m.filterInput.Value() != "login" {
 		t.Fatalf("search did not return to filtered board: view=%v filter=%q", m.view, m.filterInput.Value())
@@ -1657,7 +1659,7 @@ func TestSearchRequestsIgnoreStaleSuccessAndFailure(t *testing.T) {
 	m, _ = updateModel(t, m, searchMsg{
 		requestID: first,
 		issues:    []jira.Issue{{Key: "OLD-1", Fields: IssueFields("Old")}},
-		total:     1,
+		truncated: true,
 	})
 	m, _ = updateModel(t, m, searchMsg{requestID: first, err: errors.New("stale failure")})
 	if !m.searchLoading || m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 0 {
@@ -1665,9 +1667,65 @@ func TestSearchRequestsIgnoreStaleSuccessAndFailure(t *testing.T) {
 	}
 
 	fresh := []jira.Issue{{Key: "NEW-1", Fields: IssueFields("New")}, {Key: "NEW-2", Fields: IssueFields("Newer")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: second, issues: fresh, total: 8})
-	if m.searchLoading || !m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 2 || m.searchTotal != 8 || m.searchCur != 0 {
+	m, _ = updateModel(t, m, searchMsg{requestID: second, issues: fresh, truncated: true, estimated: ptrInt(8)})
+	if m.searchLoading || !m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 2 || !m.searchTruncated || m.searchEstimated == nil || *m.searchEstimated != 8 || m.searchCur != 0 {
 		t.Fatalf("active search response was not applied: %#v", m)
+	}
+}
+
+// The search header reports completeness honestly: a truncated result shows an
+// estimate when available, "more results" when it is not, and a complete result
+// never invents a total.
+func TestSearchRenderShowsHonestCompleteness(t *testing.T) {
+	issues := func(n int) []jira.Issue {
+		out := make([]jira.Issue, n)
+		for i := range out {
+			out[i] = jira.Issue{Key: fmt.Sprintf("A-%d", i+1), Fields: IssueFields("Thing")}
+		}
+		return out
+	}
+	tests := []struct {
+		name       string
+		msg        searchMsg
+		want       string
+		mustAbsent []string
+	}{
+		{
+			name:       "truncated with estimate",
+			msg:        searchMsg{issues: issues(50), truncated: true, estimated: ptrInt(412)},
+			want:       "50 shown · ≥412 estimated",
+			mustAbsent: []string{"· 0 total"},
+		},
+		{
+			name:       "truncated without estimate",
+			msg:        searchMsg{issues: issues(50), truncated: true},
+			want:       "50 shown · more results",
+			mustAbsent: []string{"· 0 total"},
+		},
+		{
+			name:       "complete result",
+			msg:        searchMsg{issues: issues(42)},
+			want:       "42 shown",
+			mustAbsent: []string{"total", "estimated", "more results"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.width, m.height = 80, 30
+			m, _ = startSearchModel(t, m, "query")
+			tt.msg.requestID = m.activeSearchRequest
+			m, _ = updateModel(t, m, tt.msg)
+			output := ansi.Strip(m.View().Content)
+			if !strings.Contains(output, tt.want) {
+				t.Fatalf("search header missing %q:\n%s", tt.want, output)
+			}
+			for _, absent := range tt.mustAbsent {
+				if strings.Contains(output, absent) {
+					t.Fatalf("search header shows %q:\n%s", absent, output)
+				}
+			}
+		})
 	}
 }
 
@@ -1712,7 +1770,7 @@ func TestSearchResultNavigationClampsAndNewSearchCancelKeepsResults(t *testing.T
 		{Key: "A-2", Fields: IssueFields("Two")},
 		{Key: "A-3", Fields: IssueFields("Three")},
 	}
-	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 3})
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results})
 	for i := 0; i < 10; i++ {
 		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
 	}
@@ -1754,7 +1812,7 @@ func TestSearchResultDetailLoadsFullIssueAndReturnsToSameList(t *testing.T) {
 	m, _ = startSearchModel(t, m, "result")
 	searchRequest := m.activeSearchRequest
 	results := []jira.Issue{{Key: "A-1", Fields: IssueFields("One")}, {Key: "A-2", Fields: IssueFields("Two")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 2})
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results})
 	m.searchCur = 1
 
 	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
@@ -1935,7 +1993,7 @@ func TestSprintRefreshPreservesInFlightSearchDetail(t *testing.T) {
 		t.Fatalf("board refresh invalidated active search: got=%d want=%d", m.activeSearchRequest, searchRequest)
 	}
 	results := []jira.Issue{{Key: "RESULT-1", Fields: IssueFields("Search result")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 1})
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results})
 	m, detailCmd := updateModel(t, m, specialKey(tea.KeyEnter))
 	if detailCmd == nil || m.view != viewDetail || !m.detailLoading {
 		t.Fatalf("search detail did not open during board refresh: view=%v loading=%v", m.view, m.detailLoading)

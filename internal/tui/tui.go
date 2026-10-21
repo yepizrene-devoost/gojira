@@ -239,7 +239,8 @@ type Model struct {
 	searchEditing       bool
 	searchResults       []jira.Issue
 	searchCur           int
-	searchTotal         int
+	searchTruncated     bool
+	searchEstimated     *int
 	searchLoading       bool
 	searchCompleted     bool
 	searchErr           error
@@ -292,7 +293,8 @@ type detailMsg struct {
 type searchMsg struct {
 	requestID uint64
 	issues    []jira.Issue
-	total     int
+	truncated bool
+	estimated *int
 	err       error
 }
 type clipboardMsg struct {
@@ -679,7 +681,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchCompleted = true
 		m.searchErr = msg.err
 		m.searchResults = msg.issues
-		m.searchTotal = msg.total
+		m.searchTruncated = msg.truncated
+		m.searchEstimated = msg.estimated
 		m.searchCur = 0
 		return m, nil
 
@@ -1955,7 +1958,8 @@ func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	m.searchEditing = true
 	m.searchResults = nil
 	m.searchCur = 0
-	m.searchTotal = 0
+	m.searchTruncated = false
+	m.searchEstimated = nil
 	m.searchLoading = false
 	m.searchCompleted = false
 	m.searchErr = nil
@@ -1980,7 +1984,8 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.searchEditing = false
 	m.searchResults = nil
 	m.searchCur = 0
-	m.searchTotal = 0
+	m.searchTruncated = false
+	m.searchEstimated = nil
 	m.searchLoading = true
 	m.searchCompleted = false
 	m.searchErr = nil
@@ -1990,8 +1995,8 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.view = viewSearch
 	client := m.client
 	return m, func() tea.Msg {
-		issues, total, err := client.SearchText(query, 50)
-		return searchMsg{requestID: requestID, issues: issues, total: total, err: err}
+		result, err := client.SearchText(query, 50)
+		return searchMsg{requestID: requestID, issues: result.Issues, truncated: result.Truncated, estimated: result.EstimatedTotal, err: err}
 	}
 }
 
@@ -2451,7 +2456,15 @@ func (m Model) renderSearch() string {
 		b.WriteString(subStyle.Render("No tickets found."))
 	default:
 		if m.searchCompleted {
-			_, _ = fmt.Fprintf(&b, "%d shown · %d total\n\n", len(m.searchResults), m.searchTotal)
+			shown := len(m.searchResults)
+			switch {
+			case m.searchTruncated && m.searchEstimated != nil:
+				_, _ = fmt.Fprintf(&b, "%d shown · ≥%d estimated\n\n", shown, *m.searchEstimated)
+			case m.searchTruncated:
+				_, _ = fmt.Fprintf(&b, "%d shown · more results\n\n", shown)
+			default:
+				_, _ = fmt.Fprintf(&b, "%d shown\n\n", shown)
+			}
 		}
 		visible := len(m.searchResults)
 		if m.contentHeight() > 0 {
