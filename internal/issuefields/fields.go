@@ -240,3 +240,21 @@ func ValidateEditMeta(meta *jira.EditMeta, requested map[string][]string) error 
 	}
 	return nil
 }
+
+// ParseLabelList splits a comma-separated label list for an editor that has no flags:
+// every name is trimmed and an empty entry, or an empty list, is rejected. Unlike the
+// name lists of components and versions, duplicates are left to Jira, as in the CLI.
+func ParseLabelList(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, fmt.Errorf("labels must contain at least one name")
+	}
+	parts := strings.Split(value, ",")
+	labels := make([]string, len(parts))
+	for i, part := range parts {
+		labels[i] = strings.TrimSpace(part)
+		if labels[i] == "" {
+			return nil, fmt.Errorf("labels contain an empty entry")
+		}
+	}
+	return labels, nil
+}

@@ -3,6 +3,7 @@ package issuefields
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
@@ -73,6 +74,33 @@ func TestPrepareReportsTheFailingField(t *testing.T) {
 			var invalid *ValidationError
 			if !errors.As(err, &invalid) || invalid.Field != tc.field {
 				t.Fatalf("error=%v, want a ValidationError for field %q", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestParseLabelList(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     []string
+	}{
+		{"single", "solo", []string{"solo"}},
+		{"several", "one,two,three", []string{"one", "two", "three"}},
+		{"trims every name", " a ,  b ", []string{"a", "b"}},
+		{"keeps the order and case", "Zeta,alpha", []string{"Zeta", "alpha"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseLabelList(tc.in)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("labels=%v err=%v, want %v", got, err, tc.want)
+			}
+		})
+	}
+	for _, in := range []string{"", "   ", ",", "a,", ",a", "a,,b", "a, ,b"} {
+		t.Run("rejects "+in, func(t *testing.T) {
+			got, err := ParseLabelList(in)
+			if err == nil || got != nil {
+				t.Fatalf("labels=%v err=%v, want an error and no labels for %q", got, err, in)
 			}
 		})
 	}

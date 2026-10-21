@@ -481,7 +481,7 @@ including the MCP server and per-option gaps, is in
 | Read ticket detail (dates, time, comments, worklogs) | `get` (`--json`) | `Enter` (detail modal) |
 | Search | `search` (`--json`) | `s` and `/` |
 | Create ticket (optionally in a sprint) | `create` | `n` |
-| Edit fields | `update` | `e` (description), `E` (other fields) |
+| Edit fields | `update` | `e` (description), `U` (summary, priority, labels), `E` (other fields) |
 | Add comment | `comment` | `m` |
 | Log work / show worklog | `log` (`--show`) | `w` |
 | Transition by name | `move` | `t` |
@@ -574,8 +574,20 @@ where search started.
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
+| `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+The `U` form shows the current summary, priority name and comma-separated labels. Only what
+you changed is sent, with the same update `gojira update --summary --priority --labels`
+builds (priority by name, as in the CLI). Summary and priority cannot be emptied and labels
+cannot be cleared, as in the CLI and the MCP tool; label names are trimmed and none may be
+empty. Saving with no change sends nothing. One `Ctrl+S` sends one update and one refresh,
+never retried automatically: after a failure the text stays for another `Ctrl+S`, and if
+the update was applied but the refresh failed, `Ctrl+S` retries only the refresh. `Esc`
+leaves the form but cannot cancel a request already sent, and a late reply is discarded
+if you moved to another ticket or board. On success the open ticket and its board card or
+search row show the new values at once.
 
 Assignment resolves the typed email to a Jira account with the same lookup as
 `gojira assign` (an exact email match, never a guess); an unknown or ambiguous
