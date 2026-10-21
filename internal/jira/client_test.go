@@ -451,7 +451,7 @@ func TestRequestRetriesTransportErrors(t *testing.T) {
 				}, nil
 			})
 
-			if _, _, err := client.SearchJQL("project = A", 0); err != nil {
+			if _, err := client.SearchJQL("project = A", 0); err != nil {
 				t.Fatal(err)
 			}
 			if hits != tc.wantHits {
@@ -490,7 +490,7 @@ func TestRequestRetriesTransientResponses(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient(srv.URL, "e@x.com", "tok")
-			_, _, err := client.SearchJQL("project = A", 0)
+			_, err := client.SearchJQL("project = A", 0)
 			if tc.name == "client error is immediate" {
 				if err == nil || !strings.Contains(err.Error(), "API 400") {
 					t.Fatalf("error = %v, want immediate API 400 failure", err)
@@ -734,7 +734,7 @@ func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient(srv.URL, "e@x.com", "tok")
-			if _, _, err := client.SearchText(tt.query, 50); err != nil {
+			if _, err := client.SearchText(tt.query, 50); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -815,11 +815,60 @@ func TestSearchWrappersPaginate(t *testing.T) {
 			if text {
 				search = client.SearchText
 			}
-			issues, total, err := search("query", 125)
-			if err != nil || len(issues) != 125 || total != 0 || requests != 2 {
-				t.Fatalf("issues=%d total=%d err=%v requests=%d", len(issues), total, err, requests)
+			result, err := search("query", 125)
+			if err != nil || len(result.Issues) != 125 || result.Truncated || result.EstimatedTotal != nil || requests != 2 {
+				t.Fatalf("issues=%d truncated=%v estimate=%v err=%v requests=%d", len(result.Issues), result.Truncated, result.EstimatedTotal, err, requests)
 			}
 		})
+	}
+}
+
+// Search wrappers report completeness honestly: a reached limit with more
+// results sets Truncated and, when the best-effort count succeeds, an estimate;
+// a complete result never claims truncation.
+func TestSearchWrappersReportTruncationAndEstimate(t *testing.T) {
+	for _, text := range []bool{false, true} {
+		t.Run(fmt.Sprint(text), func(t *testing.T) {
+			searches := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					_, _ = fmt.Fprint(w, `{"count":412}`)
+					return
+				}
+				searches++
+				_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]Issue, 100), "nextPageToken": "next"})
+			}))
+			defer srv.Close()
+			client := NewClient(srv.URL, "email", "token")
+			var result SearchResult
+			var err error
+			if text {
+				result, err = client.SearchText("query", 100)
+			} else {
+				result, err = client.SearchJQL("query", 100)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Issues) != 100 || !result.Truncated || result.EstimatedTotal == nil || *result.EstimatedTotal != 412 || searches != 1 {
+				t.Fatalf("truncated search incomplete: issues=%d truncated=%v estimate=%v searches=%d", len(result.Issues), result.Truncated, result.EstimatedTotal, searches)
+			}
+		})
+	}
+}
+
+func TestSearchWrapperCompleteResultHasNoEstimate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]Issue, 5), "isLast": true})
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "email", "token")
+	result, err := client.SearchJQL("project = A", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 5 || result.Truncated || result.EstimatedTotal != nil {
+		t.Fatalf("complete search claimed truncation: issues=%d truncated=%v estimate=%v", len(result.Issues), result.Truncated, result.EstimatedTotal)
 	}
 }
 
@@ -864,7 +913,7 @@ func TestSearchJQLPreservesQueryAtServerBoundary(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "e@x.com", "tok")
-	if _, _, err := client.SearchJQL(wantJQL, 0); err != nil {
+	if _, err := client.SearchJQL(wantJQL, 0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -897,7 +946,7 @@ func TestMalformedSuccessBodySurfacesDecodeError(t *testing.T) {
 		{"GetIssueFull", func() error { _, err := client.GetIssueFull("A-1"); return err }},
 		{"GetIssueEditMeta", func() error { _, err := client.GetIssueEditMeta("A-1"); return err }},
 		{"GetProjects", func() error { _, err := client.GetProjects(); return err }},
-		{"SearchJQL", func() error { _, _, err := client.SearchJQL("project = A", 10); return err }},
+		{"SearchJQL", func() error { _, err := client.SearchJQL("project = A", 10); return err }},
 		{"GetTransitions", func() error { _, err := client.GetTransitions("A-1"); return err }},
 		{"GetWorklog", func() error { _, err := client.GetWorklog("A-1"); return err }},
 		{"CreateIssue", func() error {
