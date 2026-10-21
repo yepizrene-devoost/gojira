@@ -472,6 +472,10 @@ do not trigger permission pre-checks or automatic 4xx retries.
 
 ### CLI and TUI parity
 
+The matrix below compares only the CLI and the TUI. The full three-surface matrix,
+including the MCP server and per-option gaps, is in
+[docs/interface-parity.md](docs/interface-parity.md).
+
 | Capability | CLI | TUI |
 |---|---|---|
 | Read ticket detail (dates, time, comments, worklogs) | `get` (`--json`) | `Enter` (detail modal) |
@@ -486,7 +490,7 @@ do not trigger permission pre-checks or automatic 4xx retries.
 | List sprints | `sprint list` | `S` chooser |
 | Move to sprint | `sprint move` | `S` |
 | Move to backlog | `backlog` | `b` |
-| Assign | `assign` | not available |
+| Assign (by email) | `assign` | `A` |
 | Child progress and sprint | `get --json` | board cards |
 
 Agent-oriented extras exist only in the CLI: `--json` on every command except
@@ -519,6 +523,7 @@ validate on a disposable issue first; deletion is permanent.
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `A` (Shift+A) | Assign the selected card by email: type the assignee's email, `Enter` assigns once, `Esc` cancels |
 | `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
 | `b` | From a selected card or ticket detail, move to backlog with one request |
 | `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
@@ -568,8 +573,17 @@ where search started.
 | `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
+| `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+Assignment resolves the typed email to a Jira account with the same lookup as
+`gojira assign` (an exact email match, never a guess); an unknown or ambiguous
+email assigns nothing and shows the error. One `Enter` sends one lookup and one
+assignment, never retried automatically, and repeated keys cannot start a second
+request. `Esc` leaves the form but cannot cancel an assignment already sent to
+Jira, and a late reply is discarded if you moved to another ticket or board. On
+success the board (or the search you came from) refreshes.
 
 Comment entry converts plain text to ADF (mentions are not supported) and rejects
 empty comments locally. After a successful write, a failed detail refresh offers
@@ -717,12 +731,21 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
 | `gojira_assign` | `key`, `accountId` |
 | `gojira_move` | `key`, exact unambiguous `status` |
-| `gojira_update` | `key`, `fields` containing non-empty `summary` and/or `priority` names |
+| `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
 | `gojira_delete` | `key`, optional `confirmationToken` |
 
 Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
 the CLI, it does not resolve an email. Creation never places an issue in a sprint.
-Updates never replace rich descriptions; prefer appending comments. Create,
+`gojira_update` takes the same fields as `gojira update`. An empty string clears
+`description` and `dueDate`, `[]` clears `components` and `fixVersions`, and `null`
+clears `storyPoints`; `labels` needs at least one non-empty, trimmed name (as in
+the CLI, labels cannot be cleared). `storyPoints` (a finite decimal) and
+`storyPointsField` (`customfield_NNN`) must be sent together. Values are
+validated, and the issue's edit metadata is checked, before anything is sent; a
+rejected value returns a `validation_error` naming the field with
+`mutationState:not_applied`. Replacing a description sends plain text converted
+to ADF and may discard rich ADF formatting that plain text cannot represent;
+prefer appending a comment when formatting matters. Create,
 comment and log_work are non-idempotent. No write is automatically retried.
 Results report `schemaVersion:v1`, `action`, optional `issueKey`, and
 `mutationState` (`applied`, `not_applied`, `unknown`), with optional `data` or
