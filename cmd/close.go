@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
+	"github.com/yepizrene-devoost/gojira/internal/lifecycle"
 )
 
 func init() {
@@ -25,27 +25,11 @@ func init() {
 			if err != nil {
 				return commandError(cmd, "read_failed", "available transitions could not be read", key, jira.MutationNotApplied, err)
 			}
-			var candidates []jira.Transition
-			var descriptions []string
-			for _, tr := range transitions {
-				if tr.To == nil || tr.To.Category == nil {
-					continue
-				}
-				category := tr.To.Category.Key
-				if (action == "close" && category == "done") || (action == "reopen" && (category == "new" || category == "indeterminate")) {
-					candidates = append(candidates, tr)
-					descriptions = append(descriptions, fmt.Sprintf("%s: %s -> %s (%s)", tr.ID, tr.Name, tr.To.Name, category))
-				}
+			transition, err := lifecycle.Select(lifecycle.Action(action), transitions)
+			if err != nil {
+				return commandError(cmd, "validation_error", err.Error(), key, jira.MutationNotApplied, err)
 			}
-			if len(candidates) != 1 {
-				listing := "none"
-				if len(descriptions) > 0 {
-					listing = strings.Join(descriptions, "; ")
-				}
-				message := fmt.Sprintf("%s requires exactly one available transition; candidates: %s", action, listing)
-				return commandError(cmd, "validation_error", message, key, jira.MutationNotApplied, fmt.Errorf("%s", message))
-			}
-			if err := client.TransitionIssue(key, candidates[0].ID); err != nil {
+			if err := client.TransitionIssue(key, transition.ID); err != nil {
 				state := jira.MutationStateOf(err)
 				message := action + " failed"
 				if state == jira.MutationUnknown {

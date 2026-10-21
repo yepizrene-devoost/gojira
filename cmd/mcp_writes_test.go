@@ -22,7 +22,7 @@ func TestMCPWrites(t *testing.T) {
 			var lastRequest atomic.Value
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
-					_, _ = w.Write([]byte(`{"transitions":[{"id":"1","name":"Done"}]}`))
+					_, _ = w.Write([]byte(`{"transitions":[{"id":"1","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}},{"id":"2","name":"Reopen","to":{"name":"To Do","statusCategory":{"key":"new"}}}]}`))
 					return
 				}
 				body, _ := io.ReadAll(r.Body)
@@ -52,7 +52,7 @@ func TestMCPWrites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list.Tools) != 15 {
+			if len(list.Tools) != 19 {
 				t.Fatalf("tools=%d", len(list.Tools))
 			}
 			for _, tool := range list.Tools {
@@ -70,6 +70,10 @@ func TestMCPWrites(t *testing.T) {
 				{"assign", map[string]any{"key": "DEMO-1", "accountId": "id"}},
 				{"move", map[string]any{"key": "DEMO-1", "status": "Done"}},
 				{"update", map[string]any{"key": "DEMO-1", "fields": map[string]any{"summary": "Example"}}},
+				{"sprint_move", map[string]any{"key": "DEMO-1", "sprintId": 5}},
+				{"backlog", map[string]any{"key": "DEMO-1"}},
+				{"close", map[string]any{"key": "DEMO-1"}},
+				{"reopen", map[string]any{"key": "DEMO-1"}},
 				{"delete", map[string]any{"key": "DEMO-1"}},
 			} {
 				before := mutations.Load()
@@ -111,13 +115,17 @@ func TestMCPWrites(t *testing.T) {
 					t.Fatalf("%s request count", test.name)
 				}
 				expected := map[string]string{
-					"create":   "POST /rest/api/3/issue ",
-					"comment":  "POST /rest/api/3/issue/DEMO-1/comment ",
-					"log_work": "POST /rest/api/3/issue/DEMO-1/worklog ",
-					"assign":   "PUT /rest/api/3/issue/DEMO-1/assignee ",
-					"move":     "POST /rest/api/3/issue/DEMO-1/transitions ",
-					"update":   "PUT /rest/api/3/issue/DEMO-1 ",
-					"delete":   "DELETE /rest/api/3/issue/DEMO-1 ",
+					"create":      "POST /rest/api/3/issue ",
+					"comment":     "POST /rest/api/3/issue/DEMO-1/comment ",
+					"log_work":    "POST /rest/api/3/issue/DEMO-1/worklog ",
+					"assign":      "PUT /rest/api/3/issue/DEMO-1/assignee ",
+					"move":        "POST /rest/api/3/issue/DEMO-1/transitions ",
+					"update":      "PUT /rest/api/3/issue/DEMO-1 ",
+					"delete":      "DELETE /rest/api/3/issue/DEMO-1 ",
+					"sprint_move": "POST /rest/agile/1.0/sprint/5/issue ",
+					"backlog":     "POST /rest/agile/1.0/backlog/issue ",
+					"close":       "POST /rest/api/3/issue/DEMO-1/transitions ",
+					"reopen":      "POST /rest/api/3/issue/DEMO-1/transitions ",
 				}
 				request := lastRequest.Load().(string)
 				if !strings.HasPrefix(request, expected[test.name]) {

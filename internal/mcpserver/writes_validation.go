@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yepizrene-devoost/gojira/internal/issuefields"
@@ -13,8 +15,9 @@ var writeProjectPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var writeTimePattern = regexp.MustCompile(`^[1-9][0-9]*[wdhm]( +[1-9][0-9]*[wdhm])*$`)
 
 type writeRequest struct {
-	values map[string]string
-	update *issuefields.Prepared
+	values   map[string]string
+	update   *issuefields.Prepared
+	sprintID int
 }
 
 func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string) {
@@ -34,6 +37,7 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	}
 	values := map[string]string{}
 	var update *issuefields.Prepared
+	sprintID := 0
 	for name, raw := range fields {
 		if !allowed[name] {
 			return nil, "unexpected argument"
@@ -48,6 +52,14 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 				return nil, message
 			}
 			values[name] = string(raw)
+			continue
+		}
+		if slices.Contains(entry.integers, name) {
+			id, ok := positiveJiraID(raw)
+			if !ok {
+				return nil, name + " must be a positive integer"
+			}
+			values[name], sprintID = strconv.Itoa(id), id
 			continue
 		}
 		var value string
@@ -82,7 +94,7 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	if token, ok := values["confirmationToken"]; ok && strings.TrimSpace(token) == "" {
 		return nil, "confirmationToken must not be empty"
 	}
-	return &writeRequest{values: values, update: update}, ""
+	return &writeRequest{values: values, update: update, sprintID: sprintID}, ""
 }
 
 // prepareUpdate decodes the heterogeneous update object once at the boundary.
@@ -164,4 +176,21 @@ func prepareUpdate(raw json.RawMessage) (*issuefields.Prepared, string) {
 		return nil, updateValidationMessage(err)
 	}
 	return &prepared, ""
+}
+
+// maxJiraID is the largest identifier Jira's integer fields accept.
+const maxJiraID = 2147483647
+
+// positiveJiraID accepts only a bare JSON integer between 1 and maxJiraID: no strings,
+// fractions, exponents, signs, booleans or leading zeros.
+func positiveJiraID(raw json.RawMessage) (int, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text[0] < '1' || text[0] > '9' {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || id > maxJiraID {
+		return 0, false
+	}
+	return int(id), true
 }

@@ -733,9 +733,22 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_move` | `key`, exact unambiguous `status` |
 | `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
 | `gojira_delete` | `key`, optional `confirmationToken` |
+| `gojira_sprint_move` | `key`, `sprintId` (positive integer) |
+| `gojira_backlog` | `key` |
+| `gojira_close` | `key` |
+| `gojira_reopen` | `key` |
 
 Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
-the CLI, it does not resolve an email. Creation never places an issue in a sprint.
+the CLI, it does not resolve an email. Creation never places an issue in a sprint;
+`gojira_sprint_move` moves one existing issue into the sprint with that ID (list
+them with `gojira_sprints`), and `gojira_backlog` takes it out of its future and
+active sprints. Like the CLI, a success only means Jira accepted the request:
+the resulting sprint membership is not read back. `gojira_close` and
+`gojira_reopen` choose the transition exactly like `gojira close` and
+`gojira reopen`: the single available one whose destination status category is
+`done` (close) or `new` or `indeterminate` (reopen). With none or several, they
+return a `validation_error` listing the candidates and change nothing; then use
+`gojira_move` with an exact status name.
 `gojira_update` takes the same fields as `gojira update`. An empty string clears
 `description` and `dueDate`, `[]` clears `components` and `fixVersions`, and `null`
 clears `storyPoints`; `labels` needs at least one non-empty, trimmed name (as in

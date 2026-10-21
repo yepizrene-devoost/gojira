@@ -42,10 +42,10 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Log work | `log` | `gojira_log_work` | `w` |
 | Assign | `assign` (by email) | **Partial**: `gojira_assign` takes an account ID only (find it with `gojira_users_search`) | `A` (by email) |
 | Transition by status name | `move` | `gojira_move` | `t` |
-| Close or reopen by status category | `close`, `reopen` | No (use `gojira_move`) | `X` |
+| Close or reopen by status category | `close`, `reopen` | `gojira_close`, `gojira_reopen` | `X` |
 | Delete | `delete --confirm KEY` | `gojira_delete` (preview plus single-use token) | `D` (type the key) |
-| Move to a sprint | `sprint move` | No | `S`, `a` |
-| Move to the backlog | `backlog` | No | `b` |
+| Move to a sprint | `sprint move` | `gojira_sprint_move` (by sprint ID) | `S`, `a` |
+| Move to the backlog | `backlog` | `gojira_backlog` | `b` |
 
 MCP write tools exist only when the server starts with `--allow-writes`.
 
