@@ -4,6 +4,57 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.3.0 – Parity units: shared writes, sprint lifecycle and TUI field editor
+
+### Multi-surface parity
+
+All three surfaces (CLI, MCP, TUI) share the same business rules for update,
+sprint lifecycle and field editing. The parity audit (issue #30) drives these
+changes: code is shared, surface-specific adapters handle flags, structured
+tools and visual forms separately.
+
+#### Shared update fields
+
+- The MCP tool `gojira_update` now uses the same field validation, preparation and
+  error messaging that the CLI `update` command builds, so both surfaces produce
+  identical change-only payloads, reject the same invalid inputs and surface
+  actionable messages on validation failure.
+- MCP now permits description replacement (plain text sent as valid ADF),
+  superseding the previous prohibition. Rich-ADF formatting is still lost on
+  update; see the integration guide.
+- Story points can be set or cleared through a paired field-ID lookup rather
+  than a separate tool call.
+
+#### Sprint lifecycle writes
+
+- New MCP write tools: `gojira_sprint_move` (add issues to a sprint),
+  `gojira_backlog` (move issues to backlog), `gojira_close` and
+  `gojira_reopen` (transition by status category or exact transition).
+- Shared `internal/lifecycle.Select`, `Close`, `Reopen` – the CLI and MCP
+  validate transitions once, use the same selection UI, and the CLI retains
+  its existing output format.
+- Sprint moves require an active-sprint board ID or the user supplies it
+  explicitly.
+
+#### TUI field editor
+
+- `U` in the ticket detail opens a bounded form to edit summary, priority and
+  labels. Tab/Shift-Tab moves focus, paste injects text, `Ctrl+S` saves, `Esc`
+  cancels.
+- Only changed fields are sent; empty summary, empty priority and cleared
+  labels are rejected inline with zero requests (matching CLI/MCP constraints).
+- On success the open detail and the board card/search row refresh with the
+  new values. On failure the form stays with the typed text so another save
+  is possible. A failed refresh after an applied update retries only the
+  refresh.
+- `ParseLabelList` in `internal/issuefields` trims comma-separated input,
+  preserves order/case and rejects empty entries.
+
+### Release notes
+
+- Changelog entries for v0.2.0 are preserved below.
+- Signed release tags: all v0.x tags are PGP signed annotated tags.
+
 ## 📦 v0.2.0 – Safer onboarding and MCP setup
 
 ### Configuration
