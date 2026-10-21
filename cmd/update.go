@@ -1,16 +1,13 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"math/big"
-	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yepizrene-devoost/gojira/internal/issuefields"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
@@ -31,117 +28,42 @@ var updateCmd = &cobra.Command{
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		issueKey := args[0]
-		fields := map[string]interface{}{}
-		metadataFields := map[string][]string{}
-		storyPointsChanged := cmd.Flags().Changed("story-points")
-		storyPointsFieldChanged := cmd.Flags().Changed("story-points-field")
-		if storyPointsChanged != storyPointsFieldChanged {
-			err := fmt.Errorf("--story-points and --story-points-field must be provided together")
-			return commandError(cmd, "validation_error", "story points flags must be paired", issueKey, jira.MutationNotApplied, err)
-		}
-		storyPointsField := ""
-		if storyPointsChanged {
-			storyPointsField, _ = cmd.Flags().GetString("story-points-field")
-			if err := validateStoryPointsField(storyPointsField); err != nil {
-				return commandError(cmd, "validation_error", "invalid story points field", issueKey, jira.MutationNotApplied, err)
+		flag := func(name string) *string {
+			if !cmd.Flags().Changed(name) {
+				return nil
 			}
-			raw, _ := cmd.Flags().GetString("story-points")
-			points, err := parseStoryPoints(raw)
-			if err != nil {
-				return commandError(cmd, "validation_error", "invalid story points", issueKey, jira.MutationNotApplied, err)
-			}
-			fields[storyPointsField] = points
+			value, _ := cmd.Flags().GetString(name)
+			return &value
 		}
-
-		if s, _ := cmd.Flags().GetString("summary"); s != "" {
-			fields["summary"] = s
+		prepared, err := issuefields.Prepare(issuefields.Input{
+			Summary: flag("summary"), Description: flag("description"), Priority: flag("priority"), Labels: flag("labels"),
+			DueDate: flag("due-date"), Components: flag("components"), FixVersions: flag("fix-versions"),
+			StoryPoints: flag("story-points"), StoryPointsField: flag("story-points-field"),
+		})
+		if err != nil {
+			return commandError(cmd, "validation_error", err.(*issuefields.ValidationError).Message, issueKey, jira.MutationNotApplied, err)
 		}
-		if cmd.Flags().Changed("description") {
-			description, _ := cmd.Flags().GetString("description")
-			if description == "" {
-				fields["description"] = nil
-			} else {
-				fields["description"] = jira.TextToADF(description)
-			}
-		}
-		if p, _ := cmd.Flags().GetString("priority"); p != "" {
-			fields["priority"] = map[string]string{"name": p}
-		}
-		if l, _ := cmd.Flags().GetString("labels"); l != "" {
-			labels := strings.Split(l, ",")
-			for i := range labels {
-				labels[i] = strings.TrimSpace(labels[i])
-			}
-			fields["labels"] = labels
-		}
-
-		if cmd.Flags().Changed("due-date") {
-			dueDate, _ := cmd.Flags().GetString("due-date")
-			if err := validateDueDate(dueDate); err != nil {
-				return commandError(cmd, "validation_error", "invalid due date", issueKey, jira.MutationNotApplied, err)
-			}
-			if dueDate == "" {
-				fields["duedate"] = nil
-			} else {
-				fields["duedate"] = dueDate
-			}
-			metadataFields["duedate"] = nil
-		}
-		for _, flagField := range []struct {
-			flag  string
-			field string
-		}{
-			{flag: "components", field: "components"},
-			{flag: "fix-versions", field: "fixVersions"},
-		} {
-			if !cmd.Flags().Changed(flagField.flag) {
-				continue
-			}
-			raw, _ := cmd.Flags().GetString(flagField.flag)
-			names, err := parseCommaNames(raw, flagField.flag)
-			if err != nil {
-				return commandError(cmd, "validation_error", "invalid "+flagField.flag, issueKey, jira.MutationNotApplied, err)
-			}
-			values := make([]map[string]string, len(names))
-			for i, name := range names {
-				values[i] = map[string]string{"name": name}
-			}
-			fields[flagField.field] = values
-			metadataFields[flagField.field] = names
-		}
-
-		if len(fields) == 0 {
-			err := fmt.Errorf("specify at least one field to update (--summary, --description, --priority, --labels, --due-date, --components, --fix-versions, --story-points with --story-points-field)")
-			return commandError(cmd, "validation_error", "at least one field must be specified", issueKey, jira.MutationNotApplied, err)
-		}
-
 		client, domain, err := buildClient()
 		if err != nil {
 			return commandError(cmd, "configuration_error", "Jira client configuration is unavailable", issueKey, jira.MutationNotApplied, err)
 		}
-		if len(metadataFields) > 0 || storyPointsChanged {
+		if prepared.NeedsMetadata() {
 			meta, err := client.GetIssueEditMeta(issueKey)
 			if err != nil {
 				return commandError(cmd, "metadata_failed", "issue edit metadata is unavailable", issueKey, jira.MutationNotApplied, err)
 			}
-			if err := validateEditMeta(meta, metadataFields); err != nil {
-				return commandError(cmd, "validation_error", "requested field update is not allowed", issueKey, jira.MutationNotApplied, err)
-			}
-			if storyPointsChanged {
-				if err := validateStoryPointsEditMeta(meta, storyPointsField); err != nil {
-					return commandError(cmd, "validation_error", "story points field is not editable", issueKey, jira.MutationNotApplied, err)
-				}
+			if err := prepared.ValidateMetadata(meta); err != nil {
+				return commandError(cmd, "validation_error", err.(*issuefields.ValidationError).Message, issueKey, jira.MutationNotApplied, err)
 			}
 		}
-		if err := client.UpdateIssue(issueKey, fields); err != nil {
+		if err := client.UpdateIssue(issueKey, prepared.Fields); err != nil {
 			return commandError(cmd, "mutation_failed", "issue update failed", issueKey, jira.MutationStateOf(err), err)
 		}
 		if wantsJSON(cmd) {
-			return writeMutationResultWithStoryPoints(cmd, client, domain, issueKey, storyPointsField)
+			return writeMutationResultWithStoryPoints(cmd, client, domain, issueKey, prepared.StoryPointsField)
 		}
-
-		updated := make([]string, 0, len(fields))
-		for key := range fields {
+		updated := make([]string, 0, len(prepared.Fields))
+		for key := range prepared.Fields {
 			updated = append(updated, key)
 		}
 		sort.Strings(updated)
@@ -150,100 +72,8 @@ var updateCmd = &cobra.Command{
 	},
 }
 
-var storyPointsValuePattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
-
 func validateStoryPointsField(value string) error {
 	return jira.ValidateCustomFieldID(value)
-}
-
-func parseStoryPoints(value string) (any, error) {
-	if value == "" {
-		return nil, nil
-	}
-	if !storyPointsValuePattern.MatchString(value) {
-		return nil, fmt.Errorf("--story-points must be a finite decimal number or explicitly empty")
-	}
-	if _, ok := new(big.Rat).SetString(value); !ok {
-		return nil, fmt.Errorf("--story-points must be a finite decimal number or explicitly empty")
-	}
-	return json.Number(value), nil
-}
-
-func validateStoryPointsEditMeta(meta *jira.EditMeta, field string) error {
-	if meta == nil {
-		return fmt.Errorf("jira returned empty edit metadata")
-	}
-	fieldMeta, present := meta.Fields[field]
-	if !present {
-		return fmt.Errorf("field %q is not editable for this issue", field)
-	}
-	if fieldMeta.Schema.Type != "number" {
-		return fmt.Errorf("field %q has schema type %q, want number", field, fieldMeta.Schema.Type)
-	}
-	for _, operation := range fieldMeta.Operations {
-		if operation == "set" {
-			return nil
-		}
-	}
-	return fmt.Errorf("field %q does not support the set operation", field)
-}
-
-func validateDueDate(value string) error {
-	if value == "" {
-		return nil
-	}
-	parsed, err := time.Parse("2006-01-02", value)
-	if err != nil || parsed.Format("2006-01-02") != value {
-		return fmt.Errorf("--due-date must be a real calendar date in YYYY-MM-DD format")
-	}
-	return nil
-}
-
-func parseCommaNames(value, flag string) ([]string, error) {
-	if value == "" {
-		return []string{}, nil
-	}
-	parts := strings.Split(value, ",")
-	names := make([]string, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for i, part := range parts {
-		name := strings.TrimSpace(part)
-		if name == "" {
-			return nil, fmt.Errorf("--%s contains an empty entry", flag)
-		}
-		canonical := strings.ToLower(name)
-		if _, exists := seen[canonical]; exists {
-			return nil, fmt.Errorf("--%s contains duplicate entry %q", flag, name)
-		}
-		seen[canonical] = struct{}{}
-		names[i] = name
-	}
-	return names, nil
-}
-
-func validateEditMeta(meta *jira.EditMeta, requested map[string][]string) error {
-	if meta == nil {
-		return fmt.Errorf("jira returned empty edit metadata")
-	}
-	for field, names := range requested {
-		fieldMeta, editable := meta.Fields[field]
-		if !editable {
-			return fmt.Errorf("field %q is not editable for this issue", field)
-		}
-		if len(names) == 0 || fieldMeta.AllowedValues == nil {
-			continue
-		}
-		allowed := make(map[string]struct{}, len(*fieldMeta.AllowedValues))
-		for _, value := range *fieldMeta.AllowedValues {
-			allowed[value.Name] = struct{}{}
-		}
-		for _, name := range names {
-			if _, ok := allowed[name]; !ok {
-				return fmt.Errorf("%q is not an allowed value for field %q", name, field)
-			}
-		}
-	}
-	return nil
 }
 
 func init() {

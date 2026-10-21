@@ -42,7 +42,7 @@ func TestWriteValidation(t *testing.T) {
 		}
 	}
 	update := writeTools()[5]
-	for _, raw := range []string{`{"key":"ABC-1","fields":{"description":"text"}}`, `{"key":"ABC-1","fields":{"summary":null}}`, `{"key":"ABC-1","fields":{}}`} {
+	for _, raw := range []string{`{"key":"ABC-1","fields":{"description":42}}`, `{"key":"ABC-1","fields":{"description":null}}`, `{"key":"ABC-1","fields":{"description":"text","unknown":"value"}}`, `{"key":"ABC-1","fields":{"summary":null}}`, `{"key":"ABC-1","fields":{}}`} {
 		if _, message := validateWrite(update, json.RawMessage(raw)); message == "" {
 			t.Fatalf("accepted %s", raw)
 		}

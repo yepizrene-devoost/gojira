@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,7 +27,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"gojira_boards", "gojira_context", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete"}
+	names := []string{"gojira_boards", "gojira_context", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete", "gojira_sprint_move", "gojira_backlog", "gojira_close", "gojira_reopen"}
 	if len(list.Tools) != len(names) {
 		t.Fatalf("tools=%d", len(list.Tools))
 	}
@@ -36,8 +37,12 @@ func TestWriteEnabledSurface(t *testing.T) {
 		`{"type":"object","properties":{"key":{"type":"string"},"timeSpent":{"type":"string"},"comment":{"type":"string"}},"required":["key","timeSpent"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"accountId":{"type":"string"}},"required":["key","accountId"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"status":{"type":"string"}},"required":["key","status"],"additionalProperties":false}`,
-		`{"type":"object","properties":{"key":{"type":"string"},"fields":{"type":"object","properties":{"summary":{"type":"string"},"priority":{"type":"string"}},"required":[],"additionalProperties":false}},"required":["key","fields"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"},"fields":{"type":"object","properties":{"summary":{"type":"string"},"priority":{"type":"string"},"description":{"type":"string","description":"Plain text converted to ADF; empty string clears description. Replacing a description this way may discard rich ADF formatting that plain text cannot represent"},"dueDate":{"type":"string","description":"Real calendar date YYYY-MM-DD; empty string clears dueDate."},"labels":{"type":"array","items":{"type":"string"},"minItems":1},"components":{"type":"array","items":{"type":"string"},"description":"Component names; [] clears components."},"fixVersions":{"type":"array","items":{"type":"string"},"description":"Fix version names; [] clears fixVersions."},"storyPoints":{"type":["number","null"],"description":"Finite decimal number; null clears storyPoints. Requires storyPointsField."},"storyPointsField":{"type":"string"}},"required":[],"additionalProperties":false,"minProperties":1}},"required":["key","fields"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"confirmationToken":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"},"sprintId":{"type":"integer","minimum":1}},"required":["key","sprintId"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
 	}
 	for i, tool := range list.Tools {
 		if tool.Name != names[i] {
@@ -47,6 +52,16 @@ func TestWriteEnabledSurface(t *testing.T) {
 		if i < 8 {
 			continue
 		}
+		if tool.Name == "gojira_update" {
+			for _, phrase := range []string{"plain text converted to ADF", "Replacing a description this way may discard rich ADF formatting that plain text cannot represent", "empty string clears description and dueDate", "[] clears components and fixVersions", "null clears storyPoints"} {
+				if !strings.Contains(tool.Description, phrase) {
+					t.Errorf("update description missing %q", phrase)
+				}
+			}
+		}
+		if i >= 15 && !strings.Contains(tool.Description, "never retry automatically") {
+			t.Errorf("%s description must say that it never retries automatically: %q", tool.Name, tool.Description)
+		}
 		raw, _ := json.Marshal(tool.InputSchema)
 		var got, want any
 		_ = json.Unmarshal(raw, &got)
@@ -55,7 +70,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 			t.Errorf("%s schema=%s want %s", tool.Name, raw, schemas[i-8])
 		}
 		destructive := i == 14
-		expected := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: i == 11 || i == 13}
+		expected := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: i == 11 || i == 13 || i == 15 || i == 16}
 		if !reflect.DeepEqual(tool.Annotations, expected) {
 			t.Errorf("%s annotations=%+v want %+v", tool.Name, tool.Annotations, expected)
 		}

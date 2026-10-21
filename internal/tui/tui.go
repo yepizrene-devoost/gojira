@@ -47,6 +47,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "↑/↓ or k/j", action: "Move within a column"},
 	{keys: "Enter", action: "Open ticket detail"},
 	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
+	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search all Jira tickets"},
 	{keys: "t", action: "Transition ticket"},
@@ -54,6 +55,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "D", action: "Permanently delete (type exact key)"},
 	{keys: "n", action: "Create issue"},
 	{keys: "a", action: "Add ticket to active sprint"},
+	{keys: "A", action: "Assign ticket by email"},
 	{keys: "S", action: "Choose a future/active sprint"},
 	{keys: "b", action: "Move ticket to backlog"},
 	{keys: "C", action: "Copy column as JSON"},
@@ -135,6 +137,8 @@ const (
 	viewFieldsEdit
 	viewSprintChoose
 	viewDeleteConfirm
+	viewAssign
+	viewBasicsEdit
 )
 
 type column struct {
@@ -145,6 +149,8 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
+	assignment assignmentState
+	basics basicsState
 	lifecycleRequest uint64
 	lifecycleBoard uint64
 	lifecycleSearch uint64
@@ -398,7 +404,7 @@ func (m Model) startBoardLoad(board jira.Board) (Model, tea.Cmd) {
 		m.transitionResultErrBoardID = 0
 	}
 	if m.view == viewKanban || m.view == viewTransition ||
-		((m.view == viewDetail || m.view == viewDescriptionEdit || m.view == viewFieldsEdit) && m.detailReturn != viewSearch) {
+		((m.view == viewDetail || m.view == viewDescriptionEdit || m.view == viewFieldsEdit || m.view == viewBasicsEdit) && m.detailReturn != viewSearch) {
 		m.view = viewKanban
 		m.detail = nil
 		m.detailScroll = 0
@@ -865,6 +871,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(4*time.Second))
 
+	case assignmentResolvedMsg:
+		return m.assignmentResolved(msg)
+	case assignmentDoneMsg:
+		return m.assignmentDone(msg)
+	case basicsUpdatedMsg:
+		return m.basicsUpdated(msg)
 	case lifecycleDoneMsg:
 		if msg.request != m.lifecycleRequest || msg.board != m.loadedBoardRequest || msg.search != m.activeSearchRequest || m.activeBoardRequest != 0 || m.view == viewBoards || !m.lifecycleBusy { return m, nil }
 		m.lifecycleBusy = false
@@ -904,6 +916,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewAssign:
+			return m.updateAssignment(msg)
 		case viewDeleteConfirm:
 			return m.updateDeleteConfirm(msg)
 		case viewSprintChoose:
@@ -926,10 +940,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDescriptionEdit(msg)
 		case viewFieldsEdit:
 			return m.updateFieldsEdit(msg)
+		case viewBasicsEdit:
+			return m.updateBasicsEdit(msg)
 		}
 
 	case tea.PasteMsg:
 		switch m.view {
+		case viewBasicsEdit:
+			return m.pasteBasics(msg)
+		case viewAssign:
+			if m.assignment.busy || m.assignment.finished { return m, nil }
+			var cmd tea.Cmd
+			m.assignment.input, cmd = m.assignment.input.Update(msg)
+			return m, cmd
 		case viewWorklog:
 			var cmd tea.Cmd
 			m.worklogInput, cmd = m.worklogInput.Update(msg)
@@ -1200,6 +1223,8 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n":
 		return m.enterCreate()
+	case "A":
+		if len(cols) > m.colCur && m.colCur >= 0 && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) { return m.startAssignment(cols[m.colCur].issues[m.rowCur]) }
 	case "a":
 		if m.colCur >= len(cols) {
 			return m, nil
@@ -1362,6 +1387,8 @@ func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "A":
+		if m.detail != nil && !m.detailLoading { return m.startAssignment(*m.detail) }
 	case "X", "D":
 		if m.detail != nil && !m.detailLoading { return m.startLifecycle(*m.detail, msg.String() == "D") }
 	case "S", "b":
@@ -1417,6 +1444,8 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "E":
 		if m.detail != nil { return m.openFieldsEdit() }
+	case "U":
+		if m.detail != nil && !m.detailLoading { return m.startBasicsEdit(*m.detail) }
 	case "e", "m":
 		if m.detail != nil {
 			m.commentEntry = msg.String() == "m"
@@ -2254,6 +2283,8 @@ func (m Model) View() tea.View {
 		}
 		b.WriteString(m.composeOverlay(background, m.renderDetail()))
 
+	case viewAssign:
+		b.WriteString(m.assignmentView())
 	case viewDeleteConfirm:
 		b.WriteString(titleStyle.Render("Permanently delete " + m.lifecycleKey))
 		b.WriteString("\nThis cannot be undone. Type the exact issue key, then Enter. Esc cancels.\n")
@@ -2353,6 +2384,11 @@ func (m Model) View() tea.View {
 		background := m.renderKanban()
 		if m.detailReturn == viewSearch { background = m.renderSearch() }
 		b.WriteString(m.composeOverlay(background, m.renderFieldsEdit()))
+
+	case viewBasicsEdit:
+		background := m.renderKanban()
+		if m.detailReturn == viewSearch { background = m.renderSearch() }
+		b.WriteString(m.composeOverlay(background, m.renderBasicsEdit()))
 
 	case viewDescriptionEdit:
 		background := m.renderKanban()
@@ -2569,7 +2605,7 @@ func (m Model) kanbanStatus(boardName, sprintName string, col, totalCols, page, 
 
 func (m Model) kanbanFooter(curPage, totalPages, totalCols int) string {
 	full := fmt.Sprintf(
-		"[←→] Cols  [↑↓] Issues  [Enter] Detail  [/] Filter  [s] Search  [?] Help  [t] Transition  [n] New  [a] To Sprint  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
+		"[←→] Cols  [↑↓] Issues  [Enter] Detail  [/] Filter  [s] Search  [?] Help  [t] Transition  [n] New  [a] To Sprint  [A] Assign  [C] Copy Col  [esc] Back    Col %d/%d  Page %d/%d",
 		m.colCur+1, totalCols, curPage, totalPages)
 	if m.width <= 0 || ansi.StringWidth(full) <= m.width {
 		return full
@@ -2947,5 +2983,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[A] Assign  [U] Summary, priority, labels"
 }

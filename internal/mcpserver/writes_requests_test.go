@@ -175,9 +175,18 @@ func TestWriteMoveAmbiguityRequests(t *testing.T) {
 	}
 }
 func TestWriteDescriptionRejectedWithoutRequests(t *testing.T) {
-	a, store, log := writeTestAdapter(t, 200, "", time.Now)
-	res := callWriteTest(t, a, store, "update", map[string]any{"key": "ABC-1", "fields": map[string]any{"description": "replace"}})
-	if res["code"] != "validation_error" || len(log.snapshot()) != 0 {
-		t.Fatalf("result=%v requests=%v", res, log.snapshot())
+	// Plain text replacement is supported; malformed descriptions still cannot
+	// reach Jira, including when a valid description accompanies an unknown field.
+	for _, fields := range []map[string]any{
+		{"description": 42},
+		{"description": nil},
+		{"description": "replace", "unknown": "value"},
+		{},
+	} {
+		a, store, log := writeTestAdapter(t, 200, "", time.Now)
+		res := callWriteTest(t, a, store, "update", map[string]any{"key": "ABC-1", "fields": fields})
+		if res["code"] != "validation_error" || res["mutationState"] != "not_applied" || len(log.snapshot()) != 0 {
+			t.Fatalf("result=%v requests=%v", res, log.snapshot())
+		}
 	}
 }

@@ -472,12 +472,16 @@ do not trigger permission pre-checks or automatic 4xx retries.
 
 ### CLI and TUI parity
 
+The matrix below compares only the CLI and the TUI. The full three-surface matrix,
+including the MCP server and per-option gaps, is in
+[docs/interface-parity.md](docs/interface-parity.md).
+
 | Capability | CLI | TUI |
 |---|---|---|
 | Read ticket detail (dates, time, comments, worklogs) | `get` (`--json`) | `Enter` (detail modal) |
 | Search | `search` (`--json`) | `s` and `/` |
 | Create ticket (optionally in a sprint) | `create` | `n` |
-| Edit fields | `update` | `e` (description), `E` (other fields) |
+| Edit fields | `update` | `e` (description), `U` (summary, priority, labels), `E` (other fields) |
 | Add comment | `comment` | `m` |
 | Log work / show worklog | `log` (`--show`) | `w` |
 | Transition by name | `move` | `t` |
@@ -486,7 +490,7 @@ do not trigger permission pre-checks or automatic 4xx retries.
 | List sprints | `sprint list` | `S` chooser |
 | Move to sprint | `sprint move` | `S` |
 | Move to backlog | `backlog` | `b` |
-| Assign | `assign` | not available |
+| Assign (by email) | `assign` | `A` |
 | Child progress and sprint | `get --json` | board cards |
 
 Agent-oriented extras exist only in the CLI: `--json` on every command except
@@ -519,6 +523,7 @@ validate on a disposable issue first; deletion is permanent.
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type + summary + description) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
+| `A` (Shift+A) | Assign the selected card by email: type the assignee's email, `Enter` assigns once, `Esc` cancels |
 | `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
 | `b` | From a selected card or ticket detail, move to backlog with one request |
 | `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
@@ -568,8 +573,29 @@ where search started.
 | `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
+| `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
+| `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |
 | `Esc` | Back to the board or search results |
+
+The `U` form shows the current summary, priority name and comma-separated labels. Only what
+you changed is sent, with the same update `gojira update --summary --priority --labels`
+builds (priority by name, as in the CLI). Summary and priority cannot be emptied and labels
+cannot be cleared, as in the CLI and the MCP tool; label names are trimmed and none may be
+empty. Saving with no change sends nothing. One `Ctrl+S` sends one update and one refresh,
+never retried automatically: after a failure the text stays for another `Ctrl+S`, and if
+the update was applied but the refresh failed, `Ctrl+S` retries only the refresh. `Esc`
+leaves the form but cannot cancel a request already sent, and a late reply is discarded
+if you moved to another ticket or board. On success the open ticket and its board card or
+search row show the new values at once.
+
+Assignment resolves the typed email to a Jira account with the same lookup as
+`gojira assign` (an exact email match, never a guess); an unknown or ambiguous
+email assigns nothing and shows the error. One `Enter` sends one lookup and one
+assignment, never retried automatically, and repeated keys cannot start a second
+request. `Esc` leaves the form but cannot cancel an assignment already sent to
+Jira, and a late reply is discarded if you moved to another ticket or board. On
+success the board (or the search you came from) refreshes.
 
 Comment entry converts plain text to ADF (mentions are not supported) and rejects
 empty comments locally. After a successful write, a failed detail refresh offers
@@ -717,12 +743,34 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
 | `gojira_assign` | `key`, `accountId` |
 | `gojira_move` | `key`, exact unambiguous `status` |
-| `gojira_update` | `key`, `fields` containing non-empty `summary` and/or `priority` names |
+| `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
 | `gojira_delete` | `key`, optional `confirmationToken` |
+| `gojira_sprint_move` | `key`, `sprintId` (positive integer) |
+| `gojira_backlog` | `key` |
+| `gojira_close` | `key` |
+| `gojira_reopen` | `key` |
 
 Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
-the CLI, it does not resolve an email. Creation never places an issue in a sprint.
-Updates never replace rich descriptions; prefer appending comments. Create,
+the CLI, it does not resolve an email. Creation never places an issue in a sprint;
+`gojira_sprint_move` moves one existing issue into the sprint with that ID (list
+them with `gojira_sprints`), and `gojira_backlog` takes it out of its future and
+active sprints. Like the CLI, a success only means Jira accepted the request:
+the resulting sprint membership is not read back. `gojira_close` and
+`gojira_reopen` choose the transition exactly like `gojira close` and
+`gojira reopen`: the single available one whose destination status category is
+`done` (close) or `new` or `indeterminate` (reopen). With none or several, they
+return a `validation_error` listing the candidates and change nothing; then use
+`gojira_move` with an exact status name.
+`gojira_update` takes the same fields as `gojira update`. An empty string clears
+`description` and `dueDate`, `[]` clears `components` and `fixVersions`, and `null`
+clears `storyPoints`; `labels` needs at least one non-empty, trimmed name (as in
+the CLI, labels cannot be cleared). `storyPoints` (a finite decimal) and
+`storyPointsField` (`customfield_NNN`) must be sent together. Values are
+validated, and the issue's edit metadata is checked, before anything is sent; a
+rejected value returns a `validation_error` naming the field with
+`mutationState:not_applied`. Replacing a description sends plain text converted
+to ADF and may discard rich ADF formatting that plain text cannot represent;
+prefer appending a comment when formatting matters. Create,
 comment and log_work are non-idempotent. No write is automatically retried.
 Results report `schemaVersion:v1`, `action`, optional `issueKey`, and
 `mutationState` (`applied`, `not_applied`, `unknown`), with optional `data` or
