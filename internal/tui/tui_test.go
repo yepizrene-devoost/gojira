@@ -767,6 +767,50 @@ func makeTestModel(cols int, issuesPerCol int) Model {
 	}
 }
 
+// The active Kanban column carries a color-independent focus cue: a leading
+// marker on its header, visible even when the column is empty, while inactive
+// columns (including empty ones) show no marker and no placeholder.
+func TestActiveColumnHeaderShowsFocusCue(t *testing.T) {
+	m := makeTestModel(3, 2)
+	m.columns[1].issues = nil
+	m.columns[2].issues = nil
+	m.colCur = 1
+
+	active := ansi.Strip(m.renderColumn(m.columns[1], true, 30, 20, 5))
+	inactiveFull := ansi.Strip(m.renderColumn(m.columns[0], false, 30, 20, 5))
+	inactiveEmpty := ansi.Strip(m.renderColumn(m.columns[2], false, 30, 20, 5))
+	if !strings.Contains(active, "▌ ColB (0)") {
+		t.Fatalf("active empty column header lacks focus marker:\n%s", active)
+	}
+	if strings.Contains(inactiveFull, "▌") || strings.Contains(inactiveEmpty, "▌") {
+		t.Fatal("inactive column header shows focus marker")
+	}
+	if !strings.Contains(active, "(empty column)") {
+		t.Fatalf("active empty column lacks placeholder:\n%s", active)
+	}
+	if strings.Contains(inactiveEmpty, "(empty column)") {
+		t.Fatal("inactive empty column shows placeholder")
+	}
+
+	// Full render: exactly one placeholder overall, on the active empty column.
+	output := ansi.Strip(m.View().Content)
+	if n := strings.Count(output, "(empty column)"); n != 1 {
+		t.Fatalf("expected exactly one empty-column placeholder, got %d:\n%s", n, output)
+	}
+}
+
+// Enter on an active empty column gives explicit feedback instead of a silent
+// no-op, and does not start a detail request.
+func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
+	m := makeTestModel(2, 1)
+	m.columns[1].issues = nil
+	m.colCur = 1
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	if m.view != viewKanban || m.toast != "Column is empty" || m.activeDetailRequest != 0 || m.detailLoading {
+		t.Fatalf("empty-column Enter feedback wrong: view=%v toast=%q detailReq=%d loading=%v", m.view, m.toast, m.activeDetailRequest, m.detailLoading)
+	}
+}
+
 func TestKanbanMultipleColumnsFit(t *testing.T) {
 	m := makeTestModel(7, 5)
 	cpp := m.colsPerPage()

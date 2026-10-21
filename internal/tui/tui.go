@@ -31,6 +31,7 @@ var (
 	subStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	colHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
+	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4"))
 	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
 	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
 	selBg        = lipgloss.Color("#3D2B6B")
@@ -1146,8 +1147,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
-			if m.rowCur >= 0 && m.rowCur < len(issues) {
-				key := issues[m.rowCur].Key
+			if m.rowCur >= 0 && m.rowCur < len(issues) {				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
 				m.view = viewDetail
 				m.detail = nil
@@ -1165,6 +1165,10 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					iss, err := m.client.GetIssueFull(key)
 					return detailMsg{issue: iss, issueKey: key, boardRequest: boardRequest, detailRequest: detailRequest, err: err}
 				}
+			}
+			if len(issues) == 0 {
+				m.toast = "Column is empty"
+				return m, clearToastAfter(3*time.Second)
 			}
 		}
 	case "/":
@@ -2784,10 +2788,21 @@ func visiblePageStart(colCur, colsPerPage, total int) int {
 func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots int) string {
 	lines := make([]string, 0, colH)
 
-	hdr := fmt.Sprintf(" %s (%d) ", truncateRunes(col.name, cw-6), len(col.issues))
-	hdr = padRight(hdr, cw)
-	hdr = colHeaderSty.Render(hdr)
+	var hdr string
+	if isActive {
+		hdr = fmt.Sprintf("▌ %s (%d) ", truncateRunes(col.name, cw-8), len(col.issues))
+		hdr = padRight(hdr, cw)
+		hdr = activeColHeaderSty.Render(hdr)
+	} else {
+		hdr = fmt.Sprintf(" %s (%d) ", truncateRunes(col.name, cw-6), len(col.issues))
+		hdr = padRight(hdr, cw)
+		hdr = colHeaderSty.Render(hdr)
+	}
 	lines = append(lines, hdr)
+
+	if isActive && len(col.issues) == 0 {
+		lines = append(lines, subStyle.Render(padRight(" (empty column) ", cw)))
+	}
 
 	offset := 0
 	if isActive && slots > 0 && len(col.issues) > slots {
