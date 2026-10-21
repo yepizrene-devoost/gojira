@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
@@ -19,6 +18,7 @@ type Writer interface {
 	GetTransitions(string) ([]jira.Transition, error)
 	TransitionIssue(string, string) error
 	UpdateIssue(string, map[string]interface{}) error
+	GetIssueEditMeta(string) (*jira.EditMeta, error)
 	DeleteIssue(string) error
 }
 
@@ -34,7 +34,7 @@ func writeTools() []writeTool {
 		{"log_work", "Add worklog. Non-idempotent; never retry automatically.", []string{"key", "timeSpent"}, []string{"comment"}},
 		{"assign", "Assign directly by accountId, unlike the CLI which resolves email. accountId must be non-empty and trimmed.", []string{"key", "accountId"}, nil},
 		{"move", "Transition to an exact, unambiguous status name.", []string{"key", "status"}, nil},
-		{"update", "Set safe scalar fields: summary and priority (name). Never replaces description.", []string{"key", "fields"}, nil},
+		{"update", "Set summary, description (plain text converted to ADF), priority (name), labels (non-empty trimmed names), dueDate (YYYY-MM-DD), components and fixVersions (name arrays). An empty string clears description and dueDate; [] clears components and fixVersions; null clears storyPoints. storyPoints is a finite decimal number or null and requires storyPointsField (customfield_NNN), and vice versa. Replacing a description this way may discard rich ADF formatting that plain text cannot represent. Metadata is checked before mutation; never retry automatically.", []string{"key", "fields"}, nil},
 		{"delete", "Delete only with a single-use confirmationToken from a preview; expires after two minutes. Preview reveals only action and key. The token forces a deliberate second call and prevents a single-call accidental delete, but is not proof of human approval: the same agent receives and redeems it.", []string{"key"}, []string{"confirmationToken"}},
 	}
 }
@@ -47,7 +47,7 @@ func (a adapter) registerWrites(server *mcp.Server) {
 			properties[name] = map[string]any{"type": "string"}
 		}
 		if entry.action == "update" {
-			properties["fields"] = objectSchema(map[string]any{"summary": map[string]any{"type": "string"}, "priority": map[string]any{"type": "string"}})
+			properties["fields"] = updateFieldsSchema()
 		}
 		destructive := entry.action == "delete"
 		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: objectSchema(properties, entry.required...), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: entry.action == "assign" || entry.action == "update"}}, a.writeCall(entry, confirmations))
@@ -59,7 +59,7 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 		if message != "" {
 			return writeResult(entry.action, "", jira.MutationNotApplied, nil, "validation_error", message, "Correct arguments before retrying."), nil
 		}
-		key := in["key"]
+		key := in.values["key"]
 		if ctx.Err() != nil {
 			return writeResult(entry.action, key, jira.MutationNotApplied, nil, "cancelled", "Request cancelled", "No mutation was attempted."), nil
 		}
@@ -67,14 +67,14 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 			return writeResult(entry.action, key, jira.MutationNotApplied, nil, "configuration_error", "Writer unavailable", "Check server configuration."), nil
 		}
 		if entry.action == "delete" {
-			if in["confirmationToken"] == "" {
+			if in.values["confirmationToken"] == "" {
 				token, err := confirmations.issue(key)
 				if err != nil {
 					return writeResult(entry.action, key, jira.MutationNotApplied, nil, "confirmation_failed", "Confirmation unavailable", "Try a new preview."), nil
 				}
 				return writeResult(entry.action, key, jira.MutationNotApplied, map[string]any{"preview": map[string]string{"action": "delete", "issueKey": key}, "confirmationToken": token}, "", "", ""), nil
 			}
-			if !confirmations.consume(in["confirmationToken"], key) {
+			if !confirmations.consume(in.values["confirmationToken"], key) {
 				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "invalid_confirmation", "Confirmation invalid or expired", "Request a new preview."), nil
 			}
 		}
@@ -133,7 +133,8 @@ func writeResult(action, key string, state jira.MutationState, data any, code, m
 	return res
 }
 
-func executeWrite(w Writer, action string, in map[string]string) (string, error) {
+func executeWrite(w Writer, action string, request *writeRequest) (string, error) {
+	in := request.values
 	key := in["key"]
 	switch action {
 	case "create":
@@ -167,12 +168,17 @@ func executeWrite(w Writer, action string, in map[string]string) (string, error)
 		}
 		return "", w.TransitionIssue(key, id)
 	case "update":
-		fields := map[string]interface{}{}
-		_ = json.Unmarshal([]byte(in["fields"]), &fields)
-		if priority, ok := fields["priority"]; ok {
-			fields["priority"] = map[string]interface{}{"name": priority}
+		prepared := request.update
+		if prepared.NeedsMetadata() {
+			meta, err := w.GetIssueEditMeta(key)
+			if err != nil {
+				return "", &jira.MutationError{State: jira.MutationNotApplied, Err: err}
+			}
+			if err := prepared.ValidateMetadata(meta); err != nil {
+				return "", &validationError{"requested field update is not allowed"}
+			}
 		}
-		return "", w.UpdateIssue(key, fields)
+		return "", w.UpdateIssue(key, prepared.Fields)
 	case "delete":
 		return "", w.DeleteIssue(key)
 	}
