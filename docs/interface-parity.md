@@ -35,7 +35,7 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Create (type, summary, description) | `create` | `gojira_create` | `n` |
 | Create under a parent | `create --parent` | No | No |
 | Create inside a sprint | `create --board` | No | `n` (active sprint) |
-| Edit summary, priority, labels | `update` | `gojira_update` | No |
+| Edit summary, priority, labels | `update` | `gojira_update` | `U` |
 | Edit description | `update` | `gojira_update` (plain text replaces it) | `e` |
 | Edit due date, components, fix versions, story points | `update` | `gojira_update` | `E` |
 | Comment | `comment` | `gojira_comment` | `m` |
