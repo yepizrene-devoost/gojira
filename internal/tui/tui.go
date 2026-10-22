@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"image/color"
 	"math/big"
-	"regexp"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
-	"unicode"
 	"sync"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
@@ -41,17 +41,17 @@ const colWidth = 24
 const colGap = 2
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan).Padding(0, 1)
-	subStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
-	colHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan).Padding(0, 1)
+	subStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	errStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+	colHeaderSty       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
 	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan)
-	keyStyle     = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
-	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
-	selBg        = colDeepBlue
-	selAccent    = colCyan
-	selMetaFg    = lipgloss.Color("#BFE3F5")
-	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
+	keyStyle           = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
+	metaStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
+	selBg              = colDeepBlue
+	selAccent          = colCyan
+	selMetaFg          = lipgloss.Color("#BFE3F5")
+	detailBox          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
 type helpEntry struct {
@@ -1203,7 +1203,8 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
-			if m.rowCur >= 0 && m.rowCur < len(issues) {				key := issues[m.rowCur].Key
+			if m.rowCur >= 0 && m.rowCur < len(issues) {
+				key := issues[m.rowCur].Key
 				boardRequest := m.loadedBoardRequest
 				m.view = viewDetail
 				m.detail = nil
@@ -1224,7 +1225,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if len(issues) == 0 {
 				m.toast = "Column is empty"
-				return m, clearToastAfter(3*time.Second)
+				return m, clearToastAfter(3 * time.Second)
 			}
 		}
 	case "/":
