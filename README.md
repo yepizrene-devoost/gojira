@@ -563,6 +563,20 @@ detail returns to the same query, result list, and cursor. Press `s` from a
 result list to edit the query, or `Esc` to return to the board or boards list
 where search started.
 
+A query shaped like an issue key (for example `MON-201`, in any case) looks that
+issue up directly and falls back to the text index when Jira does not know the
+key. The result header reports completeness honestly: `N shown` for a complete
+result, `N shown · ≥M estimated` when more results exist and Jira gave an
+estimate, or `N shown · more results` when it did not.
+
+On the Kanban view the active column carries a `▌` marker, even when empty, and
+`Enter` on an empty column reports `Column is empty`. The selected card has an
+accent bar on every line. Priority shows as a traffic-light bullet beside the
+key (`●●` Highest, `●` High, `○` Low, `○○` Lowest; Medium shows nothing) and the
+assignee appears with initials. Waits for boards and search show a spinner. The
+board list opens under a framed wordmark that also shows the build version, and
+falls back to a one-line title on very small terminals.
+
 ### Ticket detail
 
 | Key | Action |

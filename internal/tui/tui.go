@@ -3,14 +3,17 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"math/big"
-	"regexp"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -21,20 +24,34 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+// ─── Palette ───────────────────────────────────────────────────────────
+// Colors sampled from the logo (assets/gojira-logo.png): navy body, cyan
+// spines, deep-blue chest shadow, and the orange and green board columns.
+var (
+	colNavy     = lipgloss.Color("#0F2136")
+	colCyan     = lipgloss.Color("#15C3FD")
+	colDeepBlue = lipgloss.Color("#0F4D6F")
+	colOrange   = lipgloss.Color("#FD6E21")
+	colGreen    = lipgloss.Color("#3DB697")
+)
+
 // ─── Styles ────────────────────────────────────────────────────────────
 
 const colWidth = 24
 const colGap = 2
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4")).Padding(0, 1)
-	subStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
-	colHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
-	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
-	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
-	selBg        = lipgloss.Color("#3D2B6B")
-	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2)
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan).Padding(0, 1)
+	subStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	errStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+	colHeaderSty       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
+	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan)
+	keyStyle           = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
+	metaStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
+	selBg              = colDeepBlue
+	selAccent          = colCyan
+	selMetaFg          = lipgloss.Color("#BFE3F5")
+	detailBox          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
 type helpEntry struct {
@@ -234,12 +251,15 @@ type Model struct {
 	filterInput  textinput.Model
 	filterActive bool
 
+	spin                spinner.Model
+	version             string
 	searchInput         textinput.Model
 	searchQuery         string
 	searchEditing       bool
 	searchResults       []jira.Issue
 	searchCur           int
-	searchTotal         int
+	searchTruncated     bool
+	searchEstimated     *int
 	searchLoading       bool
 	searchCompleted     bool
 	searchErr           error
@@ -292,7 +312,8 @@ type detailMsg struct {
 type searchMsg struct {
 	requestID uint64
 	issues    []jira.Issue
-	total     int
+	truncated bool
+	estimated *int
 	err       error
 }
 type clipboardMsg struct {
@@ -364,13 +385,43 @@ func New(client *jira.Client, domain string) Model {
 		client: client,
 		domain: domain,
 		view:   viewBoards,
+		spin: spinner.New(
+			spinner.WithSpinner(spinner.MiniDot),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(colCyan)),
+		),
 	}
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	return m.loadBoards
+	return tea.Batch(m.loadBoards, m.spin.Tick)
+}
+
+// loading reports whether any indeterminate wait is on screen, which is when
+// the spinner should keep turning.
+func (m Model) loading() bool {
+	return m.boardLoading || m.searchLoading || (m.view == viewBoards && len(m.boards) == 0 && m.err == nil)
+}
+
+// spinnerPrefix renders the current spinner frame followed by a space, or
+// nothing when the model has no spinner configured.
+func (m Model) spinnerPrefix() string {
+	if len(m.spin.Spinner.Frames) == 0 {
+		return ""
+	}
+	return m.spin.View() + " "
+}
+
+// Update wraps update so that a wait starting from idle schedules the spinner's
+// first tick in one place; the spinner itself ignores duplicate tick chains.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	wasLoading := m.loading()
+	next, cmd := m.update(msg)
+	if nm, ok := next.(Model); ok && !wasLoading && nm.loading() {
+		cmd = tea.Batch(cmd, nm.spin.Tick)
+	}
+	return next, cmd
 }
 
 func (m Model) loadBoards() tea.Msg {
@@ -600,8 +651,16 @@ func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 
 // ─── Update ────────────────────────────────────────────────────────────
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.loading() {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -679,7 +738,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchCompleted = true
 		m.searchErr = msg.err
 		m.searchResults = msg.issues
-		m.searchTotal = msg.total
+		m.searchTruncated = msg.truncated
+		m.searchEstimated = msg.estimated
 		m.searchCur = 0
 		return m, nil
 
@@ -1162,6 +1222,10 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					iss, err := m.client.GetIssueFull(key)
 					return detailMsg{issue: iss, issueKey: key, boardRequest: boardRequest, detailRequest: detailRequest, err: err}
 				}
+			}
+			if len(issues) == 0 {
+				m.toast = "Column is empty"
+				return m, clearToastAfter(3 * time.Second)
 			}
 		}
 	case "/":
@@ -1955,7 +2019,8 @@ func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	m.searchEditing = true
 	m.searchResults = nil
 	m.searchCur = 0
-	m.searchTotal = 0
+	m.searchTruncated = false
+	m.searchEstimated = nil
 	m.searchLoading = false
 	m.searchCompleted = false
 	m.searchErr = nil
@@ -1980,7 +2045,8 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.searchEditing = false
 	m.searchResults = nil
 	m.searchCur = 0
-	m.searchTotal = 0
+	m.searchTruncated = false
+	m.searchEstimated = nil
 	m.searchLoading = true
 	m.searchCompleted = false
 	m.searchErr = nil
@@ -1990,8 +2056,8 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.view = viewSearch
 	client := m.client
 	return m, func() tea.Msg {
-		issues, total, err := client.SearchText(query, 50)
-		return searchMsg{requestID: requestID, issues: issues, total: total, err: err}
+		result, err := client.SearchText(query, 50)
+		return searchMsg{requestID: requestID, issues: result.Issues, truncated: result.Truncated, estimated: result.EstimatedTotal, err: err}
 	}
 }
 
@@ -2234,14 +2300,16 @@ func (m Model) View() tea.View {
 
 	switch m.view {
 	case viewBoards:
-		b.WriteString(titleStyle.Render("🚀 GoJira TUI"))
+		header, indent := m.boardsHeader()
+		pad := strings.Repeat(" ", indent)
+		b.WriteString(header)
 		b.WriteString("\n\n")
 		if m.err != nil {
-			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString(pad + errStyle.Render("Error: "+m.err.Error()))
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(subStyle.Render("Loading boards..."))
+			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards..."))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2258,15 +2326,22 @@ func (m Model) View() tea.View {
 				label = board.Name + " · " + board.Location.ProjectName
 			}
 			line := fmt.Sprintf("%s %s [%s]", icon, label, board.Type)
+			if m.width > 0 {
+				line = ansi.Truncate(line, max(m.width-indent-2, 1), "…")
+			}
 			if i == m.boardCur {
-				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + line))
+				b.WriteString(pad + lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ "+line))
 			} else {
-				b.WriteString("  " + line)
+				b.WriteString(pad + "  " + line)
 			}
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"))
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"
+		if m.width > 0 {
+			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
+		}
+		b.WriteString(pad + subStyle.Render(hint))
 
 	case viewKanban:
 		board := m.renderKanban()
@@ -2314,7 +2389,7 @@ func (m Model) View() tea.View {
 		} else {
 			for i, tr := range m.transitions {
 				if i == m.transCur {
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
+					b.WriteString(lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ " + tr.Name))
 				} else {
 					b.WriteString("  " + tr.Name)
 				}
@@ -2444,14 +2519,22 @@ func (m Model) renderSearch() string {
 	case m.searchEditing:
 		b.WriteString(subStyle.Render("Type a text query, then press Enter."))
 	case m.searchLoading:
-		b.WriteString(subStyle.Render("Searching Jira..."))
+		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Searching Jira..."))
 	case m.searchErr != nil:
 		b.WriteString(errStyle.Render("Error: " + m.searchErr.Error()))
 	case m.searchCompleted && len(m.searchResults) == 0:
 		b.WriteString(subStyle.Render("No tickets found."))
 	default:
 		if m.searchCompleted {
-			_, _ = fmt.Fprintf(&b, "%d shown · %d total\n\n", len(m.searchResults), m.searchTotal)
+			shown := len(m.searchResults)
+			switch {
+			case m.searchTruncated && m.searchEstimated != nil:
+				_, _ = fmt.Fprintf(&b, "%d shown · ≥%d estimated\n\n", shown, *m.searchEstimated)
+			case m.searchTruncated:
+				_, _ = fmt.Fprintf(&b, "%d shown · more results\n\n", shown)
+			default:
+				_, _ = fmt.Fprintf(&b, "%d shown\n\n", shown)
+			}
 		}
 		visible := len(m.searchResults)
 		if m.contentHeight() > 0 {
@@ -2509,7 +2592,7 @@ func (m Model) renderKanban() string {
 	if m.boardLoading {
 		b.WriteString(subStyle.Render(m.kanbanStatus(boardName, "Loading", 0, 0, 0, 0)))
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("Loading " + boardName + "..."))
+		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Loading " + boardName + "..."))
 		return m.boundKanban(b.String())
 	}
 
@@ -2771,10 +2854,21 @@ func visiblePageStart(colCur, colsPerPage, total int) int {
 func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots int) string {
 	lines := make([]string, 0, colH)
 
-	hdr := fmt.Sprintf(" %s (%d) ", truncateRunes(col.name, cw-6), len(col.issues))
-	hdr = padRight(hdr, cw)
-	hdr = colHeaderSty.Render(hdr)
+	var hdr string
+	if isActive {
+		hdr = fmt.Sprintf("▌ %s (%d) ", truncateRunes(col.name, cw-8), len(col.issues))
+		hdr = padRight(hdr, cw)
+		hdr = activeColHeaderSty.Render(hdr)
+	} else {
+		hdr = fmt.Sprintf(" %s (%d) ", truncateRunes(col.name, cw-6), len(col.issues))
+		hdr = padRight(hdr, cw)
+		hdr = colHeaderSty.Render(hdr)
+	}
 	lines = append(lines, hdr)
+
+	if isActive && len(col.issues) == 0 {
+		lines = append(lines, subStyle.Render(padRight(" (empty column) ", cw)))
+	}
 
 	offset := 0
 	if isActive && slots > 0 && len(col.issues) > slots {
@@ -2815,48 +2909,170 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
-	key := truncateRunes(iss.Key, cw-2)
-	keyLine := keyStyle.Render(" " + key)
+const boardsFrameMaxWidth = 44
+
+// WithVersion returns the model showing the build version in the board list's
+// frame. A bare number gets a "v" prefix; "dev" and tagged versions show as is.
+func (m Model) WithVersion(version string) Model {
+	version = strings.TrimSpace(version)
+	if version != "" && unicode.IsDigit([]rune(version)[0]) {
+		version = "v" + version
+	}
+	m.version = version
+	return m
+}
+
+// boardsHeader returns the header of the board list and the left indent the list
+// shares with it: a rounded, width-bounded frame holding the wordmark, centered
+// in the terminal. A terminal that is unknown or too small gets the plain
+// one-line title and no indent, so nothing overflows or crowds out the list.
+func (m Model) boardsHeader() (string, int) {
+	if m.width < 30 || m.height < 16 {
+		return titleStyle.Render("🚀 GoJira TUI"), 0
+	}
+	w := min(m.width-2, boardsFrameMaxWidth)
+	wordmark := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("G O J I R A")
+	text := wordmark + "\n" + subStyle.Render("Jira, from your terminal")
+	if m.version != "" {
+		text += "\n" + subStyle.Render(m.version)
+	}
+	body := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colCyan).
+		Width(w).
+		Align(lipgloss.Center).
+		Render(text)
+	indent := (m.width - lipgloss.Width(body)) / 2
+	lines := strings.Split(body, "\n")
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", indent) + lines[i]
+	}
+	return strings.Join(lines, "\n"), indent
+}
+
+// cardSeg is one styled run of text inside a card row.
+type cardSeg struct {
+	text  string
+	style lipgloss.Style
+}
+
+// cardRow lays one card line out inside exactly cw cells: an accent bar when
+// selected, left text truncated to fit, and an optional right-aligned badge.
+// Every run, including the padding, carries the selection background itself,
+// because a nested style's reset would otherwise cut an outer background short.
+func cardRow(cw int, selected bool, left, right cardSeg) string {
+	fill := lipgloss.NewStyle()
 	if selected {
-		keyLine = lipgloss.NewStyle().Background(selBg).Render(padRight(keyLine, cw))
-	} else {
-		keyLine = padRight(keyLine, cw)
+		fill = fill.Background(selBg)
+	}
+	render := func(sg cardSeg) string {
+		if selected {
+			return sg.style.Background(selBg).Render(sg.text)
+		}
+		return sg.style.Render(sg.text)
 	}
 
-	summary := truncateRunes(iss.Fields.Summary, cw-4)
-	summaryLine := " " + summary
+	rightW := ansi.StringWidth(right.text)
+	budget := cw - 2
+	if rightW > 0 {
+		budget -= rightW + 2
+		if budget < 1 {
+			right, rightW = cardSeg{}, 0
+			budget = cw - 2
+		}
+	}
+	text := truncateRunes(left.text, budget)
+	left.text = " " + text
+
+	marker := fill.Render(" ")
 	if selected {
-		summaryLine = padRight(summaryLine, cw)
-		summaryLine = lipgloss.NewStyle().Background(selBg).Render(summaryLine)
-	} else {
-		summaryLine = padRight(summaryLine, cw)
+		marker = fill.Foreground(selAccent).Bold(true).Render("▌")
+	}
+	used := 1 + ansi.StringWidth(left.text)
+	var b strings.Builder
+	b.WriteString(marker)
+	b.WriteString(render(left))
+	if rightW > 0 {
+		b.WriteString(fill.Render(strings.Repeat(" ", max(cw-used-rightW-1, 0))))
+		b.WriteString(render(right))
+		b.WriteString(fill.Render(" "))
+		return b.String()
+	}
+	b.WriteString(fill.Render(strings.Repeat(" ", max(cw-used, 0))))
+	return b.String()
+}
+
+// priorityBadge maps a Jira priority name to a traffic-light bullet. The shape
+// repeats the level so it reads without color, and Medium, the neutral default,
+// is known but draws nothing. Unknown names report known=false so the caller
+// keeps them readable as text.
+func priorityBadge(name string) (glyph string, c color.Color, known bool) {
+	switch strings.ToLower(name) {
+	case "highest", "blocker", "critical":
+		return "●●", lipgloss.Color("#FF6B6B"), true
+	case "high", "major":
+		return "●", colOrange, true
+	case "medium":
+		return "", nil, true
+	case "low", "minor":
+		return "○", colGreen, true
+	case "lowest", "trivial":
+		return "○○", lipgloss.Color("#7FA88A"), true
+	}
+	return "", nil, false
+}
+
+// initials returns up to two uppercase initials of a display name.
+func initials(name string) string {
+	var out []rune
+	for _, word := range strings.Fields(name) {
+		if len(out) == 2 {
+			break
+		}
+		out = append(out, unicode.ToUpper([]rune(word)[0]))
+	}
+	return string(out)
+}
+
+func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
+	keyStyleNow, summaryStyle, metaStyleNow := keyStyle, lipgloss.NewStyle(), metaStyle
+	if selected {
+		keyStyleNow = keyStyle.Foreground(lipgloss.Color("#FFFFFF"))
+		summaryStyle = summaryStyle.Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
+		metaStyleNow = metaStyle.Foreground(selMetaFg)
 	}
 
 	pri := ""
 	if iss.Fields.Priority != nil {
 		pri = iss.Fields.Priority.Name
 	}
-	who := "Unassigned"
-	if iss.Fields.Assignee != nil {
-		who = iss.Fields.Assignee.DisplayName
-	}
-	metaText := fmt.Sprintf(" %s • %s", pri, who)
-	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
-		metaText += fmt.Sprintf(" • %d/%d", progress.Done, progress.Total)
-	}
-	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
-		metaText += " • " + sprint.Name
-	}
-	meta := truncateRunes(metaText, cw-2)
-	metaLine := metaStyle.Render(meta)
-	if selected {
-		metaLine = lipgloss.NewStyle().Background(selBg).Render(padRight(metaLine, cw))
-	} else {
-		metaLine = padRight(metaLine, cw)
+	var badge cardSeg
+	glyph, glyphColor, known := priorityBadge(pri)
+	if glyph != "" {
+		badge = cardSeg{glyph, lipgloss.NewStyle().Bold(true).Foreground(glyphColor)}
 	}
 
-	return []string{keyLine, summaryLine, metaLine}
+	var parts []string
+	if !known && pri != "" {
+		parts = append(parts, pri)
+	}
+	if iss.Fields.Assignee != nil {
+		parts = append(parts, strings.TrimSpace(initials(iss.Fields.Assignee.DisplayName)+" "+iss.Fields.Assignee.DisplayName))
+	} else {
+		parts = append(parts, "Unassigned")
+	}
+	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
+		parts = append(parts, fmt.Sprintf("%d/%d", progress.Done, progress.Total))
+	}
+	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
+		parts = append(parts, sprint.Name)
+	}
+
+	return []string{
+		cardRow(cw, selected, cardSeg{iss.Key, keyStyleNow}, badge),
+		cardRow(cw, selected, cardSeg{iss.Fields.Summary, summaryStyle}, cardSeg{}),
+		cardRow(cw, selected, cardSeg{strings.Join(parts, " • "), metaStyleNow}, cardSeg{}),
+	}
 }
 
 func (m Model) renderDetail() string {

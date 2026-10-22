@@ -49,7 +49,7 @@ func runTUI() error {
 	fmt.Fprintf(os.Stderr, "✓ Connected to %s\n", info)
 
 	// ── Launch TUI ────────────────────────────────────────────────
-	m := tui.New(client, domain)
+	m := tui.New(client, domain).WithVersion(version)
 	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err

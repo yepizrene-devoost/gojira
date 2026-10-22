@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -291,6 +294,134 @@ func TestSprintMovement(t *testing.T) {
 				if refresh == nil || !strings.Contains(m.toast,"accepted") { t.Fatal("missing refresh/acceptance") }
 			})
 		}
+	}
+}
+
+// cellsWithoutBackground counts visible cells whose SGR state has no background,
+// so a selected card whose fill is cut short by a nested reset is detected.
+func cellsWithoutBackground(raw string) int {
+	bg, missing := false, 0
+	for i := 0; i < len(raw); {
+		if raw[i] == 0x1b && i+1 < len(raw) && raw[i+1] == '[' {
+			end := strings.IndexByte(raw[i:], 'm')
+			if end < 0 {
+				break
+			}
+			params := strings.Split(raw[i+2:i+end], ";")
+			for j := 0; j < len(params); j++ {
+				n, _ := strconv.Atoi(params[j])
+				switch {
+				case params[j] == "" || n == 0 || n == 49:
+					bg = false
+				case n == 48 && j+1 < len(params) && params[j+1] == "5":
+					bg, j = true, j+2
+				case n == 48 && j+1 < len(params) && params[j+1] == "2":
+					bg, j = true, j+4
+				case (n >= 40 && n <= 47) || (n >= 100 && n <= 107):
+					bg = true
+				case n == 38 && j+1 < len(params) && params[j+1] == "5":
+					j += 2
+				case n == 38 && j+1 < len(params) && params[j+1] == "2":
+					j += 4
+				}
+			}
+			i += end + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(raw[i:])
+		if ansi.StringWidth(string(r)) > 0 && !bg {
+			missing++
+		}
+		i += size
+	}
+	return missing
+}
+
+// The selected card is marked with an accent bar on every line and filled with
+// one uniform background; every card line spans exactly the column width.
+func TestSelectedCardHasMarkerAndUniformBackground(t *testing.T) {
+	issue := testIssue("ARA-229")
+	issue.Fields.Summary = "General Meeting about something rather long indeed"
+	issue.Fields.Priority = &jira.PriorityField{Name: "Highest"}
+	issue.Fields.Assignee = &jira.AssigneeField{DisplayName: "Alejandro Lobato"}
+	m := Model{sprintName: "S"}
+	for _, cw := range []int{40, 24, 12} {
+		for _, selected := range []bool{true, false} {
+			lines := m.renderCardLines(issue, selected, cw)
+			if len(lines) != 3 {
+				t.Fatalf("cw=%d selected=%v: %d lines, want 3", cw, selected, len(lines))
+			}
+			for i, line := range lines {
+				if w := ansi.StringWidth(line); w != cw {
+					t.Errorf("cw=%d selected=%v line %d width=%d, want %d: %q", cw, selected, i, w, cw, ansi.Strip(line))
+				}
+				if has := strings.HasPrefix(ansi.Strip(line), "▌"); has != selected {
+					t.Errorf("cw=%d selected=%v line %d marker=%v: %q", cw, selected, i, has, ansi.Strip(line))
+				}
+				if selected {
+					if n := cellsWithoutBackground(line); n != 0 {
+						t.Errorf("cw=%d line %d has %d cells without the selection background: %q", cw, i, n, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Priority is a traffic-light bullet whose shape also encodes the level, hidden
+// for the neutral Medium; names the table does not know stay readable as text.
+func TestCardShowsPriorityGlyphAndInitials(t *testing.T) {
+	m := Model{}
+	last := func(s string) string {
+		f := strings.Fields(ansi.Strip(s))
+		return f[len(f)-1]
+	}
+	first := func(s string) string {
+		f := strings.Fields(strings.TrimPrefix(ansi.Strip(s), "▌"))
+		return f[0]
+	}
+	for _, tt := range []struct{ priority, glyph string }{
+		{"Highest", "●●"}, {"High", "●"}, {"Low", "○"}, {"Lowest", "○○"},
+	} {
+		issue := testIssue("A-1")
+		issue.Fields.Priority = &jira.PriorityField{Name: tt.priority}
+		lines := m.renderCardLines(issue, false, 40)
+		if got := last(lines[0]); got != tt.glyph {
+			t.Errorf("%s: key line ends with %q, want %q", tt.priority, got, tt.glyph)
+		}
+	}
+
+	// Medium is the neutral default: no badge and no repeated name in the meta.
+	medium := testIssue("A-1")
+	medium.Fields.Priority = &jira.PriorityField{Name: "Medium"}
+	lines := m.renderCardLines(medium, false, 40)
+	if got := last(lines[0]); got != "A-1" || strings.Contains(ansi.Strip(lines[2]), "Medium") {
+		t.Errorf("medium: key line end=%q meta=%q", got, ansi.Strip(lines[2]))
+	}
+
+	issue := testIssue("A-1")
+	issue.Fields.Priority = &jira.PriorityField{Name: "Urgent"}
+	lines = m.renderCardLines(issue, false, 40)
+	if got := last(lines[0]); got != "A-1" || !strings.Contains(ansi.Strip(lines[2]), "Urgent") {
+		t.Errorf("unknown priority: key line end=%q meta=%q", got, ansi.Strip(lines[2]))
+	}
+
+	for _, tt := range []struct{ name, initials string }{
+		{"Alejandro Lobato", "AL"}, {"René", "R"}, {"jorge flores perez", "JF"},
+	} {
+		issue := testIssue("A-1")
+		issue.Fields.Assignee = &jira.AssigneeField{DisplayName: tt.name}
+		lines := m.renderCardLines(issue, false, 40)
+		if got := first(lines[2]); got != tt.initials {
+			t.Errorf("%q: meta starts with %q, want initials %q (%q)", tt.name, got, tt.initials, ansi.Strip(lines[2]))
+		}
+	}
+
+	issue = testIssue("A-1")
+	issue.Fields.Assignee = nil
+	lines = m.renderCardLines(issue, false, 40)
+	if got := first(lines[2]); got != "Unassigned" {
+		t.Errorf("unassigned meta starts with %q: %q", got, ansi.Strip(lines[2]))
 	}
 }
 
@@ -731,6 +862,8 @@ func testIssue(key string) jira.Issue {
 	}
 }
 
+func ptrInt(v int) *int { return &v }
+
 func IssueFields(summary string) jira.IssueFieldData {
 	return jira.IssueFieldData{
 		Summary:  summary,
@@ -762,6 +895,286 @@ func makeTestModel(cols int, issuesPerCol int) Model {
 		height:   50,
 		boardCur: 0,
 		boards:   []jira.Board{{ID: 1, Name: "Test Board", Type: "scrum"}},
+	}
+}
+
+// The active Kanban column carries a color-independent focus cue: a leading
+// marker on its header, visible even when the column is empty, while inactive
+// columns (including empty ones) show no marker and no placeholder.
+func TestActiveColumnHeaderShowsFocusCue(t *testing.T) {
+	m := makeTestModel(3, 2)
+	m.columns[1].issues = nil
+	m.columns[2].issues = nil
+	m.colCur = 1
+
+	active := ansi.Strip(m.renderColumn(m.columns[1], true, 30, 20, 5))
+	inactiveFull := ansi.Strip(m.renderColumn(m.columns[0], false, 30, 20, 5))
+	inactiveEmpty := ansi.Strip(m.renderColumn(m.columns[2], false, 30, 20, 5))
+	if !strings.Contains(active, "▌ ColB (0)") {
+		t.Fatalf("active empty column header lacks focus marker:\n%s", active)
+	}
+	if strings.Contains(inactiveFull, "▌") || strings.Contains(inactiveEmpty, "▌") {
+		t.Fatal("inactive column header shows focus marker")
+	}
+	if !strings.Contains(active, "(empty column)") {
+		t.Fatalf("active empty column lacks placeholder:\n%s", active)
+	}
+	if strings.Contains(inactiveEmpty, "(empty column)") {
+		t.Fatal("inactive empty column shows placeholder")
+	}
+
+	// Full render: exactly one placeholder overall, on the active empty column.
+	output := ansi.Strip(m.View().Content)
+	if n := strings.Count(output, "(empty column)"); n != 1 {
+		t.Fatalf("expected exactly one empty-column placeholder, got %d:\n%s", n, output)
+	}
+}
+
+// Enter on an active empty column gives explicit feedback instead of a silent
+// no-op, and does not start a detail request.
+func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
+	m := makeTestModel(2, 1)
+	m.columns[1].issues = nil
+	m.colCur = 1
+	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	if m.view != viewKanban || m.toast != "Column is empty" || m.activeDetailRequest != 0 || m.detailLoading {
+		t.Fatalf("empty-column Enter feedback wrong: view=%v toast=%q detailReq=%d loading=%v", m.view, m.toast, m.activeDetailRequest, m.detailLoading)
+	}
+}
+
+// Loading states show an indeterminate spinner frame next to their message, and
+// the tick chain runs only while something is loading so an idle TUI is quiet.
+// The board list opens under a rounded, width-bounded frame holding the
+// wordmark, centered horizontally, with the list aligned to the frame's left
+// edge; terminals too small or unknown fall back to the plain one-line title.
+// The build version appears inside the frame, on the line right under the
+// subtitle; a bare number gets a "v" prefix, "dev" stays as is, and an unset
+// version adds no line.
+// Accents come from the logo palette (cyan spines, deep-blue chest), not the
+// former purple, on every main surface.
+func TestAccentsUseLogoPaletteNotPurple(t *testing.T) {
+	const purple = "125;86;244" // legacy #7D56F4
+	const cyan = "21;195;253"   // logo spines #15C3FD
+
+	boards := makeTestModel(2, 2)
+	boards.view, boards.width, boards.height = viewBoards, 100, 40
+	boards.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+
+	kanban := makeTestModel(3, 2)
+	kanban.colCur = 1
+
+	detail := makeTestModel(1, 1)
+	detail.view = viewDetail
+	detail.detail = &jira.Issue{Key: "A-1", Fields: IssueFields("Summary")}
+
+	for name, content := range map[string]string{
+		"boards": boards.View().Content,
+		"kanban": kanban.View().Content,
+		"detail": detail.View().Content,
+	} {
+		if strings.Contains(content, purple) {
+			t.Errorf("%s still uses the legacy purple accent", name)
+		}
+		if name != "detail" && !strings.Contains(content, cyan) {
+			t.Errorf("%s does not use the logo cyan accent", name)
+		}
+	}
+	if sel := strings.Join(kanban.renderCardLines(testIssue("A-1"), true, 40), ""); strings.Contains(sel, purple) {
+		t.Error("selected card still uses purple")
+	}
+}
+
+func TestBoardsFrameShowsVersionUnderSubtitle(t *testing.T) {
+	render := func(version string) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.width, m.height = viewBoards, 100, 40
+		m.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+		if version != "" {
+			m = m.WithVersion(version)
+		}
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	index := func(lines []string, marker string) int {
+		for i, line := range lines {
+			if strings.Contains(line, marker) {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, tt := range []struct{ in, shown string }{
+		{"v1.2.3", "v1.2.3"}, {"1.2.3", "v1.2.3"}, {"dev", "dev"},
+	} {
+		lines := render(tt.in)
+		sub := index(lines, "Jira, from your terminal")
+		ver := index(lines, tt.shown)
+		if sub < 0 || ver != sub+1 {
+			t.Fatalf("%q: version on line %d, want %d (under the subtitle):\n%s", tt.in, ver, sub+1, strings.Join(lines, "\n"))
+		}
+		if line := lines[ver]; !strings.Contains(line, "│") || strings.Index(line, tt.shown) < strings.Index(line, "│") {
+			t.Errorf("%q: version is not inside the frame: %q", tt.in, line)
+		}
+	}
+	lines := render("")
+	if top, bottom := index(lines, "╭"), index(lines, "╰"); bottom-top != 3 {
+		t.Errorf("unset version changed the frame height: %d lines", bottom-top+1)
+	}
+}
+
+func TestBoardsViewIsFramedBoundedAndCentered(t *testing.T) {
+	boards := []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}, {ID: 2, Name: "Board B", Type: "kanban"}}
+	view := func(w, h int) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.boards, m.width, m.height = viewBoards, boards, w, h
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	col := func(lines []string, marker string) (int, int) {
+		for i, line := range lines {
+			if idx := strings.Index(line, marker); idx >= 0 {
+				return i, len([]rune(line[:idx]))
+			}
+		}
+		return -1, -1
+	}
+
+	for _, w := range []int{160, 100, 60, 40} {
+		lines := view(w, 40)
+		top, left := col(lines, "╭")
+		if top < 0 {
+			t.Fatalf("width %d: no frame:\n%s", w, strings.Join(lines, "\n"))
+		}
+		frameW := min(w-2, 44)
+		if want := (w - frameW) / 2; left != want {
+			t.Errorf("width %d: frame starts at column %d, want centered at %d", w, left, want)
+		}
+		if got := ansi.StringWidth(strings.TrimRight(lines[top], " ")) - left; got != frameW {
+			t.Errorf("width %d: frame is %d wide, want %d", w, got, frameW)
+		}
+		if _, c := col(lines, "G O J I R A"); c <= left {
+			t.Errorf("width %d: wordmark missing or outside the frame", w)
+		}
+		if _, c := col(lines, "→ "); c != left {
+			t.Errorf("width %d: board list starts at column %d, want aligned at %d", w, c, left)
+		}
+		for i, line := range lines {
+			if ansi.StringWidth(line) > w {
+				t.Errorf("width %d: line %d is %d wide", w, i, ansi.StringWidth(line))
+			}
+		}
+	}
+
+	for _, size := range [][2]int{{0, 0}, {20, 40}, {100, 8}} {
+		out := strings.Join(view(size[0], size[1]), "\n")
+		if strings.Contains(out, "╭") || !strings.Contains(out, "GoJira TUI") {
+			t.Errorf("size %v should fall back to the plain title:\n%s", size, out)
+		}
+	}
+}
+
+func TestLoadingStatesShowSpinner(t *testing.T) {
+	frame := func(m Model) string { return ansi.Strip(m.spin.View()) }
+	tests := []struct {
+		name  string
+		setup func(m Model) Model
+		want  string
+	}{
+		{"boards list", func(m Model) Model { m.view, m.boards = viewBoards, nil; return m }, "Loading boards..."},
+		{"board", func(m Model) Model { m.boardLoading, m.loadingBoardName = true, "Board A"; return m }, "Loading Board A..."},
+		{"search", func(m Model) Model {
+			m, _ = startSearchModel(t, m, "query")
+			return m
+		}, "Searching Jira..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+			m = tt.setup(m)
+			want := frame(m) + " " + tt.want
+			if got := ansi.Strip(m.View().Content); !strings.Contains(got, want) {
+				t.Fatalf("loading view lacks %q:\n%s", want, got)
+			}
+		})
+	}
+}
+
+func TestSpinnerTickAdvancesOnlyWhileLoading(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	m.boardLoading = true
+	before := ansi.Strip(m.spin.View())
+	m, cmd := updateModel(t, m, spinner.TickMsg{ID: m.spin.ID()})
+	if cmd == nil || ansi.Strip(m.spin.View()) == before {
+		t.Fatalf("tick while loading did not advance: cmd=%v frame=%q->%q", cmd != nil, before, ansi.Strip(m.spin.View()))
+	}
+	m.boardLoading = false
+	_, cmd = updateModel(t, m, spinner.TickMsg{ID: m.spin.ID()})
+	if cmd != nil {
+		t.Fatal("tick chain kept running with nothing loading")
+	}
+}
+
+// A load that starts from idle schedules the spinner's first tick; a load that
+// starts while one is already running does not stack a second chain.
+func TestStartingALoadSchedulesSpinnerTickOnlyFromIdle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	newModel := func() Model {
+		m := makeTestModel(1, 1)
+		m.client = jira.NewClient(srv.URL, "e@x.com", "tok")
+		m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		m.view = viewBoards
+		m.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+		return m
+	}
+
+	idle := newModel()
+	_, cmd := updateModel(t, idle, specialKey(tea.KeyEnter))
+	if !batchHasSpinnerTick(cmd) {
+		t.Fatal("a load started from idle did not schedule a spinner tick")
+	}
+
+	running := newModel()
+	running.searchLoading = true
+	_, cmd = updateModel(t, running, specialKey(tea.KeyEnter))
+	if batchHasSpinnerTick(cmd) {
+		t.Fatal("a load started while another was running stacked a second tick chain")
+	}
+}
+
+func batchHasSpinnerTick(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	results := make(chan tea.Msg, 8)
+	run := func(c tea.Cmd) { results <- c() }
+	count := 1
+	go func() {
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			count = 0
+			for _, c := range batch {
+				if c != nil {
+					count++
+					go run(c)
+				}
+			}
+			return
+		}
+		results <- msg
+	}()
+	deadline := time.After(600 * time.Millisecond)
+	for {
+		select {
+		case msg := <-results:
+			if _, ok := msg.(spinner.TickMsg); ok {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
 	}
 }
 
@@ -1594,7 +2007,7 @@ func TestLocalFilterEnterSearchesJiraAndRoundTripsToFilteredBoard(t *testing.T) 
 	}
 	requestID := m.activeSearchRequest
 	results := []jira.Issue{{Key: "ARA-1", Fields: IssueFields("Login result")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 1})
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results})
 	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 	if m.view != viewKanban || m.filterInput.Value() != "login" {
 		t.Fatalf("search did not return to filtered board: view=%v filter=%q", m.view, m.filterInput.Value())
@@ -1657,7 +2070,7 @@ func TestSearchRequestsIgnoreStaleSuccessAndFailure(t *testing.T) {
 	m, _ = updateModel(t, m, searchMsg{
 		requestID: first,
 		issues:    []jira.Issue{{Key: "OLD-1", Fields: IssueFields("Old")}},
-		total:     1,
+		truncated: true,
 	})
 	m, _ = updateModel(t, m, searchMsg{requestID: first, err: errors.New("stale failure")})
 	if !m.searchLoading || m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 0 {
@@ -1665,9 +2078,65 @@ func TestSearchRequestsIgnoreStaleSuccessAndFailure(t *testing.T) {
 	}
 
 	fresh := []jira.Issue{{Key: "NEW-1", Fields: IssueFields("New")}, {Key: "NEW-2", Fields: IssueFields("Newer")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: second, issues: fresh, total: 8})
-	if m.searchLoading || !m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 2 || m.searchTotal != 8 || m.searchCur != 0 {
+	m, _ = updateModel(t, m, searchMsg{requestID: second, issues: fresh, truncated: true, estimated: ptrInt(8)})
+	if m.searchLoading || !m.searchCompleted || m.searchErr != nil || len(m.searchResults) != 2 || !m.searchTruncated || m.searchEstimated == nil || *m.searchEstimated != 8 || m.searchCur != 0 {
 		t.Fatalf("active search response was not applied: %#v", m)
+	}
+}
+
+// The search header reports completeness honestly: a truncated result shows an
+// estimate when available, "more results" when it is not, and a complete result
+// never invents a total.
+func TestSearchRenderShowsHonestCompleteness(t *testing.T) {
+	issues := func(n int) []jira.Issue {
+		out := make([]jira.Issue, n)
+		for i := range out {
+			out[i] = jira.Issue{Key: fmt.Sprintf("A-%d", i+1), Fields: IssueFields("Thing")}
+		}
+		return out
+	}
+	tests := []struct {
+		name       string
+		msg        searchMsg
+		want       string
+		mustAbsent []string
+	}{
+		{
+			name:       "truncated with estimate",
+			msg:        searchMsg{issues: issues(50), truncated: true, estimated: ptrInt(412)},
+			want:       "50 shown · ≥412 estimated",
+			mustAbsent: []string{"· 0 total"},
+		},
+		{
+			name:       "truncated without estimate",
+			msg:        searchMsg{issues: issues(50), truncated: true},
+			want:       "50 shown · more results",
+			mustAbsent: []string{"· 0 total"},
+		},
+		{
+			name:       "complete result",
+			msg:        searchMsg{issues: issues(42)},
+			want:       "42 shown",
+			mustAbsent: []string{"total", "estimated", "more results"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.width, m.height = 80, 30
+			m, _ = startSearchModel(t, m, "query")
+			tt.msg.requestID = m.activeSearchRequest
+			m, _ = updateModel(t, m, tt.msg)
+			output := ansi.Strip(m.View().Content)
+			if !strings.Contains(output, tt.want) {
+				t.Fatalf("search header missing %q:\n%s", tt.want, output)
+			}
+			for _, absent := range tt.mustAbsent {
+				if strings.Contains(output, absent) {
+					t.Fatalf("search header shows %q:\n%s", absent, output)
+				}
+			}
+		})
 	}
 }
 
@@ -1712,7 +2181,7 @@ func TestSearchResultNavigationClampsAndNewSearchCancelKeepsResults(t *testing.T
 		{Key: "A-2", Fields: IssueFields("Two")},
 		{Key: "A-3", Fields: IssueFields("Three")},
 	}
-	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results, total: 3})
+	m, _ = updateModel(t, m, searchMsg{requestID: requestID, issues: results})
 	for i := 0; i < 10; i++ {
 		m, _ = updateModel(t, m, specialKey(tea.KeyDown))
 	}
@@ -1754,7 +2223,7 @@ func TestSearchResultDetailLoadsFullIssueAndReturnsToSameList(t *testing.T) {
 	m, _ = startSearchModel(t, m, "result")
 	searchRequest := m.activeSearchRequest
 	results := []jira.Issue{{Key: "A-1", Fields: IssueFields("One")}, {Key: "A-2", Fields: IssueFields("Two")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 2})
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results})
 	m.searchCur = 1
 
 	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
@@ -1935,7 +2404,7 @@ func TestSprintRefreshPreservesInFlightSearchDetail(t *testing.T) {
 		t.Fatalf("board refresh invalidated active search: got=%d want=%d", m.activeSearchRequest, searchRequest)
 	}
 	results := []jira.Issue{{Key: "RESULT-1", Fields: IssueFields("Search result")}}
-	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results, total: 1})
+	m, _ = updateModel(t, m, searchMsg{requestID: searchRequest, issues: results})
 	m, detailCmd := updateModel(t, m, specialKey(tea.KeyEnter))
 	if detailCmd == nil || m.view != viewDetail || !m.detailLoading {
 		t.Fatalf("search detail did not open during board refresh: view=%v loading=%v", m.view, m.detailLoading)
