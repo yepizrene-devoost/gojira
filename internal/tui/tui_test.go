@@ -944,6 +944,59 @@ func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
 
 // Loading states show an indeterminate spinner frame next to their message, and
 // the tick chain runs only while something is loading so an idle TUI is quiet.
+// The board list opens under a rounded, width-bounded frame holding the
+// wordmark, centered horizontally, with the list aligned to the frame's left
+// edge; terminals too small or unknown fall back to the plain one-line title.
+func TestBoardsViewIsFramedBoundedAndCentered(t *testing.T) {
+	boards := []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}, {ID: 2, Name: "Board B", Type: "kanban"}}
+	view := func(w, h int) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.boards, m.width, m.height = viewBoards, boards, w, h
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	col := func(lines []string, marker string) (int, int) {
+		for i, line := range lines {
+			if idx := strings.Index(line, marker); idx >= 0 {
+				return i, len([]rune(line[:idx]))
+			}
+		}
+		return -1, -1
+	}
+
+	for _, w := range []int{160, 100, 60, 40} {
+		lines := view(w, 40)
+		top, left := col(lines, "╭")
+		if top < 0 {
+			t.Fatalf("width %d: no frame:\n%s", w, strings.Join(lines, "\n"))
+		}
+		frameW := min(w-2, 44)
+		if want := (w - frameW) / 2; left != want {
+			t.Errorf("width %d: frame starts at column %d, want centered at %d", w, left, want)
+		}
+		if got := ansi.StringWidth(strings.TrimRight(lines[top], " ")) - left; got != frameW {
+			t.Errorf("width %d: frame is %d wide, want %d", w, got, frameW)
+		}
+		if _, c := col(lines, "G O J I R A"); c <= left {
+			t.Errorf("width %d: wordmark missing or outside the frame", w)
+		}
+		if _, c := col(lines, "→ "); c != left {
+			t.Errorf("width %d: board list starts at column %d, want aligned at %d", w, c, left)
+		}
+		for i, line := range lines {
+			if ansi.StringWidth(line) > w {
+				t.Errorf("width %d: line %d is %d wide", w, i, ansi.StringWidth(line))
+			}
+		}
+	}
+
+	for _, size := range [][2]int{{0, 0}, {20, 40}, {100, 8}} {
+		out := strings.Join(view(size[0], size[1]), "\n")
+		if strings.Contains(out, "╭") || !strings.Contains(out, "GoJira TUI") {
+			t.Errorf("size %v should fall back to the plain title:\n%s", size, out)
+		}
+	}
+}
+
 func TestLoadingStatesShowSpinner(t *testing.T) {
 	frame := func(m Model) string { return ansi.Strip(m.spin.View()) }
 	tests := []struct {

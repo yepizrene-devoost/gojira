@@ -2287,14 +2287,16 @@ func (m Model) View() tea.View {
 
 	switch m.view {
 	case viewBoards:
-		b.WriteString(titleStyle.Render("🚀 GoJira TUI"))
+		header, indent := m.boardsHeader()
+		pad := strings.Repeat(" ", indent)
+		b.WriteString(header)
 		b.WriteString("\n\n")
 		if m.err != nil {
-			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString(pad + errStyle.Render("Error: "+m.err.Error()))
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(subStyle.Render(m.spinnerPrefix() + "Loading boards..."))
+			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards..."))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2311,15 +2313,22 @@ func (m Model) View() tea.View {
 				label = board.Name + " · " + board.Location.ProjectName
 			}
 			line := fmt.Sprintf("%s %s [%s]", icon, label, board.Type)
+			if m.width > 0 {
+				line = ansi.Truncate(line, max(m.width-indent-2, 1), "…")
+			}
 			if i == m.boardCur {
-				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + line))
+				b.WriteString(pad + lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ "+line))
 			} else {
-				b.WriteString("  " + line)
+				b.WriteString(pad + "  " + line)
 			}
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"))
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"
+		if m.width > 0 {
+			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
+		}
+		b.WriteString(pad + subStyle.Render(hint))
 
 	case viewKanban:
 		board := m.renderKanban()
@@ -2885,6 +2894,31 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+const boardsFrameMaxWidth = 44
+
+// boardsHeader returns the header of the board list and the left indent the list
+// shares with it: a rounded, width-bounded frame holding the wordmark, centered
+// in the terminal. A terminal that is unknown or too small gets the plain
+// one-line title and no indent, so nothing overflows or crowds out the list.
+func (m Model) boardsHeader() (string, int) {
+	if m.width < 30 || m.height < 16 {
+		return titleStyle.Render("🚀 GoJira TUI"), 0
+	}
+	w := min(m.width-2, boardsFrameMaxWidth)
+	body := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Width(w).
+		Align(lipgloss.Center).
+		Render(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("G O J I R A") + "\n" + subStyle.Render("Jira, from your terminal"))
+	indent := (m.width - lipgloss.Width(body)) / 2
+	lines := strings.Split(body, "\n")
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", indent) + lines[i]
+	}
+	return strings.Join(lines, "\n"), indent
 }
 
 // cardSeg is one styled run of text inside a card row.
