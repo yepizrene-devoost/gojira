@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -235,6 +236,7 @@ type Model struct {
 	filterInput  textinput.Model
 	filterActive bool
 
+	spin                spinner.Model
 	searchInput         textinput.Model
 	searchQuery         string
 	searchEditing       bool
@@ -367,13 +369,43 @@ func New(client *jira.Client, domain string) Model {
 		client: client,
 		domain: domain,
 		view:   viewBoards,
+		spin: spinner.New(
+			spinner.WithSpinner(spinner.MiniDot),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))),
+		),
 	}
 }
 
 // ─── Init ──────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	return m.loadBoards
+	return tea.Batch(m.loadBoards, m.spin.Tick)
+}
+
+// loading reports whether any indeterminate wait is on screen, which is when
+// the spinner should keep turning.
+func (m Model) loading() bool {
+	return m.boardLoading || m.searchLoading || (m.view == viewBoards && len(m.boards) == 0 && m.err == nil)
+}
+
+// spinnerPrefix renders the current spinner frame followed by a space, or
+// nothing when the model has no spinner configured.
+func (m Model) spinnerPrefix() string {
+	if len(m.spin.Spinner.Frames) == 0 {
+		return ""
+	}
+	return m.spin.View() + " "
+}
+
+// Update wraps update so that a wait starting from idle schedules the spinner's
+// first tick in one place; the spinner itself ignores duplicate tick chains.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	wasLoading := m.loading()
+	next, cmd := m.update(msg)
+	if nm, ok := next.(Model); ok && !wasLoading && nm.loading() {
+		cmd = tea.Batch(cmd, nm.spin.Tick)
+	}
+	return next, cmd
 }
 
 func (m Model) loadBoards() tea.Msg {
@@ -603,8 +635,16 @@ func (m Model) loadBoardData(board jira.Board, requestID uint64) tea.Msg {
 
 // ─── Update ────────────────────────────────────────────────────────────
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.loading() {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -2250,7 +2290,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(subStyle.Render("Loading boards..."))
+			b.WriteString(subStyle.Render(m.spinnerPrefix() + "Loading boards..."))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2453,7 +2493,7 @@ func (m Model) renderSearch() string {
 	case m.searchEditing:
 		b.WriteString(subStyle.Render("Type a text query, then press Enter."))
 	case m.searchLoading:
-		b.WriteString(subStyle.Render("Searching Jira..."))
+		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Searching Jira..."))
 	case m.searchErr != nil:
 		b.WriteString(errStyle.Render("Error: " + m.searchErr.Error()))
 	case m.searchCompleted && len(m.searchResults) == 0:
@@ -2526,7 +2566,7 @@ func (m Model) renderKanban() string {
 	if m.boardLoading {
 		b.WriteString(subStyle.Render(m.kanbanStatus(boardName, "Loading", 0, 0, 0, 0)))
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("Loading " + boardName + "..."))
+		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Loading " + boardName + "..."))
 		return m.boundKanban(b.String())
 	}
 
