@@ -241,6 +241,7 @@ type Model struct {
 	filterActive bool
 
 	spin                spinner.Model
+	version             string
 	searchInput         textinput.Model
 	searchQuery         string
 	searchEditing       bool
@@ -2898,6 +2899,17 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 
 const boardsFrameMaxWidth = 44
 
+// WithVersion returns the model showing the build version in the board list's
+// frame. A bare number gets a "v" prefix; "dev" and tagged versions show as is.
+func (m Model) WithVersion(version string) Model {
+	version = strings.TrimSpace(version)
+	if version != "" && unicode.IsDigit([]rune(version)[0]) {
+		version = "v" + version
+	}
+	m.version = version
+	return m
+}
+
 // boardsHeader returns the header of the board list and the left indent the list
 // shares with it: a rounded, width-bounded frame holding the wordmark, centered
 // in the terminal. A terminal that is unknown or too small gets the plain
@@ -2907,12 +2919,17 @@ func (m Model) boardsHeader() (string, int) {
 		return titleStyle.Render("🚀 GoJira TUI"), 0
 	}
 	w := min(m.width-2, boardsFrameMaxWidth)
+	wordmark := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("G O J I R A")
+	text := wordmark + "\n" + subStyle.Render("Jira, from your terminal")
+	if m.version != "" {
+		text += "\n" + subStyle.Render(m.version)
+	}
 	body := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#7D56F4")).
 		Width(w).
 		Align(lipgloss.Center).
-		Render(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("G O J I R A") + "\n" + subStyle.Render("Jira, from your terminal"))
+		Render(text)
 	indent := (m.width - lipgloss.Width(body)) / 2
 	lines := strings.Split(body, "\n")
 	for i := range lines {

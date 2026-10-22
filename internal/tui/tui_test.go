@@ -947,6 +947,46 @@ func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
 // The board list opens under a rounded, width-bounded frame holding the
 // wordmark, centered horizontally, with the list aligned to the frame's left
 // edge; terminals too small or unknown fall back to the plain one-line title.
+// The build version appears inside the frame, on the line right under the
+// subtitle; a bare number gets a "v" prefix, "dev" stays as is, and an unset
+// version adds no line.
+func TestBoardsFrameShowsVersionUnderSubtitle(t *testing.T) {
+	render := func(version string) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.width, m.height = viewBoards, 100, 40
+		m.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+		if version != "" {
+			m = m.WithVersion(version)
+		}
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	index := func(lines []string, marker string) int {
+		for i, line := range lines {
+			if strings.Contains(line, marker) {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, tt := range []struct{ in, shown string }{
+		{"v1.2.3", "v1.2.3"}, {"1.2.3", "v1.2.3"}, {"dev", "dev"},
+	} {
+		lines := render(tt.in)
+		sub := index(lines, "Jira, from your terminal")
+		ver := index(lines, tt.shown)
+		if sub < 0 || ver != sub+1 {
+			t.Fatalf("%q: version on line %d, want %d (under the subtitle):\n%s", tt.in, ver, sub+1, strings.Join(lines, "\n"))
+		}
+		if line := lines[ver]; !strings.Contains(line, "│") || strings.Index(line, tt.shown) < strings.Index(line, "│") {
+			t.Errorf("%q: version is not inside the frame: %q", tt.in, line)
+		}
+	}
+	lines := render("")
+	if top, bottom := index(lines, "╭"), index(lines, "╰"); bottom-top != 3 {
+		t.Errorf("unset version changed the frame height: %d lines", bottom-top+1)
+	}
+}
+
 func TestBoardsViewIsFramedBoundedAndCentered(t *testing.T) {
 	boards := []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}, {ID: 2, Name: "Board B", Type: "kanban"}}
 	view := func(w, h int) []string {
