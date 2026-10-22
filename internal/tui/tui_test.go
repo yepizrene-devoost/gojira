@@ -950,6 +950,40 @@ func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
 // The build version appears inside the frame, on the line right under the
 // subtitle; a bare number gets a "v" prefix, "dev" stays as is, and an unset
 // version adds no line.
+// Accents come from the logo palette (cyan spines, deep-blue chest), not the
+// former purple, on every main surface.
+func TestAccentsUseLogoPaletteNotPurple(t *testing.T) {
+	const purple = "125;86;244" // legacy #7D56F4
+	const cyan = "21;195;253"   // logo spines #15C3FD
+
+	boards := makeTestModel(2, 2)
+	boards.view, boards.width, boards.height = viewBoards, 100, 40
+	boards.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+
+	kanban := makeTestModel(3, 2)
+	kanban.colCur = 1
+
+	detail := makeTestModel(1, 1)
+	detail.view = viewDetail
+	detail.detail = &jira.Issue{Key: "A-1", Fields: IssueFields("Summary")}
+
+	for name, content := range map[string]string{
+		"boards": boards.View().Content,
+		"kanban": kanban.View().Content,
+		"detail": detail.View().Content,
+	} {
+		if strings.Contains(content, purple) {
+			t.Errorf("%s still uses the legacy purple accent", name)
+		}
+		if name != "detail" && !strings.Contains(content, cyan) {
+			t.Errorf("%s does not use the logo cyan accent", name)
+		}
+	}
+	if sel := strings.Join(kanban.renderCardLines(testIssue("A-1"), true, 40), ""); strings.Contains(sel, purple) {
+		t.Error("selected card still uses purple")
+	}
+}
+
 func TestBoardsFrameShowsVersionUnderSubtitle(t *testing.T) {
 	render := func(version string) []string {
 		m := makeTestModel(1, 1)

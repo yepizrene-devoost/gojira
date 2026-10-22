@@ -24,23 +24,34 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+// ─── Palette ───────────────────────────────────────────────────────────
+// Colors sampled from the logo (assets/gojira-logo.png): navy body, cyan
+// spines, deep-blue chest shadow, and the orange and green board columns.
+var (
+	colNavy     = lipgloss.Color("#0F2136")
+	colCyan     = lipgloss.Color("#15C3FD")
+	colDeepBlue = lipgloss.Color("#0F4D6F")
+	colOrange   = lipgloss.Color("#FD6E21")
+	colGreen    = lipgloss.Color("#3DB697")
+)
+
 // ─── Styles ────────────────────────────────────────────────────────────
 
 const colWidth = 24
 const colGap = 2
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4")).Padding(0, 1)
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan).Padding(0, 1)
 	subStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	colHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
-	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4"))
-	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
+	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan)
+	keyStyle     = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
 	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
-	selBg        = lipgloss.Color("#4B33A8")
-	selAccent    = lipgloss.Color("#C9B8FF")
-	selMetaFg    = lipgloss.Color("#D6CEF7")
-	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2)
+	selBg        = colDeepBlue
+	selAccent    = colCyan
+	selMetaFg    = lipgloss.Color("#BFE3F5")
+	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
 type helpEntry struct {
@@ -376,7 +387,7 @@ func New(client *jira.Client, domain string) Model {
 		view:   viewBoards,
 		spin: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
-			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(colCyan)),
 		),
 	}
 }
@@ -2318,7 +2329,7 @@ func (m Model) View() tea.View {
 				line = ansi.Truncate(line, max(m.width-indent-2, 1), "…")
 			}
 			if i == m.boardCur {
-				b.WriteString(pad + lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ "+line))
+				b.WriteString(pad + lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ "+line))
 			} else {
 				b.WriteString(pad + "  " + line)
 			}
@@ -2377,7 +2388,7 @@ func (m Model) View() tea.View {
 		} else {
 			for i, tr := range m.transitions {
 				if i == m.transCur {
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
+					b.WriteString(lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ " + tr.Name))
 				} else {
 					b.WriteString("  " + tr.Name)
 				}
@@ -2926,7 +2937,7 @@ func (m Model) boardsHeader() (string, int) {
 	}
 	body := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7D56F4")).
+		BorderForeground(colCyan).
 		Width(w).
 		Align(lipgloss.Center).
 		Render(text)
@@ -2999,11 +3010,11 @@ func priorityBadge(name string) (glyph string, c color.Color, known bool) {
 	case "highest", "blocker", "critical":
 		return "●●", lipgloss.Color("#FF6B6B"), true
 	case "high", "major":
-		return "●", lipgloss.Color("#F5A623"), true
+		return "●", colOrange, true
 	case "medium":
 		return "", nil, true
 	case "low", "minor":
-		return "○", lipgloss.Color("#5BD17A"), true
+		return "○", colGreen, true
 	case "lowest", "trivial":
 		return "○○", lipgloss.Color("#7FA88A"), true
 	}
