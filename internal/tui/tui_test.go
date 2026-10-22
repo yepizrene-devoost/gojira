@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
@@ -292,6 +294,134 @@ func TestSprintMovement(t *testing.T) {
 				if refresh == nil || !strings.Contains(m.toast,"accepted") { t.Fatal("missing refresh/acceptance") }
 			})
 		}
+	}
+}
+
+// cellsWithoutBackground counts visible cells whose SGR state has no background,
+// so a selected card whose fill is cut short by a nested reset is detected.
+func cellsWithoutBackground(raw string) int {
+	bg, missing := false, 0
+	for i := 0; i < len(raw); {
+		if raw[i] == 0x1b && i+1 < len(raw) && raw[i+1] == '[' {
+			end := strings.IndexByte(raw[i:], 'm')
+			if end < 0 {
+				break
+			}
+			params := strings.Split(raw[i+2:i+end], ";")
+			for j := 0; j < len(params); j++ {
+				n, _ := strconv.Atoi(params[j])
+				switch {
+				case params[j] == "" || n == 0 || n == 49:
+					bg = false
+				case n == 48 && j+1 < len(params) && params[j+1] == "5":
+					bg, j = true, j+2
+				case n == 48 && j+1 < len(params) && params[j+1] == "2":
+					bg, j = true, j+4
+				case (n >= 40 && n <= 47) || (n >= 100 && n <= 107):
+					bg = true
+				case n == 38 && j+1 < len(params) && params[j+1] == "5":
+					j += 2
+				case n == 38 && j+1 < len(params) && params[j+1] == "2":
+					j += 4
+				}
+			}
+			i += end + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(raw[i:])
+		if ansi.StringWidth(string(r)) > 0 && !bg {
+			missing++
+		}
+		i += size
+	}
+	return missing
+}
+
+// The selected card is marked with an accent bar on every line and filled with
+// one uniform background; every card line spans exactly the column width.
+func TestSelectedCardHasMarkerAndUniformBackground(t *testing.T) {
+	issue := testIssue("ARA-229")
+	issue.Fields.Summary = "General Meeting about something rather long indeed"
+	issue.Fields.Priority = &jira.PriorityField{Name: "Highest"}
+	issue.Fields.Assignee = &jira.AssigneeField{DisplayName: "Alejandro Lobato"}
+	m := Model{sprintName: "S"}
+	for _, cw := range []int{40, 24, 12} {
+		for _, selected := range []bool{true, false} {
+			lines := m.renderCardLines(issue, selected, cw)
+			if len(lines) != 3 {
+				t.Fatalf("cw=%d selected=%v: %d lines, want 3", cw, selected, len(lines))
+			}
+			for i, line := range lines {
+				if w := ansi.StringWidth(line); w != cw {
+					t.Errorf("cw=%d selected=%v line %d width=%d, want %d: %q", cw, selected, i, w, cw, ansi.Strip(line))
+				}
+				if has := strings.HasPrefix(ansi.Strip(line), "▌"); has != selected {
+					t.Errorf("cw=%d selected=%v line %d marker=%v: %q", cw, selected, i, has, ansi.Strip(line))
+				}
+				if selected {
+					if n := cellsWithoutBackground(line); n != 0 {
+						t.Errorf("cw=%d line %d has %d cells without the selection background: %q", cw, i, n, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Priority is a traffic-light bullet whose shape also encodes the level, hidden
+// for the neutral Medium; names the table does not know stay readable as text.
+func TestCardShowsPriorityGlyphAndInitials(t *testing.T) {
+	m := Model{}
+	last := func(s string) string {
+		f := strings.Fields(ansi.Strip(s))
+		return f[len(f)-1]
+	}
+	first := func(s string) string {
+		f := strings.Fields(strings.TrimPrefix(ansi.Strip(s), "▌"))
+		return f[0]
+	}
+	for _, tt := range []struct{ priority, glyph string }{
+		{"Highest", "●●"}, {"High", "●"}, {"Low", "○"}, {"Lowest", "○○"},
+	} {
+		issue := testIssue("A-1")
+		issue.Fields.Priority = &jira.PriorityField{Name: tt.priority}
+		lines := m.renderCardLines(issue, false, 40)
+		if got := last(lines[0]); got != tt.glyph {
+			t.Errorf("%s: key line ends with %q, want %q", tt.priority, got, tt.glyph)
+		}
+	}
+
+	// Medium is the neutral default: no badge and no repeated name in the meta.
+	medium := testIssue("A-1")
+	medium.Fields.Priority = &jira.PriorityField{Name: "Medium"}
+	lines := m.renderCardLines(medium, false, 40)
+	if got := last(lines[0]); got != "A-1" || strings.Contains(ansi.Strip(lines[2]), "Medium") {
+		t.Errorf("medium: key line end=%q meta=%q", got, ansi.Strip(lines[2]))
+	}
+
+	issue := testIssue("A-1")
+	issue.Fields.Priority = &jira.PriorityField{Name: "Urgent"}
+	lines = m.renderCardLines(issue, false, 40)
+	if got := last(lines[0]); got != "A-1" || !strings.Contains(ansi.Strip(lines[2]), "Urgent") {
+		t.Errorf("unknown priority: key line end=%q meta=%q", got, ansi.Strip(lines[2]))
+	}
+
+	for _, tt := range []struct{ name, initials string }{
+		{"Alejandro Lobato", "AL"}, {"René", "R"}, {"jorge flores perez", "JF"},
+	} {
+		issue := testIssue("A-1")
+		issue.Fields.Assignee = &jira.AssigneeField{DisplayName: tt.name}
+		lines := m.renderCardLines(issue, false, 40)
+		if got := first(lines[2]); got != tt.initials {
+			t.Errorf("%q: meta starts with %q, want initials %q (%q)", tt.name, got, tt.initials, ansi.Strip(lines[2]))
+		}
+	}
+
+	issue = testIssue("A-1")
+	issue.Fields.Assignee = nil
+	lines = m.renderCardLines(issue, false, 40)
+	if got := first(lines[2]); got != "Unassigned" {
+		t.Errorf("unassigned meta starts with %q: %q", got, ansi.Strip(lines[2]))
 	}
 }
 
