@@ -4,6 +4,46 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.4.0 – TUI refinements and search by issue key
+
+### TUI
+
+- Ticket cards are easier to scan: the selected card gets an accent bar on
+  every line and one uniform background (a nested style reset used to cut the
+  fill short), priority shows as a traffic-light bullet whose shape also
+  encodes the level (`●●` Highest, `●` High, `○` Low, `○○` Lowest; Medium shows
+  nothing), and the assignee appears with initials.
+- The active Kanban column carries a `▌` focus marker, visible even when it is
+  empty, with an `(empty column)` placeholder. `Enter` on an empty column now
+  says `Column is empty` instead of doing nothing.
+- Board, board-list and search waits show an indeterminate spinner that stops
+  when nothing is loading.
+- The board list opens under a rounded, width-bounded frame with the wordmark
+  and the build version, centered in the terminal. Terminals that are too small
+  keep the one-line title.
+- Accents use the colors of the app logo (cyan, deep blue, orange and green)
+  instead of purple.
+
+### Search
+
+- A query shaped like an issue key (for example `mon-201`) looks that issue up
+  by key and falls back to the text index when Jira rejects the lookup, so
+  typing a key in the TUI search finds the ticket.
+- The TUI search header reports completeness honestly: `N shown`,
+  `N shown · ≥M estimated`, or `N shown · more results`. It used to print
+  `0 total` for truncated results because the estimate was discarded.
+
+### Fixes
+
+- The board list shortcut hint and board names no longer overflow narrow
+  terminals; they are truncated to the available width.
+
+### Internal
+
+- `Client.SearchText` and `Client.SearchJQL` now return the full `SearchResult`
+  (including `Truncated` and `EstimatedTotal`). `cmd search` and the MCP search
+  tool are unchanged because they already used `SearchIssues`.
+
 ## 📦 v0.3.0 – Parity units: shared writes, sprint lifecycle and TUI field editor
 
 ### Multi-surface parity
