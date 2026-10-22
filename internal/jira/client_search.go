@@ -4,12 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
+var issueKeyPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+
 // SearchText searches Jira's text index while treating query as a JQL string
-// literal rather than executable JQL.
+// literal rather than executable JQL. A query shaped like an issue key looks the
+// key up first and falls back to the text index when Jira rejects the lookup.
 func (c *Client) SearchText(query string, maxResults int) (SearchResult, error) {
+	if key := strings.TrimSpace(query); issueKeyPattern.MatchString(key) {
+		if result, err := c.SearchJQL(fmt.Sprintf(`key = "%s"`, strings.ToUpper(key)), maxResults); err == nil {
+			return result, nil
+		}
+	}
 	escaped := strings.ReplaceAll(query, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	return c.SearchJQL(fmt.Sprintf(`text ~ "%s"`, escaped), maxResults)
