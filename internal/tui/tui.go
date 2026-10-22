@@ -3,11 +3,13 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"math/big"
 	"regexp"
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode"
 	"sync"
 	"time"
 
@@ -35,7 +37,9 @@ var (
 	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4"))
 	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
 	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
-	selBg        = lipgloss.Color("#3D2B6B")
+	selBg        = lipgloss.Color("#4B33A8")
+	selAccent    = lipgloss.Color("#C9B8FF")
+	selMetaFg    = lipgloss.Color("#D6CEF7")
 	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2)
 )
 
@@ -2883,48 +2887,129 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
-	key := truncateRunes(iss.Key, cw-2)
-	keyLine := keyStyle.Render(" " + key)
+// cardSeg is one styled run of text inside a card row.
+type cardSeg struct {
+	text  string
+	style lipgloss.Style
+}
+
+// cardRow lays one card line out inside exactly cw cells: an accent bar when
+// selected, left text truncated to fit, and an optional right-aligned badge.
+// Every run, including the padding, carries the selection background itself,
+// because a nested style's reset would otherwise cut an outer background short.
+func cardRow(cw int, selected bool, left, right cardSeg) string {
+	fill := lipgloss.NewStyle()
 	if selected {
-		keyLine = lipgloss.NewStyle().Background(selBg).Render(padRight(keyLine, cw))
-	} else {
-		keyLine = padRight(keyLine, cw)
+		fill = fill.Background(selBg)
+	}
+	render := func(sg cardSeg) string {
+		if selected {
+			return sg.style.Background(selBg).Render(sg.text)
+		}
+		return sg.style.Render(sg.text)
 	}
 
-	summary := truncateRunes(iss.Fields.Summary, cw-4)
-	summaryLine := " " + summary
+	rightW := ansi.StringWidth(right.text)
+	budget := cw - 2
+	if rightW > 0 {
+		budget -= rightW + 2
+		if budget < 1 {
+			right, rightW = cardSeg{}, 0
+			budget = cw - 2
+		}
+	}
+	text := truncateRunes(left.text, budget)
+	left.text = " " + text
+
+	marker := fill.Render(" ")
 	if selected {
-		summaryLine = padRight(summaryLine, cw)
-		summaryLine = lipgloss.NewStyle().Background(selBg).Render(summaryLine)
-	} else {
-		summaryLine = padRight(summaryLine, cw)
+		marker = fill.Foreground(selAccent).Bold(true).Render("▌")
+	}
+	used := 1 + ansi.StringWidth(left.text)
+	var b strings.Builder
+	b.WriteString(marker)
+	b.WriteString(render(left))
+	if rightW > 0 {
+		b.WriteString(fill.Render(strings.Repeat(" ", max(cw-used-rightW-1, 0))))
+		b.WriteString(render(right))
+		b.WriteString(fill.Render(" "))
+		return b.String()
+	}
+	b.WriteString(fill.Render(strings.Repeat(" ", max(cw-used, 0))))
+	return b.String()
+}
+
+// priorityBadge maps a Jira priority name to a traffic-light bullet. The shape
+// repeats the level so it reads without color, and Medium, the neutral default,
+// is known but draws nothing. Unknown names report known=false so the caller
+// keeps them readable as text.
+func priorityBadge(name string) (glyph string, c color.Color, known bool) {
+	switch strings.ToLower(name) {
+	case "highest", "blocker", "critical":
+		return "●●", lipgloss.Color("#FF6B6B"), true
+	case "high", "major":
+		return "●", lipgloss.Color("#F5A623"), true
+	case "medium":
+		return "", nil, true
+	case "low", "minor":
+		return "○", lipgloss.Color("#5BD17A"), true
+	case "lowest", "trivial":
+		return "○○", lipgloss.Color("#7FA88A"), true
+	}
+	return "", nil, false
+}
+
+// initials returns up to two uppercase initials of a display name.
+func initials(name string) string {
+	var out []rune
+	for _, word := range strings.Fields(name) {
+		if len(out) == 2 {
+			break
+		}
+		out = append(out, unicode.ToUpper([]rune(word)[0]))
+	}
+	return string(out)
+}
+
+func (m Model) renderCardLines(iss jira.Issue, selected bool, cw int) []string {
+	keyStyleNow, summaryStyle, metaStyleNow := keyStyle, lipgloss.NewStyle(), metaStyle
+	if selected {
+		keyStyleNow = keyStyle.Foreground(lipgloss.Color("#FFFFFF"))
+		summaryStyle = summaryStyle.Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
+		metaStyleNow = metaStyle.Foreground(selMetaFg)
 	}
 
 	pri := ""
 	if iss.Fields.Priority != nil {
 		pri = iss.Fields.Priority.Name
 	}
-	who := "Unassigned"
-	if iss.Fields.Assignee != nil {
-		who = iss.Fields.Assignee.DisplayName
-	}
-	metaText := fmt.Sprintf(" %s • %s", pri, who)
-	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
-		metaText += fmt.Sprintf(" • %d/%d", progress.Done, progress.Total)
-	}
-	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
-		metaText += " • " + sprint.Name
-	}
-	meta := truncateRunes(metaText, cw-2)
-	metaLine := metaStyle.Render(meta)
-	if selected {
-		metaLine = lipgloss.NewStyle().Background(selBg).Render(padRight(metaLine, cw))
-	} else {
-		metaLine = padRight(metaLine, cw)
+	var badge cardSeg
+	glyph, glyphColor, known := priorityBadge(pri)
+	if glyph != "" {
+		badge = cardSeg{glyph, lipgloss.NewStyle().Bold(true).Foreground(glyphColor)}
 	}
 
-	return []string{keyLine, summaryLine, metaLine}
+	var parts []string
+	if !known && pri != "" {
+		parts = append(parts, pri)
+	}
+	if iss.Fields.Assignee != nil {
+		parts = append(parts, strings.TrimSpace(initials(iss.Fields.Assignee.DisplayName)+" "+iss.Fields.Assignee.DisplayName))
+	} else {
+		parts = append(parts, "Unassigned")
+	}
+	if progress := jira.SubtaskProgress(iss.Fields.Subtasks); progress != nil {
+		parts = append(parts, fmt.Sprintf("%d/%d", progress.Done, progress.Total))
+	}
+	if sprint := iss.Fields.Sprint; sprint != nil && sprint.Name != "" && sprint.Name != m.sprintName {
+		parts = append(parts, sprint.Name)
+	}
+
+	return []string{
+		cardRow(cw, selected, cardSeg{iss.Key, keyStyleNow}, badge),
+		cardRow(cw, selected, cardSeg{iss.Fields.Summary, summaryStyle}, cardSeg{}),
+		cardRow(cw, selected, cardSeg{strings.Join(parts, " • "), metaStyleNow}, cardSeg{}),
+	}
 }
 
 func (m Model) renderDetail() string {
