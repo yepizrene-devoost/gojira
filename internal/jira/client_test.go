@@ -741,6 +741,48 @@ func TestSearchTextEscapesJQLLiteralBeforeURLEncoding(t *testing.T) {
 	}
 }
 
+// A query shaped like an issue key searches by key (upper-cased and quoted);
+// if Jira rejects the lookup, for example because no such issue exists, the
+// search falls back to the text index so ordinary text is never lost.
+func TestSearchTextKeyShapedQueryUsesKeyLookup(t *testing.T) {
+	var jqls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jql := r.URL.Query().Get("jql")
+		jqls = append(jqls, jql)
+		if jql == `key = "NOPE-9"` {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"errorMessages":["Issue does not exist"]}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": make([]Issue, 1), "isLast": true})
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "email", "token")
+
+	for _, tt := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"lower-case key", "mon-201", []string{`key = "MON-201"`}},
+		{"padded key", "  MON-201 ", []string{`key = "MON-201"`}},
+		{"missing key falls back to text", "nope-9", []string{`key = "NOPE-9"`, `text ~ "nope-9"`}},
+		{"plain text stays text", "login failure", []string{`text ~ "login failure"`}},
+		{"hyphenated words stay text", "well-known thing", []string{`text ~ "well-known thing"`}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			jqls = nil
+			result, err := client.SearchText(tt.query, 50)
+			if err != nil || len(result.Issues) != 1 {
+				t.Fatalf("issues=%d err=%v", len(result.Issues), err)
+			}
+			if strings.Join(jqls, " | ") != strings.Join(tt.want, " | ") {
+				t.Fatalf("JQL sequence = %q, want %q", jqls, tt.want)
+			}
+		})
+	}
+}
+
 func TestSearchIssuesPagination(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
