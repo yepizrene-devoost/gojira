@@ -179,7 +179,7 @@ type setupDoneMsg struct {
 func (m SetupModel) View() tea.View {
 	var b strings.Builder
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("🚀 GoJira Setup")
+	title := lipgloss.NewStyle().Bold(true).Foreground(colCyan).Render("🚀 GoJira Setup")
 	b.WriteString(title)
 	b.WriteString("\n\n")
 

@@ -944,6 +944,133 @@ func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
 
 // Loading states show an indeterminate spinner frame next to their message, and
 // the tick chain runs only while something is loading so an idle TUI is quiet.
+// The board list opens under a rounded, width-bounded frame holding the
+// wordmark, centered horizontally, with the list aligned to the frame's left
+// edge; terminals too small or unknown fall back to the plain one-line title.
+// The build version appears inside the frame, on the line right under the
+// subtitle; a bare number gets a "v" prefix, "dev" stays as is, and an unset
+// version adds no line.
+// Accents come from the logo palette (cyan spines, deep-blue chest), not the
+// former purple, on every main surface.
+func TestAccentsUseLogoPaletteNotPurple(t *testing.T) {
+	const purple = "125;86;244" // legacy #7D56F4
+	const cyan = "21;195;253"   // logo spines #15C3FD
+
+	boards := makeTestModel(2, 2)
+	boards.view, boards.width, boards.height = viewBoards, 100, 40
+	boards.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+
+	kanban := makeTestModel(3, 2)
+	kanban.colCur = 1
+
+	detail := makeTestModel(1, 1)
+	detail.view = viewDetail
+	detail.detail = &jira.Issue{Key: "A-1", Fields: IssueFields("Summary")}
+
+	for name, content := range map[string]string{
+		"boards": boards.View().Content,
+		"kanban": kanban.View().Content,
+		"detail": detail.View().Content,
+	} {
+		if strings.Contains(content, purple) {
+			t.Errorf("%s still uses the legacy purple accent", name)
+		}
+		if name != "detail" && !strings.Contains(content, cyan) {
+			t.Errorf("%s does not use the logo cyan accent", name)
+		}
+	}
+	if sel := strings.Join(kanban.renderCardLines(testIssue("A-1"), true, 40), ""); strings.Contains(sel, purple) {
+		t.Error("selected card still uses purple")
+	}
+}
+
+func TestBoardsFrameShowsVersionUnderSubtitle(t *testing.T) {
+	render := func(version string) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.width, m.height = viewBoards, 100, 40
+		m.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+		if version != "" {
+			m = m.WithVersion(version)
+		}
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	index := func(lines []string, marker string) int {
+		for i, line := range lines {
+			if strings.Contains(line, marker) {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, tt := range []struct{ in, shown string }{
+		{"v1.2.3", "v1.2.3"}, {"1.2.3", "v1.2.3"}, {"dev", "dev"},
+	} {
+		lines := render(tt.in)
+		sub := index(lines, "Jira, from your terminal")
+		ver := index(lines, tt.shown)
+		if sub < 0 || ver != sub+1 {
+			t.Fatalf("%q: version on line %d, want %d (under the subtitle):\n%s", tt.in, ver, sub+1, strings.Join(lines, "\n"))
+		}
+		if line := lines[ver]; !strings.Contains(line, "│") || strings.Index(line, tt.shown) < strings.Index(line, "│") {
+			t.Errorf("%q: version is not inside the frame: %q", tt.in, line)
+		}
+	}
+	lines := render("")
+	if top, bottom := index(lines, "╭"), index(lines, "╰"); bottom-top != 3 {
+		t.Errorf("unset version changed the frame height: %d lines", bottom-top+1)
+	}
+}
+
+func TestBoardsViewIsFramedBoundedAndCentered(t *testing.T) {
+	boards := []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}, {ID: 2, Name: "Board B", Type: "kanban"}}
+	view := func(w, h int) []string {
+		m := makeTestModel(1, 1)
+		m.view, m.boards, m.width, m.height = viewBoards, boards, w, h
+		return strings.Split(ansi.Strip(m.View().Content), "\n")
+	}
+	col := func(lines []string, marker string) (int, int) {
+		for i, line := range lines {
+			if idx := strings.Index(line, marker); idx >= 0 {
+				return i, len([]rune(line[:idx]))
+			}
+		}
+		return -1, -1
+	}
+
+	for _, w := range []int{160, 100, 60, 40} {
+		lines := view(w, 40)
+		top, left := col(lines, "╭")
+		if top < 0 {
+			t.Fatalf("width %d: no frame:\n%s", w, strings.Join(lines, "\n"))
+		}
+		frameW := min(w-2, 44)
+		if want := (w - frameW) / 2; left != want {
+			t.Errorf("width %d: frame starts at column %d, want centered at %d", w, left, want)
+		}
+		if got := ansi.StringWidth(strings.TrimRight(lines[top], " ")) - left; got != frameW {
+			t.Errorf("width %d: frame is %d wide, want %d", w, got, frameW)
+		}
+		if _, c := col(lines, "G O J I R A"); c <= left {
+			t.Errorf("width %d: wordmark missing or outside the frame", w)
+		}
+		if _, c := col(lines, "→ "); c != left {
+			t.Errorf("width %d: board list starts at column %d, want aligned at %d", w, c, left)
+		}
+		for i, line := range lines {
+			if ansi.StringWidth(line) > w {
+				t.Errorf("width %d: line %d is %d wide", w, i, ansi.StringWidth(line))
+			}
+		}
+	}
+
+	for _, size := range [][2]int{{0, 0}, {20, 40}, {100, 8}} {
+		out := strings.Join(view(size[0], size[1]), "\n")
+		if strings.Contains(out, "╭") || !strings.Contains(out, "GoJira TUI") {
+			t.Errorf("size %v should fall back to the plain title:\n%s", size, out)
+		}
+	}
+}
+
 func TestLoadingStatesShowSpinner(t *testing.T) {
 	frame := func(m Model) string { return ansi.Strip(m.spin.View()) }
 	tests := []struct {

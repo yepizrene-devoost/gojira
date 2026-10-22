@@ -24,23 +24,34 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+// ─── Palette ───────────────────────────────────────────────────────────
+// Colors sampled from the logo (assets/gojira-logo.png): navy body, cyan
+// spines, deep-blue chest shadow, and the orange and green board columns.
+var (
+	colNavy     = lipgloss.Color("#0F2136")
+	colCyan     = lipgloss.Color("#15C3FD")
+	colDeepBlue = lipgloss.Color("#0F4D6F")
+	colOrange   = lipgloss.Color("#FD6E21")
+	colGreen    = lipgloss.Color("#3DB697")
+)
+
 // ─── Styles ────────────────────────────────────────────────────────────
 
 const colWidth = 24
 const colGap = 2
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4")).Padding(0, 1)
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan).Padding(0, 1)
 	subStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	colHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#4A5568"))
-	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color("#7D56F4"))
-	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
+	activeColHeaderSty = lipgloss.NewStyle().Bold(true).Foreground(colNavy).Background(colCyan)
+	keyStyle     = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
 	metaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
-	selBg        = lipgloss.Color("#4B33A8")
-	selAccent    = lipgloss.Color("#C9B8FF")
-	selMetaFg    = lipgloss.Color("#D6CEF7")
-	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2)
+	selBg        = colDeepBlue
+	selAccent    = colCyan
+	selMetaFg    = lipgloss.Color("#BFE3F5")
+	detailBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
 type helpEntry struct {
@@ -241,6 +252,7 @@ type Model struct {
 	filterActive bool
 
 	spin                spinner.Model
+	version             string
 	searchInput         textinput.Model
 	searchQuery         string
 	searchEditing       bool
@@ -375,7 +387,7 @@ func New(client *jira.Client, domain string) Model {
 		view:   viewBoards,
 		spin: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
-			spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))),
+			spinner.WithStyle(lipgloss.NewStyle().Foreground(colCyan)),
 		),
 	}
 }
@@ -2287,14 +2299,16 @@ func (m Model) View() tea.View {
 
 	switch m.view {
 	case viewBoards:
-		b.WriteString(titleStyle.Render("🚀 GoJira TUI"))
+		header, indent := m.boardsHeader()
+		pad := strings.Repeat(" ", indent)
+		b.WriteString(header)
 		b.WriteString("\n\n")
 		if m.err != nil {
-			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString(pad + errStyle.Render("Error: "+m.err.Error()))
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(subStyle.Render(m.spinnerPrefix() + "Loading boards..."))
+			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards..."))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2311,15 +2325,22 @@ func (m Model) View() tea.View {
 				label = board.Name + " · " + board.Location.ProjectName
 			}
 			line := fmt.Sprintf("%s %s [%s]", icon, label, board.Type)
+			if m.width > 0 {
+				line = ansi.Truncate(line, max(m.width-indent-2, 1), "…")
+			}
 			if i == m.boardCur {
-				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + line))
+				b.WriteString(pad + lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ "+line))
 			} else {
-				b.WriteString("  " + line)
+				b.WriteString(pad + "  " + line)
 			}
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"))
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"
+		if m.width > 0 {
+			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
+		}
+		b.WriteString(pad + subStyle.Render(hint))
 
 	case viewKanban:
 		board := m.renderKanban()
@@ -2367,7 +2388,7 @@ func (m Model) View() tea.View {
 		} else {
 			for i, tr := range m.transitions {
 				if i == m.transCur {
-					b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true).Render("→ " + tr.Name))
+					b.WriteString(lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("→ " + tr.Name))
 				} else {
 					b.WriteString("  " + tr.Name)
 				}
@@ -2887,6 +2908,47 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 	return strings.Join(lines, "\n")
 }
 
+const boardsFrameMaxWidth = 44
+
+// WithVersion returns the model showing the build version in the board list's
+// frame. A bare number gets a "v" prefix; "dev" and tagged versions show as is.
+func (m Model) WithVersion(version string) Model {
+	version = strings.TrimSpace(version)
+	if version != "" && unicode.IsDigit([]rune(version)[0]) {
+		version = "v" + version
+	}
+	m.version = version
+	return m
+}
+
+// boardsHeader returns the header of the board list and the left indent the list
+// shares with it: a rounded, width-bounded frame holding the wordmark, centered
+// in the terminal. A terminal that is unknown or too small gets the plain
+// one-line title and no indent, so nothing overflows or crowds out the list.
+func (m Model) boardsHeader() (string, int) {
+	if m.width < 30 || m.height < 16 {
+		return titleStyle.Render("🚀 GoJira TUI"), 0
+	}
+	w := min(m.width-2, boardsFrameMaxWidth)
+	wordmark := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render("G O J I R A")
+	text := wordmark + "\n" + subStyle.Render("Jira, from your terminal")
+	if m.version != "" {
+		text += "\n" + subStyle.Render(m.version)
+	}
+	body := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colCyan).
+		Width(w).
+		Align(lipgloss.Center).
+		Render(text)
+	indent := (m.width - lipgloss.Width(body)) / 2
+	lines := strings.Split(body, "\n")
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", indent) + lines[i]
+	}
+	return strings.Join(lines, "\n"), indent
+}
+
 // cardSeg is one styled run of text inside a card row.
 type cardSeg struct {
 	text  string
@@ -2948,11 +3010,11 @@ func priorityBadge(name string) (glyph string, c color.Color, known bool) {
 	case "highest", "blocker", "critical":
 		return "●●", lipgloss.Color("#FF6B6B"), true
 	case "high", "major":
-		return "●", lipgloss.Color("#F5A623"), true
+		return "●", colOrange, true
 	case "medium":
 		return "", nil, true
 	case "low", "minor":
-		return "○", lipgloss.Color("#5BD17A"), true
+		return "○", colGreen, true
 	case "lowest", "trivial":
 		return "○○", lipgloss.Color("#7FA88A"), true
 	}
