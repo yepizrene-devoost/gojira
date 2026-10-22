@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -808,6 +809,115 @@ func TestEnterOnEmptyColumnShowsToast(t *testing.T) {
 	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
 	if m.view != viewKanban || m.toast != "Column is empty" || m.activeDetailRequest != 0 || m.detailLoading {
 		t.Fatalf("empty-column Enter feedback wrong: view=%v toast=%q detailReq=%d loading=%v", m.view, m.toast, m.activeDetailRequest, m.detailLoading)
+	}
+}
+
+// Loading states show an indeterminate spinner frame next to their message, and
+// the tick chain runs only while something is loading so an idle TUI is quiet.
+func TestLoadingStatesShowSpinner(t *testing.T) {
+	frame := func(m Model) string { return ansi.Strip(m.spin.View()) }
+	tests := []struct {
+		name  string
+		setup func(m Model) Model
+		want  string
+	}{
+		{"boards list", func(m Model) Model { m.view, m.boards = viewBoards, nil; return m }, "Loading boards..."},
+		{"board", func(m Model) Model { m.boardLoading, m.loadingBoardName = true, "Board A"; return m }, "Loading Board A..."},
+		{"search", func(m Model) Model {
+			m, _ = startSearchModel(t, m, "query")
+			return m
+		}, "Searching Jira..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeTestModel(1, 1)
+			m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+			m = tt.setup(m)
+			want := frame(m) + " " + tt.want
+			if got := ansi.Strip(m.View().Content); !strings.Contains(got, want) {
+				t.Fatalf("loading view lacks %q:\n%s", want, got)
+			}
+		})
+	}
+}
+
+func TestSpinnerTickAdvancesOnlyWhileLoading(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	m.boardLoading = true
+	before := ansi.Strip(m.spin.View())
+	m, cmd := updateModel(t, m, spinner.TickMsg{ID: m.spin.ID()})
+	if cmd == nil || ansi.Strip(m.spin.View()) == before {
+		t.Fatalf("tick while loading did not advance: cmd=%v frame=%q->%q", cmd != nil, before, ansi.Strip(m.spin.View()))
+	}
+	m.boardLoading = false
+	_, cmd = updateModel(t, m, spinner.TickMsg{ID: m.spin.ID()})
+	if cmd != nil {
+		t.Fatal("tick chain kept running with nothing loading")
+	}
+}
+
+// A load that starts from idle schedules the spinner's first tick; a load that
+// starts while one is already running does not stack a second chain.
+func TestStartingALoadSchedulesSpinnerTickOnlyFromIdle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	newModel := func() Model {
+		m := makeTestModel(1, 1)
+		m.client = jira.NewClient(srv.URL, "e@x.com", "tok")
+		m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		m.view = viewBoards
+		m.boards = []jira.Board{{ID: 1, Name: "Board A", Type: "scrum"}}
+		return m
+	}
+
+	idle := newModel()
+	_, cmd := updateModel(t, idle, specialKey(tea.KeyEnter))
+	if !batchHasSpinnerTick(cmd) {
+		t.Fatal("a load started from idle did not schedule a spinner tick")
+	}
+
+	running := newModel()
+	running.searchLoading = true
+	_, cmd = updateModel(t, running, specialKey(tea.KeyEnter))
+	if batchHasSpinnerTick(cmd) {
+		t.Fatal("a load started while another was running stacked a second tick chain")
+	}
+}
+
+func batchHasSpinnerTick(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	results := make(chan tea.Msg, 8)
+	run := func(c tea.Cmd) { results <- c() }
+	count := 1
+	go func() {
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			count = 0
+			for _, c := range batch {
+				if c != nil {
+					count++
+					go run(c)
+				}
+			}
+			return
+		}
+		results <- msg
+	}()
+	deadline := time.After(600 * time.Millisecond)
+	for {
+		select {
+		case msg := <-results:
+			if _, ok := msg.(spinner.TickMsg); ok {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
 	}
 }
 
