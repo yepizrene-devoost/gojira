@@ -18,12 +18,12 @@ func TestAssignEmailPublic(t *testing.T) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
 		case strings.Contains(r.URL.Path, "user/picker"):
-			w.Write([]byte(`{"users":[{"accountId":"resolved","displayName":"User"}]}`))
+			_, _ = w.Write([]byte(`{"users":[{"accountId":"resolved","displayName":"User"}]}`))
 		case r.Method == "GET":
-			w.Write([]byte(`{"accountId":"resolved","emailAddress":"person@example.com"}`))
+			_, _ = w.Write([]byte(`{"accountId":"resolved","emailAddress":"person@example.com"}`))
 		default:
 			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["accountId"] != "resolved" {
 				t.Errorf("body=%v", body)
 			}
@@ -38,12 +38,12 @@ func TestAssignEmailPublic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatal(err)

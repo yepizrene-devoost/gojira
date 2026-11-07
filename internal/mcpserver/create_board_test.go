@@ -29,7 +29,7 @@ func TestCreateBoardMissingSprintLookup(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		fmt.Fprint(w, `{"key":"ABC-1"}`)
+		_, _ = fmt.Fprint(w, `{"key":"ABC-1"}`)
 	}))
 	defer api.Close()
 	ctx := context.Background()
@@ -39,12 +39,12 @@ func TestCreateBoardMissingSprintLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "gojira_create", Arguments: map[string]any{"project": "ABC", "issueType": "Task", "summary": "Example", "boardId": 7}})
 	if err != nil {
 		t.Fatal(err)
@@ -90,12 +90,12 @@ func TestCreateBoardCreationFailureNeverRetries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer ss.Close()
+			defer func() { _ = ss.Close() }()
 			cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer cs.Close()
+			defer func() { _ = cs.Close() }()
 			res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "gojira_create", Arguments: map[string]any{"project": "ABC", "issueType": "Task", "summary": "Example", "boardId": 7}})
 			if err != nil {
 				t.Fatal(err)
@@ -154,7 +154,7 @@ func TestCreateBoardPublicInterface(t *testing.T) {
 				switch {
 				case r.Method == "POST" && r.URL.Path == "/rest/api/3/issue":
 					calls = append(calls, "POST issue")
-					fmt.Fprint(w, `{"key":"ABC-1"}`)
+					_, _ = fmt.Fprint(w, `{"key":"ABC-1"}`)
 				case r.Method == "GET" && r.URL.Path == "/rest/agile/1.0/board/7/sprint":
 					if r.URL.Query().Get("state") == "active" {
 						calls = append(calls, "GET active")
@@ -166,9 +166,9 @@ func TestCreateBoardPublicInterface(t *testing.T) {
 						return
 					}
 					if tc.mode == "none" || (tc.mode == "fallback" && r.URL.Query().Get("state") == "active") {
-						fmt.Fprint(w, `{"values":[]}`)
+						_, _ = fmt.Fprint(w, `{"values":[]}`)
 					} else {
-						fmt.Fprint(w, `{"values":[{"id":42,"state":"active"}]}`)
+						_, _ = fmt.Fprint(w, `{"values":[{"id":42,"state":"active"}]}`)
 					}
 				case r.Method == "POST" && r.URL.Path == "/rest/agile/1.0/sprint/42/issue":
 					calls = append(calls, "POST sprint")
@@ -196,12 +196,12 @@ func TestCreateBoardPublicInterface(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer ss.Close()
+			defer func() { _ = ss.Close() }()
 			cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer cs.Close()
+			defer func() { _ = cs.Close() }()
 			args := map[string]any{"project": "ABC", "issueType": "Task", "summary": "Example", "boardId": tc.board}
 			if tc.parent {
 				args["parent"] = "ABC-2"

@@ -75,7 +75,7 @@ func TestTimeReportValidSubmissionRequestsProject(t *testing.T) {
 		if got := r.URL.Query().Get("jql"); got != `project = "ABC" ORDER BY key ASC` {
 			t.Errorf("jql = %q", got)
 		}
-		fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -98,7 +98,7 @@ func TestTimeReportValidSubmissionRequestsProject(t *testing.T) {
 
 func TestTimeReportDisplaysResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -121,7 +121,7 @@ func TestTimeReportDisplaysResult(t *testing.T) {
 }
 
 func TestTimeReportDisplaysPartialWarnings(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[]}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[]}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("r"))
@@ -168,9 +168,9 @@ func TestTimeReportDisplaysRequestError(t *testing.T) {
 func TestTimeReportDisplaysIssueRows(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "worklog") {
-			fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"worklogs":[{"id":"w1","author":{"accountId":"account"},"started":"2025-01-02T00:00:00Z","timeSpentSeconds":60}]}`)
+			_, _ = fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"worklogs":[{"id":"w1","author":{"accountId":"account"},"started":"2025-01-02T00:00:00Z","timeSpentSeconds":60}]}`)
 		} else {
-			fmt.Fprint(w, `{"issues":[{"id":"1","key":"ABC-1"}],"isLast":true}`)
+			_, _ = fmt.Fprint(w, `{"issues":[{"id":"1","key":"ABC-1"}],"isLast":true}`)
 		}
 	}))
 	defer srv.Close()
@@ -220,7 +220,7 @@ func TestTimeReportEscapeCancelsHTTP(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("request did not start")
 	}
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	_, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 	select {
 	case <-cancelled:
 	case <-time.After(time.Second):
@@ -230,7 +230,7 @@ func TestTimeReportEscapeCancelsHTTP(t *testing.T) {
 }
 
 func TestTimeReportRejectsLateResponseAfterEscape(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("r"))
@@ -256,17 +256,17 @@ func TestTimeReportRejectsLateResponseAfterEscape(t *testing.T) {
 func TestTimeReportScrollsToLastRow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "worklog") {
-			fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"worklogs":[{"id":"w`+strings.Split(r.URL.Path, "/")[5]+`","author":{"accountId":"account"},"started":"2025-01-02T00:00:00Z","timeSpentSeconds":60}]}`)
+			_, _ = fmt.Fprint(w, `{"startAt":0,"maxResults":100,"total":1,"worklogs":[{"id":"w`+strings.Split(r.URL.Path, "/")[5]+`","author":{"accountId":"account"},"started":"2025-01-02T00:00:00Z","timeSpentSeconds":60}]}`)
 			return
 		}
-		fmt.Fprint(w, `{"issues":[`)
+		_, _ = fmt.Fprint(w, `{"issues":[`)
 		for i := 1; i <= 12; i++ {
 			if i > 1 {
-				fmt.Fprint(w, ",")
+				_, _ = fmt.Fprint(w, ",")
 			}
-			fmt.Fprintf(w, `{"id":"%d","key":"ABC-%02d"}`, i, i)
+			_, _ = fmt.Fprintf(w, `{"id":"%d","key":"ABC-%02d"}`, i, i)
 		}
-		fmt.Fprint(w, `],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -317,9 +317,9 @@ func TestTimeReportNewRequestRejectsOldResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			fmt.Fprint(w, `{"issues":[]}`)
+			_, _ = fmt.Fprint(w, `{"issues":[]}`)
 		} else {
-			fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+			_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
 		}
 	}))
 	defer srv.Close()
@@ -360,7 +360,7 @@ func TestTimeReportAdvertisedInKanbanHelp(t *testing.T) {
 }
 
 func TestTimeReportNarrowWindowShowsAllWarnings(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[]}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[]}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 30, Height: 6})
@@ -395,7 +395,7 @@ func TestTimeReportNarrowWindowShowsAllWarnings(t *testing.T) {
 }
 
 func TestTimeReportInvalidResubmissionShowsValidation(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("r"))
@@ -424,7 +424,7 @@ func TestTimeReportInvalidResubmissionShowsValidation(t *testing.T) {
 }
 
 func TestTimeReportResubmissionHidesPreviousResultWhilePending(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("r"))
@@ -472,7 +472,7 @@ func TestTimeReportNewSubmissionCancelsPreviousHTTP(t *testing.T) {
 		srv.CloseClientConnections()
 		t.Fatal("request did not start")
 	}
-	m, cmd = updateModel(t, m, specialKey(tea.KeyEnter))
+	_, cmd = updateModel(t, m, specialKey(tea.KeyEnter))
 	if cmd == nil {
 		srv.CloseClientConnections()
 		t.Fatal("missing second request")
@@ -486,7 +486,7 @@ func TestTimeReportNewSubmissionCancelsPreviousHTTP(t *testing.T) {
 }
 
 func TestTimeReportInvalidResubmissionRejectsPendingResult(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("r"))
@@ -536,7 +536,7 @@ func TestTimeReportValidationVisibleInNarrowWindow(t *testing.T) {
 }
 
 func TestTimeReportValidationVisibleAfterScrolledResult(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[]}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[]}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 30, Height: 4})

@@ -45,12 +45,12 @@ func TestExportPublicIssueSafetyCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 	got, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "gojira_export", Arguments: map[string]any{"boardId": 7, "sprintId": 9}})
 	if err != nil || got.IsError {
 		t.Fatalf("export: %v %v", got, err)
@@ -127,7 +127,7 @@ func TestExportPublic(t *testing.T) {
 				if !strings.HasSuffix(r.URL.Path, tc.paths[calls]) {
 					t.Errorf("path %s want suffix %s", r.URL.Path, tc.paths[calls])
 				}
-				fmt.Fprint(w, tc.responses[calls])
+				_, _ = fmt.Fprint(w, tc.responses[calls])
 				calls++
 			}))
 			defer api.Close()
@@ -137,12 +137,12 @@ func TestExportPublic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer ss.Close()
+			defer func() { _ = ss.Close() }()
 			cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer cs.Close()
+			defer func() { _ = cs.Close() }()
 			if tc.name == "read_only" {
 				list, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
 				if err != nil {

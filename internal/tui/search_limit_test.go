@@ -69,7 +69,7 @@ func TestSearchLimitRoutesToTextAndJQL(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				max = r.URL.Query().Get("maxResults")
 				query = r.URL.Query().Get("jql")
-				io.WriteString(w, `{"issues":[],"isLast":true}`)
+				_, _ = io.WriteString(w, `{"issues":[],"isLast":true}`)
 			}))
 			defer srv.Close()
 			m := Model{view: viewBoards, client: jira.NewClient(srv.URL, "", "")}
@@ -116,14 +116,14 @@ func TestSearchLimitAllCapsAndReportsMore(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			io.WriteString(w, `{"count":12000}`)
+			_, _ = io.WriteString(w, `{"count":12000}`)
 			return
 		}
 		requests++
 		if r.URL.Query().Get("maxResults") != "100" {
 			t.Errorf("page size %s", r.URL.Query().Get("maxResults"))
 		}
-		io.WriteString(w, `{"issues":[`+strings.TrimSuffix(strings.Repeat(`{},`, 100), ",")+`],"nextPageToken":"`+strconv.Itoa(requests)+`","isLast":false}`)
+		_, _ = io.WriteString(w, `{"issues":[`+strings.TrimSuffix(strings.Repeat(`{},`, 100), ",")+`],"nextPageToken":"`+strconv.Itoa(requests)+`","isLast":false}`)
 	}))
 	defer srv.Close()
 	m := Model{view: viewBoards, client: jira.NewClient(srv.URL, "", "")}

@@ -52,12 +52,12 @@ func TestAssignPublicContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	call := func(args map[string]any) *mcp.CallToolResult {
 		t.Helper()
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "gojira_assign", Arguments: args})

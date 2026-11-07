@@ -32,7 +32,7 @@ func TestJQLSearchSendsUnchangedQuery(t *testing.T) {
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.URL.Query().Get("jql")
-		fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -48,7 +48,7 @@ func TestJQLSearchSendsUnchangedQuery(t *testing.T) {
 
 func TestSwitchingSearchModeRejectsPendingResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"issues":[{"key":"OLD-1","fields":{"summary":"old result"}}],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[{"key":"OLD-1","fields":{"summary":"old result"}}],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -86,7 +86,7 @@ func TestJQLSearchHTTPCompleteness(t *testing.T) {
 						w.WriteHeader(tc.countStatus)
 						return
 					}
-					fmt.Fprint(w, `{"count":75}`)
+					_, _ = fmt.Fprint(w, `{"count":75}`)
 					return
 				}
 				searches++
@@ -130,7 +130,7 @@ func TestJQLSearchHTTPCompleteness(t *testing.T) {
 func TestJQLSearchHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"errorMessages":["invalid JQL"]}`)
+		_, _ = fmt.Fprint(w, `{"errorMessages":["invalid JQL"]}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -149,7 +149,7 @@ func TestTextSearchHTTPRegression(t *testing.T) {
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.URL.Query().Get("jql")
-		fmt.Fprint(w, `{"issues":[{"key":"T-1","fields":{"summary":"found"}}],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[{"key":"T-1","fields":{"summary":"found"}}],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -163,7 +163,7 @@ func TestTextSearchHTTPRegression(t *testing.T) {
 }
 
 func TestFilterSearchEditingHasTextPlaceholder(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := makeTestModel(1, 1)
 	m.client = jira.NewClient(srv.URL, "test", "test")
@@ -181,7 +181,7 @@ func TestFilterSearchEditingHasTextPlaceholder(t *testing.T) {
 }
 
 func TestCancelledModeRestoresPlaceholder(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("s"))
@@ -224,7 +224,7 @@ func TestSearchPlaceholderTracksMode(t *testing.T) {
 func TestSwitchingSearchModeRejectsPendingError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"errorMessages":["old failure"]}`)
+		_, _ = fmt.Fprint(w, `{"errorMessages":["old failure"]}`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -250,7 +250,7 @@ func TestJQLEditingHelpIdentifiesJQL(t *testing.T) {
 }
 
 func TestCancellingModeChangeRestoresResultMode(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("s"))
@@ -269,7 +269,7 @@ func TestFilterSearchRemainsTextAfterJQL(t *testing.T) {
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.URL.Query().Get("jql")
-		fmt.Fprint(w, `{"issues":[],"isLast":true}`)
+		_, _ = fmt.Fprint(w, `{"issues":[],"isLast":true}`)
 	}))
 	defer srv.Close()
 	m := makeTestModel(1, 1)

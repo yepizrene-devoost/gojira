@@ -36,7 +36,7 @@ func TestUserSearchUsesJiraUserEndpoint(t *testing.T) {
 		if r.URL.Query().Get("query") != "alice" {
 			t.Errorf("query = %q", r.URL.Query().Get("query"))
 		}
-		fmt.Fprint(w, `[]`)
+		_, _ = fmt.Fprint(w, `[]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -63,7 +63,7 @@ func TestUserSearchUsesJiraUserEndpoint(t *testing.T) {
 
 func TestUserSearchDisplaysIdentity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"accountId":"id-1","displayName":"Alice Example","active":true}]`)
+		_, _ = fmt.Fprint(w, `[{"accountId":"id-1","displayName":"Alice Example","active":true}]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -80,7 +80,7 @@ func TestUserSearchDisplaysIdentity(t *testing.T) {
 }
 
 func TestUserSearchEmptyCompletenessWarning(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `[]`) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `[]`) }))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
 	m, _ = updateModel(t, m, textKey("u"))
@@ -110,7 +110,7 @@ func TestUserSearchShowsError(t *testing.T) {
 
 func TestUserSearchEscapeRejectsLateResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"accountId":"late","displayName":"Late User","active":true}]`)
+		_, _ = fmt.Fprint(w, `[{"accountId":"late","displayName":"Late User","active":true}]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -142,14 +142,14 @@ func TestUserSearchPartialWarning(t *testing.T) {
 			http.Error(w, "failed", 500)
 			return
 		}
-		fmt.Fprint(w, "[")
+		_, _ = fmt.Fprint(w, "[")
 		for i := 0; i < 100; i++ {
 			if i > 0 {
-				fmt.Fprint(w, ",")
+				_, _ = fmt.Fprint(w, ",")
 			}
-			fmt.Fprintf(w, `{"accountId":"%d","displayName":"User","active":true}`, i)
+			_, _ = fmt.Fprintf(w, `{"accountId":"%d","displayName":"User","active":true}`, i)
 		}
-		fmt.Fprint(w, "]")
+		_, _ = fmt.Fprint(w, "]")
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -188,7 +188,7 @@ func TestUserSearchPaste(t *testing.T) {
 
 func TestUserSearchEditingRejectsPendingResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"accountId":"old","displayName":"Old Result","active":true}]`)
+		_, _ = fmt.Fprint(w, `[{"accountId":"old","displayName":"Old Result","active":true}]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -216,7 +216,7 @@ func TestUserSearchShowsControls(t *testing.T) {
 
 func TestUserSearchResultScrolling(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"accountId":"1","displayName":"First","active":true},{"accountId":"2","displayName":"Second","active":true}]`)
+		_, _ = fmt.Fprint(w, `[{"accountId":"1","displayName":"First","active":true},{"accountId":"2","displayName":"Second","active":true}]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -233,7 +233,7 @@ func TestUserSearchResultScrolling(t *testing.T) {
 
 func TestUserSearchReopenResetsSelection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"accountId":"1","displayName":"First","active":true},{"accountId":"2","displayName":"Second","active":true}]`)
+		_, _ = fmt.Fprint(w, `[{"accountId":"1","displayName":"First","active":true},{"accountId":"2","displayName":"Second","active":true}]`)
 	}))
 	defer srv.Close()
 	m := New(jira.NewClient(srv.URL, "test", "test"), "")
@@ -288,7 +288,7 @@ func TestUserSearchEscapeCancelsHTTP(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("request did not start")
 	}
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	_, _ = updateModel(t, m, specialKey(tea.KeyEsc))
 	select {
 	case <-cancelled:
 	case <-time.After(2 * time.Second):
