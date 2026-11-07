@@ -1437,6 +1437,12 @@ func updateModel(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	if !ok {
 		t.Fatalf("Update returned %T, want tui.Model", updated)
 	}
+	// Legacy isolated export tests use a nil client and assume no active sprint.
+	// Tests supplying exportSprints drive discovery responses explicitly instead.
+	if result.view == viewExport && result.exportResolving && result.exportSprints == nil && result.client == nil && cmd != nil {
+		updated, cmd = result.Update(exportSprintsMsg{request: result.exportRequest})
+		result = updated.(Model)
+	}
 	return result, cmd
 }
 

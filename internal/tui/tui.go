@@ -93,6 +93,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "S", action: "Choose a future/active sprint"},
 	{keys: "b", action: "Move ticket to backlog"},
 	{keys: "C", action: "Copy column as JSON"},
+	{keys: "E", action: "Export current board or sprint as JSON to clipboard"},
 	{keys: "Esc or q", action: "Back to boards"},
 	{keys: "Ctrl+C", action: "Quit"},
 }
@@ -175,6 +176,7 @@ const (
 	viewDeleteConfirm
 	viewAssign
 	viewBasicsEdit
+	viewExport
 )
 
 type column struct {
@@ -185,39 +187,55 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
-	timeReportInputs [5]textinput.Model
-	timeReportFocus int
-	timeReportScroll int
-	timeReportError string
-	timeReportLoading bool
-	timeReportCancel context.CancelFunc
-	timeReportRequest uint64
-	timeReportResult *reporting.TimeReportResult
-	assignment assignmentState
-	userSearchInput textinput.Model
-	userSearchError string
-	userSearchResult reporting.UserSearchResult
-	userSearchRequest uint64
-	userSearchCancel context.CancelFunc
-	userSearchReturn view
-	userSearchCursor int
-	basics basicsState
-	lifecycleRequest uint64
-	lifecycleBoard uint64
-	lifecycleSearch uint64
-	lifecycleBusy bool
-	lifecycleKey string
-	lifecycleReturn view
-	deleteInput textinput.Model
-	sprintChoices []jira.Sprint
-	sprintChoiceCur int
-	sprintMoveKey string
-	sprintMoveReturn view
-	sprintMoveRequest uint64
-	sprintMoveBoard uint64
-	sprintMoveSearch uint64
-	sprintMoveLoading bool
-	sprintMoveSubmitting bool
+	exportFetch                   func(int, int) ([]jira.Issue, error)
+	exportSprints                 func(int) ([]jira.Sprint, error)
+	exportResolving               bool
+	exportDiscoveryFailed         bool
+	exportCopy                    func(string) error
+	exportRequest                 uint64
+	exportContext                 context.Context
+	exportCancel                  context.CancelFunc
+	exportError                   string
+	exportSelectingSprint         bool
+	exportSelectingBoard          bool
+	exportBoardInput              string
+	exportBoardID                 int
+	exportSprintInput             string
+	exportSprintID                int
+	exportSprintExplicit          bool
+	timeReportInputs              [5]textinput.Model
+	timeReportFocus               int
+	timeReportScroll              int
+	timeReportError               string
+	timeReportLoading             bool
+	timeReportCancel              context.CancelFunc
+	timeReportRequest             uint64
+	timeReportResult              *reporting.TimeReportResult
+	assignment                    assignmentState
+	userSearchInput               textinput.Model
+	userSearchError               string
+	userSearchResult              reporting.UserSearchResult
+	userSearchRequest             uint64
+	userSearchCancel              context.CancelFunc
+	userSearchReturn              view
+	userSearchCursor              int
+	basics                        basicsState
+	lifecycleRequest              uint64
+	lifecycleBoard                uint64
+	lifecycleSearch               uint64
+	lifecycleBusy                 bool
+	lifecycleKey                  string
+	lifecycleReturn               view
+	deleteInput                   textinput.Model
+	sprintChoices                 []jira.Sprint
+	sprintChoiceCur               int
+	sprintMoveKey                 string
+	sprintMoveReturn              view
+	sprintMoveRequest             uint64
+	sprintMoveBoard               uint64
+	sprintMoveSearch              uint64
+	sprintMoveLoading             bool
+	sprintMoveSubmitting          bool
 	client                        *jira.Client
 	domain                        string
 	view                          view
@@ -334,6 +352,20 @@ type Model struct {
 	boardLoading       bool
 }
 
+type exportSprintsMsg struct {
+	request uint64
+	sprints []jira.Sprint
+	err     error
+}
+type exportFetchMsg struct {
+	request uint64
+	issues  []jira.Issue
+	err     error
+}
+type exportClipboardMsg struct {
+	request uint64
+	err     error
+}
 type boardsMsg struct{ boards []jira.Board }
 type boardLoadMsg struct {
 	requestID  uint64
@@ -716,6 +748,59 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case exportSprintsMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		m.exportResolving = false
+		if msg.err != nil {
+			m.exportDiscoveryFailed = !m.exportSprintExplicit
+			m.exportError = msg.err.Error()
+			return m, nil
+		}
+		for _, sprint := range msg.sprints {
+			if !m.exportSprintExplicit && sprint.State == "active" {
+				m.exportSprintID = sprint.ID
+				break
+			}
+		}
+		return m, nil
+
+	case exportFetchMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.exportError = msg.err.Error()
+			return m, nil
+		}
+		data, err := json.MarshalIndent(jira.IssuesToTicketJSON(msg.issues, m.domain), "", "  ")
+		if err != nil {
+			return m, nil
+		}
+		copyFn := m.exportCopy
+		if copyFn == nil {
+			copyFn = clipboard.WriteAll
+		}
+		request, ctx := msg.request, m.exportContext
+		return m, func() tea.Msg {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return exportClipboardMsg{request: request, err: copyFn(string(data))}
+		}
+
+	case exportClipboardMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.toast = "Clipboard error: " + msg.err.Error()
+			return m, nil
+		}
+		m.toast = "Export copied to clipboard"
+		return m, nil
+
 	case boardsMsg:
 		m.boards = msg.boards
 		return m, nil
@@ -1047,6 +1132,140 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewExport:
+			if msg.String() == "ctrl+c" {
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportRequest++
+				return m, tea.Quit
+			}
+			if m.exportSelectingBoard {
+				if msg.String() == "esc" {
+					m.exportSelectingBoard = false
+					return m, nil
+				}
+				if msg.String() == "enter" {
+					if id, err := strconv.Atoi(m.exportBoardInput); err == nil && id > 0 {
+						m.exportBoardID = id
+						m.exportSelectingBoard = false
+						m.exportError = ""
+						if !m.exportSprintExplicit {
+							m.exportSprintID = 0
+						}
+						m.exportDiscoveryFailed = false
+						m.exportResolving = true
+						m.exportRequest++
+						request, fetch := m.exportRequest, m.exportSprints
+						return m, func() tea.Msg {
+							if fetch == nil {
+								fetch = m.client.GetSprints
+							}
+							sprints, err := fetch(id)
+							return exportSprintsMsg{request: request, sprints: sprints, err: err}
+						}
+					} else {
+						m.exportError = "Enter a positive board ID"
+					}
+				} else if msg.String() == "backspace" && len(m.exportBoardInput) > 0 {
+					m.exportBoardInput = m.exportBoardInput[:len(m.exportBoardInput)-1]
+				} else if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
+					m.exportBoardInput += msg.String()
+				} else if len(msg.String()) == 1 {
+					m.exportError = "Board ID: digits only"
+				}
+				return m, nil
+			}
+			if m.exportSelectingSprint {
+				if msg.String() == "esc" {
+					m.exportSelectingSprint = false
+					return m, nil
+				}
+				if msg.String() == "enter" {
+					if id, err := strconv.Atoi(m.exportSprintInput); err == nil && id > 0 {
+						m.exportSprintID = id
+						m.exportSprintExplicit = true
+						if m.exportResolving {
+							m.exportRequest++
+						}
+						m.exportResolving = false
+						m.exportDiscoveryFailed = false
+						m.exportError = ""
+						m.exportSelectingSprint = false
+					} else {
+						m.exportError = "Enter a positive sprint ID"
+					}
+				} else if msg.String() == "backspace" && len(m.exportSprintInput) > 0 {
+					m.exportSprintInput = m.exportSprintInput[:len(m.exportSprintInput)-1]
+				} else if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
+					m.exportSprintInput += msg.String()
+				} else if len(msg.String()) == 1 {
+					m.exportError = "Sprint ID: digits only"
+				}
+			} else if msg.String() == "a" {
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportRequest++
+				m.exportResolving = false
+				m.exportDiscoveryFailed = false
+				m.exportSprintID = 0
+				m.exportSprintExplicit = true
+				m.exportError = ""
+				m.toast = ""
+			} else if msg.String() == "b" {
+				m.toast = ""
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				if !m.exportResolving {
+					m.exportRequest++
+				}
+				m.exportBoardInput = ""
+				m.exportSelectingBoard = true
+			} else if msg.String() == "s" {
+				m.toast = ""
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				if !m.exportResolving {
+					m.exportRequest++
+				}
+				m.exportSprintInput = ""
+				m.exportSelectingSprint = true
+			} else if msg.String() == "enter" {
+				if m.exportResolving || m.exportDiscoveryFailed {
+					return m, nil
+				}
+				m.exportError = ""
+				m.toast = ""
+				fetch := m.exportFetch
+				if fetch == nil {
+					fetch = m.client.GetBoardIssues
+				}
+				board, sprint := m.boards[m.boardCur].ID, m.exportSprintID
+				if m.exportBoardID > 0 {
+					board = m.exportBoardID
+				}
+				m.exportRequest++
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportContext, m.exportCancel = context.WithCancel(context.Background())
+				request := m.exportRequest
+				return m, func() tea.Msg {
+					issues, err := fetch(board, sprint)
+					return exportFetchMsg{request: request, issues: issues, err: err}
+				}
+			}
+			if msg.String() == "esc" {
+				m.exportRequest++
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.view = viewKanban
+			}
+			return m, nil
 		case viewAssign:
 			return m.updateAssignment(msg)
 		case viewDeleteConfirm:
@@ -1433,6 +1652,27 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openSearchInput()
 	case "u":
 		return m.openUserSearch()
+	case "E":
+		if m.boardCur >= 0 && m.boardCur < len(m.boards) && m.loadedBoardRequest != 0 {
+			m.exportSprintID = 0
+			m.exportSprintExplicit = false
+			m.exportBoardID = 0
+			m.exportError = ""
+			m.exportDiscoveryFailed = false
+			m.exportSelectingSprint = false
+			m.view = viewExport
+			m.exportResolving = true
+			m.exportRequest++
+			request, board, fetch := m.exportRequest, m.boards[m.boardCur].ID, m.exportSprints
+			return m, func() tea.Msg {
+				if fetch == nil {
+					fetch = m.client.GetSprints
+				}
+				sprints, err := fetch(board)
+				return exportSprintsMsg{request: request, sprints: sprints, err: err}
+			}
+		}
+		return m, nil
 	case "o":
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
@@ -2623,6 +2863,32 @@ func (m Model) View() tea.View {
 	var b strings.Builder
 
 	switch m.view {
+	case viewExport:
+		board := m.boards[m.boardCur]
+		if m.exportBoardID == 0 {
+			fmt.Fprintf(&b, "Export\nBoard: %s (id=%d)\n", board.Name, board.ID)
+		} else {
+			fmt.Fprintf(&b, "Export\nBoard ID: %d\n", m.exportBoardID)
+		}
+		if m.exportResolving {
+			b.WriteString("Resolving default sprint...\n")
+		} else if m.exportDiscoveryFailed {
+			b.WriteString("Default sprint unresolved\n")
+		} else if m.exportSprintID == 0 {
+			b.WriteString("All board issues\n")
+		} else {
+			fmt.Fprintf(&b, "Sprint: %d\n", m.exportSprintID)
+		}
+		if m.exportSelectingSprint {
+			fmt.Fprintf(&b, "Sprint ID: %s\n", m.exportSprintInput)
+		}
+		if m.exportSelectingBoard {
+			fmt.Fprintf(&b, "Board ID: %s\n", m.exportBoardInput)
+		}
+		b.WriteString("sprint discovery completeness unknown.\nExport completeness unknown; retrieval has a 2000-issue safety threshold.\n[b] Board ID  [s] Sprint ID  [a] All board  [Enter] Copy JSON  [Esc] Back\n")
+		if m.exportError != "" {
+			fmt.Fprintf(&b, "Error: %s\n", m.exportError)
+		}
 	case viewTimeReport:
 		if m.timeReportResult != nil {
 			fmt.Fprintf(&b, "Total: %d seconds\n", m.timeReportResult.TotalSeconds)

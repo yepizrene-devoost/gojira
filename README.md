@@ -536,8 +536,21 @@ User search accepts a nonempty query: press `Enter` to search, `↑/↓` to navi
 | `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
 | `D` | Permanently delete a selected card/detail: type its exact key and press Enter; Esc cancels before submission. One DELETE, never automatically retried |
 | `C` | Copy column as JSON to clipboard |
+| `E` | Export the current board or a sprint as JSON to the clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |
+
+For export, first select a board, then press `E`. The board chooser shows the
+boards returned by Jira's first board-list response. The selected board is the
+default; press `b`, enter a positive board ID and press Enter to use another board.
+The default scope is the first active sprint, or all board issues if none is
+found. Sprint discovery completeness is unknown. Press `s`, enter a positive
+sprint ID and press Enter to override it, or `a` for all board issues. On a board
+change the default is resolved again; an explicit sprint or all-board override
+is retained. Enter copies the displayed scope as curated JSON.
+Esc cancels a pending copy, but cannot undo a clipboard write that has already
+started. Retrieval has a 2,000-issue safety threshold, and completeness is unknown.
+Export uses the clipboard only and never writes a file.
 
 Ticket detail and help float over the board at a consistent height (up to 35 rows)
 and width (up to 100 columns), so long content scrolls inside instead of stretching

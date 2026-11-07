@@ -23,9 +23,9 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | --- | --- | --- | --- |
 | Ticket detail | `get` | `gojira_get` (embedded history may be partial) | `Enter` detail |
 | Search by JQL with a limit and truncation signal | `search` | `gojira_search` | `s`, then `Tab` for JQL; `Ctrl+L` selects 1–10,000 or `all` (10,000 cap), with truncation signal (`/` remains text search) |
-| List projects | `projects` | `gojira_projects` | No |
+| List projects | `projects` | `gojira_projects` | Intentionally excluded |
 | List boards and sprints | `boards`, `sprint list` | `gojira_boards`, `gojira_sprints` | Boards list, sprint chooser |
-| Export tickets | `export` | `gojira_export` (completeness unknown) | **Partial**: copy as JSON (`C`) |
+| Export tickets | `export` | `gojira_export` (completeness unknown) | `E`: current or explicit board ID, first active sprint or board fallback, optional sprint ID or all-board override; clipboard only. Sprint discovery and export completeness are unknown (2,000-issue export safety threshold). `C` still copies a column. |
 | Project context and identity | `context` | `gojira_context` | Uses the board's project |
 
 ## Change tickets
@@ -60,6 +60,9 @@ MCP write tools exist only when the server starts with `--allow-writes`.
 
 These are not gaps: they serve the surface they live on.
 
+- Project listing is intentionally excluded from the TUI: the board list is its
+  entry point, and a project with no visible board is reachable through the CLI
+  or MCP.
 - Setup and credentials (`config`, `init`, `mcp config`, `guide`) are CLI-only;
   the MCP server and the TUI read the configuration the CLI wrote.
 - `--json` output and the stable error envelope belong to the CLI; MCP returns
