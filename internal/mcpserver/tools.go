@@ -96,6 +96,54 @@ func (a adapter) tools() []tool {
 			},
 		},
 		{
+			name:        "gojira_export",
+			description: "Export board or sprint tickets like the CLI. Defaults to the first board and first active sprint; without an active sprint exports the board. Completeness is unknown because the issue reader has a safety cap.",
+			schema:      objectSchema(map[string]any{"boardId": map[string]any{"type": "integer", "minimum": 0}, "sprintId": map[string]any{"type": "integer", "minimum": 0}}), annotations: annotations,
+			validate: func(in *input, _ map[string]json.RawMessage) string {
+				if in.BoardID < 0 || in.SprintID < 0 {
+					return "boardId and sprintId must not be negative"
+				}
+				return ""
+			},
+			handle: func(in input) (any, error) {
+				reader, ok := a.Client.(interface {
+					GetSprints(int) ([]jira.Sprint, error)
+					GetBoardIssues(int, int) ([]jira.Issue, error)
+				})
+				if !ok {
+					return nil, errors.New("export unavailable")
+				}
+				if in.BoardID == 0 {
+					boards, err := a.Client.GetBoards()
+					if err != nil {
+						return nil, err
+					}
+					if len(boards) == 0 {
+						return nil, &validationError{"no boards found"}
+					}
+					in.BoardID = boards[0].ID
+				}
+				if in.SprintID == 0 {
+					sprints, err := reader.GetSprints(in.BoardID)
+					if err != nil {
+						return nil, err
+					}
+					for _, sprint := range sprints {
+						if sprint.State == "active" {
+							in.SprintID = sprint.ID
+							break
+						}
+					}
+				}
+				issues, err := reader.GetBoardIssues(in.BoardID, in.SprintID)
+				if err != nil {
+					return nil, err
+				}
+				out := output{SchemaVersion: a.SchemaVersion, Data: jira.IssuesToTicketJSON(issues, a.Domain), Completeness: "unknown", Warning: "Issue retrieval has a 2000-issue safety cap; additional results may exist. Default board selection reads one page; each sprint query reads one page, including the fallback query."}
+				return out, nil
+			},
+		},
+		{
 			name:        "gojira_search",
 			description: "Requires jql; optional limit (default 50, maximum 1000). Observe complete.",
 			schema:      objectSchema(map[string]any{"jql": map[string]any{"type": "string", "minLength": 1}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "default": 50}}, "jql"), annotations: annotations,

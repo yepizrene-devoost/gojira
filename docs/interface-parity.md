@@ -25,7 +25,7 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Search by JQL with a limit and truncation signal | `search` | `gojira_search` | **Partial**: text search only (`s`, `/`), no JQL |
 | List projects | `projects` | `gojira_projects` | No |
 | List boards and sprints | `boards`, `sprint list` | `gojira_boards`, `gojira_sprints` | Boards list, sprint chooser |
-| Export tickets | `export` | No | **Partial**: copy as JSON (`C`) |
+| Export tickets | `export` | `gojira_export` (completeness unknown) | **Partial**: copy as JSON (`C`) |
 | Project context and identity | `context` | `gojira_context` | Uses the board's project |
 
 ## Change tickets

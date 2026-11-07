@@ -47,10 +47,11 @@ type Options struct {
 }
 
 type input struct {
-	Key     string `json:"key,omitempty"`
-	JQL     string `json:"jql,omitempty"`
-	BoardID int    `json:"boardId,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
+	Key      string `json:"key,omitempty"`
+	JQL      string `json:"jql,omitempty"`
+	BoardID  int    `json:"boardId,omitempty"`
+	SprintID int    `json:"sprintId,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
 }
 
 type output struct {

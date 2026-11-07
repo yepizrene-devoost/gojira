@@ -47,6 +47,30 @@
           "idempotentHint": true,
           "readOnlyHint": true
         },
+        "description": "Read Jira data. Export board or sprint tickets like the CLI. Defaults to the first board and first active sprint; without an active sprint exports the board. Completeness is unknown because the issue reader has a safety cap.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "boardId": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sprintId": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "gojira_export"
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "readOnlyHint": true
+        },
         "description": "Read Jira data. Requires key. Embedded history may be partial.",
         "inputSchema": {
           "additionalProperties": false,
