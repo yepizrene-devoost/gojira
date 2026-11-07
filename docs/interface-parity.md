@@ -54,7 +54,7 @@ MCP write tools exist only when the server starts with `--allow-writes`.
 | Capability | CLI | MCP | TUI |
 | --- | --- | --- | --- |
 | Search users | `users search` | `gojira_users_search` | `u` from boards or Kanban; identity, completeness and permission warnings |
-| Time report by person and date range | `report time` | `gojira_report_time` | No |
+| Time report by person and date range | `report time` | `gojira_report_time` | `r` from boards; explicit filters, completeness and warnings |
 
 ## Different on purpose
 

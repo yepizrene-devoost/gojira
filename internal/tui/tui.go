@@ -57,6 +57,12 @@ var (
 	detailBox          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
+type timeReportMsg struct {
+	request uint64
+	result reporting.TimeReportResult
+	err error
+}
+
 type userSearchMsg struct {
 	request uint64
 	result reporting.UserSearchResult
@@ -77,6 +83,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search Jira; Tab switches text/JQL, Ctrl+L sets limit"},
 	{keys: "u", action: "User search"},
+	{keys: "r", action: "Time report (from boards)"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
@@ -161,6 +168,7 @@ const (
 	viewCreate
 	viewSearch
 	viewUserSearch
+	viewTimeReport
 	viewDescriptionEdit
 	viewFieldsEdit
 	viewSprintChoose
@@ -177,6 +185,14 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
+	timeReportInputs [5]textinput.Model
+	timeReportFocus int
+	timeReportScroll int
+	timeReportError string
+	timeReportLoading bool
+	timeReportCancel context.CancelFunc
+	timeReportRequest uint64
+	timeReportResult *reporting.TimeReportResult
 	assignment assignmentState
 	userSearchInput textinput.Model
 	userSearchError string
@@ -1002,6 +1018,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
+	case timeReportMsg:
+		if m.view != viewTimeReport || msg.request != m.timeReportRequest { return m, nil }
+		m.timeReportLoading = false
+		if msg.err == nil {
+			m.timeReportResult = &msg.result
+		} else {
+			m.timeReportResult = nil
+			m.timeReportError = msg.err.Error()
+		}
+		return m, nil
+
 	case userSearchMsg:
 		if m.view != viewUserSearch || msg.request != m.userSearchRequest {
 			return m, nil
@@ -1026,6 +1053,53 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDeleteConfirm(msg)
 		case viewSprintChoose:
 			return m.updateSprintChoose(msg)
+		case viewTimeReport:
+			if m.timeReportResult != nil || m.timeReportError != "" {
+				switch msg.String() {
+				case "down": m.timeReportScroll++; return m, nil
+				case "up": if m.timeReportScroll > 0 { m.timeReportScroll-- }; return m, nil
+				}
+			}
+			if msg.String() == "esc" {
+				if m.timeReportCancel != nil { m.timeReportCancel(); m.timeReportCancel = nil }
+				m.timeReportRequest++
+				m.view = viewBoards
+				return m, nil
+			}
+			if msg.String() == "enter" {
+				filters := reporting.TimeFilters{AccountID: m.timeReportInputs[0].Value(), Project: m.timeReportInputs[1].Value(), From: m.timeReportInputs[2].Value(), To: m.timeReportInputs[3].Value(), Timezone: m.timeReportInputs[4].Value()}
+				if err := reporting.ValidateTimeFilters(filters); err != nil {
+					if m.timeReportCancel != nil { m.timeReportCancel(); m.timeReportCancel = nil }
+					m.timeReportRequest++
+					m.timeReportLoading = false
+					m.timeReportResult = nil
+					m.timeReportScroll = 0
+					m.timeReportError = err.Error()
+					return m, nil
+				}
+				m.timeReportResult = nil
+				m.timeReportError = ""
+				m.timeReportLoading = true
+				client := m.client
+				if m.timeReportCancel != nil { m.timeReportCancel() }
+				ctx, cancel := context.WithCancel(context.Background())
+				m.timeReportCancel = cancel
+				m.timeReportRequest++
+				request := m.timeReportRequest
+				return m, func() tea.Msg {
+					result, err := reporting.TimeReport(ctx, client, filters)
+					return timeReportMsg{request: request, result: result, err: err}
+				}
+			}
+			if msg.String() == "tab" {
+				m.timeReportInputs[m.timeReportFocus].Blur()
+				m.timeReportFocus = (m.timeReportFocus + 1) % len(m.timeReportInputs)
+				m.timeReportInputs[m.timeReportFocus].Focus()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.timeReportInputs[m.timeReportFocus], cmd = m.timeReportInputs[m.timeReportFocus].Update(msg)
+			return m, cmd
 		case viewBoards:
 			return m.updateBoards(msg)
 		case viewKanban:
@@ -1162,6 +1236,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "r":
+		for i := range m.timeReportInputs {
+			m.timeReportInputs[i] = textinput.New()
+		}
+		m.timeReportFocus = 0
+		m.timeReportScroll = 0
+		m.timeReportError = ""
+		m.timeReportLoading = false
+		m.timeReportResult = nil
+		m.timeReportInputs[0].Focus()
+		m.view = viewTimeReport
+		return m, nil
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up", "k":
@@ -2537,6 +2623,25 @@ func (m Model) View() tea.View {
 	var b strings.Builder
 
 	switch m.view {
+	case viewTimeReport:
+		if m.timeReportResult != nil {
+			fmt.Fprintf(&b, "Total: %d seconds\n", m.timeReportResult.TotalSeconds)
+			for _, row := range m.timeReportResult.Rows { fmt.Fprintf(&b, "%s: %d seconds\n", row.Key, row.Seconds) }
+			if m.timeReportResult.Complete { b.WriteString("complete\n") } else { b.WriteString("partial\n") }
+			for _, warning := range m.timeReportResult.Warnings { fmt.Fprintln(&b, warning) }
+		}
+		if m.timeReportResult == nil {
+			if m.timeReportLoading { b.WriteString("Loading report...\n") }
+			if m.timeReportError != "" { b.WriteString(m.timeReportError + "\n") }
+			b.WriteString("Time report\nAccount ID: " + m.timeReportInputs[0].Value() + "\nProject: " + m.timeReportInputs[1].Value() + "\nFrom: " + m.timeReportInputs[2].Value() + "\nTo: " + m.timeReportInputs[3].Value() + "\nTimezone: " + m.timeReportInputs[4].Value())
+		}
+		if m.height > 0 && (m.timeReportResult != nil || m.timeReportError != "") {
+			content := strings.TrimRight(b.String(), "\n")
+			if m.width > 0 { content = ansi.Wrap(content, m.width, "") }
+			lines := strings.Split(content, "\n")
+			start := min(m.timeReportScroll, max(0, len(lines)-m.height))
+			return altScreenView(strings.Join(lines[start:min(start+m.height, len(lines))], "\n"))
+		}
 	case viewBoards:
 		header, indent := m.boardsHeader()
 		pad := strings.Repeat(" ", indent)
@@ -2547,7 +2652,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards..."))
+			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards...\n[r] Time report"))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2575,7 +2680,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [u] User search  [q] Quit"
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [u] User search  [r] Time report  [q] Quit"
 		if m.width > 0 {
 			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
 		}

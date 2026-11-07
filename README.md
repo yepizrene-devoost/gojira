@@ -509,7 +509,10 @@ validate on a disposable issue first; deletion is permanent.
 | `Enter` | Open board |
 | `s` | Search Jira (text by default; `Tab` switches to JQL) |
 | `u` | Search users |
+| `r` | Open time report |
 | `q` | Quit |
+
+Time report requires an account ID, project key, inclusive `YYYY-MM-DD` dates and an IANA timezone. Press `Tab` to move between filters, `Enter` to run the read-only report, `↑/↓` to scroll results and `Esc` to cancel or return. Completeness and warnings describe the limits of the visible data.
 
 User search accepts a nonempty query: press `Enter` to search, `↑/↓` to navigate results, and `Esc` to return. Results show display name, account ID, active status, completeness and warnings. An empty result can reflect missing Browse users permission; it does not prove the user does not exist. Search covers only the endpoint's first 1,000 active matches.
 
