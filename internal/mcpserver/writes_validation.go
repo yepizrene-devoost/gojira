@@ -81,6 +81,9 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 		values["key"] = key
 	}
 	if parent, ok := values["parent"]; ok {
+		if _, hasBoard := values["boardId"]; hasBoard {
+			return nil, "parent cannot be combined with boardId"
+		}
 		if !writeKeyPattern.MatchString(parent) {
 			return nil, "invalid parent issue key"
 		}

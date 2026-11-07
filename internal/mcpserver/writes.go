@@ -35,7 +35,7 @@ type writeTool struct {
 
 func writeTools() []writeTool {
 	return []writeTool{
-		{"create", "Create an issue without sprint placement. Optional parent requires a valid issue key and issueType Sub-task. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent"}, nil},
+		{"create", "Create an issue; optional boardId adds it to the board's active sprint. Optional parent requires a valid issue key and issueType Sub-task and cannot be combined with boardId. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent", "boardId"}, []string{"boardId"}},
 		{"comment", "Append plain text as ADF. Non-idempotent; never retry automatically.", []string{"key", "body"}, nil, nil},
 		{"log_work", "Add worklog. Non-idempotent; never retry automatically.", []string{"key", "timeSpent"}, []string{"comment"}, nil},
 		{"assign", "Assign using exactly one non-empty, trimmed accountId or email. Email is resolved through Jira before assignment; never retry automatically.", []string{"key"}, []string{"accountId", "email"}, nil},
@@ -132,6 +132,35 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 				hint = "Verify the issue in Jira before retrying; outcome unknown. Never retry automatically."
 			}
 			return writeResult(entry.action, key, state, nil, code, "Jira operation failed", hint, jira.MutationDiagnostics(err)), nil
+		}
+		if entry.action == "create" && in.values["boardId"] != "" {
+			if reader, ok := a.Writer.(interface {
+				GetSprints(int) ([]jira.Sprint, error)
+			}); ok {
+				sprints, lookupErr := reader.GetSprints(in.sprintID)
+				if lookupErr != nil {
+					return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but active sprint lookup failed", "Check Jira before placing the issue; do not retry creation."), nil
+				}
+				found := false
+				for _, sprint := range sprints {
+					if sprint.State == "active" {
+						found = true
+						if addErr := a.Writer.AddIssuesToSprint(sprint.ID, []string{key}); addErr != nil {
+							hint := "Check Jira before placing the issue; do not retry creation."
+							if jira.MutationStateOf(addErr) == jira.MutationUnknown {
+								hint = "Verify sprint placement in Jira before retrying; outcome unknown. Never retry automatically or recreate the issue."
+							}
+							return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but adding it to the active sprint failed", hint), nil
+						}
+						break
+					}
+				}
+				if !found {
+					return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but the board has no active sprint", "Issue is in the backlog; do not retry creation."), nil
+				}
+			} else {
+				return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but active sprint lookup is unavailable", "Check server configuration before placing the issue; do not retry creation."), nil
+			}
 		}
 		return writeResult(entry.action, key, jira.MutationApplied, nil, "", "", ""), nil
 	}
