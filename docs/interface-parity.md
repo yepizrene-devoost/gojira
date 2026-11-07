@@ -22,7 +22,7 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Capability | CLI | MCP | TUI |
 | --- | --- | --- | --- |
 | Ticket detail | `get` | `gojira_get` (embedded history may be partial) | `Enter` detail |
-| Search by JQL with a limit and truncation signal | `search` | `gojira_search` | **Partial**: `s`, then `Tab` for JQL; fixed 50-result limit and truncation signal, no configurable limit or all-results option (`/` remains text search) |
+| Search by JQL with a limit and truncation signal | `search` | `gojira_search` | `s`, then `Tab` for JQL; `Ctrl+L` selects 1–10,000 or `all` (10,000 cap), with truncation signal (`/` remains text search) |
 | List projects | `projects` | `gojira_projects` | No |
 | List boards and sprints | `boards`, `sprint list` | `gojira_boards`, `gojira_sprints` | Boards list, sprint chooser |
 | Export tickets | `export` | `gojira_export` (completeness unknown) | **Partial**: copy as JSON (`C`) |

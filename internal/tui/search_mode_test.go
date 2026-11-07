@@ -74,7 +74,7 @@ func TestJQLSearchHTTPCompleteness(t *testing.T) {
 		absent      string
 	}{
 		{name: "complete at limit", last: true, want: "50 shown", absent: "more results"},
-		{name: "truncated with estimate", countStatus: http.StatusOK, want: "50 shown · ≥75 estimated"},
+		{name: "truncated with estimate", countStatus: http.StatusOK, want: "50 shown · more results (about 75 total)"},
 		{name: "truncated without estimate", countStatus: http.StatusBadRequest, want: "50 shown · more results", absent: "estimated"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

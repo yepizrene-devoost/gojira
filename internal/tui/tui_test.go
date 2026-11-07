@@ -2248,7 +2248,7 @@ func TestSearchRenderShowsHonestCompleteness(t *testing.T) {
 		{
 			name:       "truncated with estimate",
 			msg:        searchMsg{issues: issues(50), truncated: true, estimated: ptrInt(412)},
-			want:       "50 shown · ≥412 estimated",
+			want:       "50 shown · more results (about 412 total)",
 			mustAbsent: []string{"· 0 total"},
 		},
 		{

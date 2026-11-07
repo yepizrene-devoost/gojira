@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +67,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
-	{keys: "s", action: "Search Jira; Tab switches text/JQL"},
+	{keys: "s", action: "Search Jira; Tab switches text/JQL, Ctrl+L sets limit"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
@@ -254,6 +255,11 @@ type Model struct {
 	spin                spinner.Model
 	version             string
 	searchInput         textinput.Model
+	searchLimitInput    textinput.Model
+	searchLimitEditing  bool
+	searchLimitErr      string
+	searchLimit         int
+	searchLimitAll      bool
 	searchJQL           bool
 	searchResultJQL     bool
 	searchQuery         string
@@ -1041,6 +1047,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		case viewSearch:
+			if m.searchLimitEditing {
+				var cmd tea.Cmd
+				m.searchLimitInput, cmd = m.searchLimitInput.Update(msg)
+				return m, cmd
+			}
 			if m.searchEditing {
 				var cmd tea.Cmd
 				m.searchInput, cmd = m.searchInput.Update(msg)
@@ -2070,13 +2081,17 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.view = viewSearch
 	client := m.client
 	jql := m.searchJQL
+	limit := m.searchLimit
+	if limit == 0 {
+		limit = 50
+	}
 	return m, func() tea.Msg {
 		var result jira.SearchResult
 		var err error
 		if jql {
-			result, err = client.SearchJQL(query, 50)
+			result, err = client.SearchJQL(query, limit)
 		} else {
-			result, err = client.SearchText(query, 50)
+			result, err = client.SearchText(query, limit)
 		}
 		return searchMsg{requestID: requestID, issues: result.Issues, truncated: result.Truncated, estimated: result.EstimatedTotal, err: err}
 	}
@@ -2097,6 +2112,43 @@ func (m Model) exitSearch() Model {
 
 func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.searchLimitEditing {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.searchLimitEditing = false
+			return m, nil
+		case "enter":
+			value := strings.TrimSpace(m.searchLimitInput.Value())
+			all := strings.EqualFold(value, "all")
+			n, err := strconv.Atoi(value)
+			if all {
+				n = 10000
+			}
+			if !all && (err != nil || n < 1 || n > 10000) {
+				m.searchLimitErr = "Invalid limit: enter 1–10000 or all"
+				return m, nil
+			}
+			m.searchLimit = n
+			m.searchLimitAll = all
+			m.searchLimitErr = ""
+			m.searchLimitEditing = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.searchLimitInput, cmd = m.searchLimitInput.Update(msg)
+			return m, cmd
+		}
+	}
+	if key == "ctrl+l" {
+		m.searchLimitErr = ""
+		m.searchLimitInput = textinput.New()
+		m.searchLimitInput.Placeholder = "50"
+		m.searchLimitInput.Focus()
+		m.searchLimitEditing = true
+		return m, textinput.Blink
+	}
 	if m.searchEditing {
 		switch key {
 		case "ctrl+c":
@@ -2602,6 +2654,21 @@ func (m Model) renderSearch() string {
 		mode = "JQL"
 	}
 	b.WriteString("Mode: " + mode + "  [Tab] switch\n")
+	limit := m.searchLimit
+	if limit == 0 {
+		limit = 50
+	}
+	if m.searchLimitEditing {
+		b.WriteString("Limit: " + m.searchLimitInput.View() + " [Enter] apply  [esc] cancel\n")
+		b.WriteString(subStyle.Render("Enter 1–10000 or all (max 10000).") + "\n")
+		if m.searchLimitErr != "" {
+			b.WriteString(errStyle.Render(m.searchLimitErr) + "\n")
+		}
+	} else if m.searchLimitAll {
+		b.WriteString("Limit: all (max 10000)  [ctrl+l] change for next search\n")
+	} else {
+		fmt.Fprintf(&b, "Limit: %d  [ctrl+l] change for next search\n", limit)
+	}
 	b.WriteString("Query: ")
 	b.WriteString(m.searchInput.View())
 	b.WriteString("\n\n")
@@ -2624,7 +2691,7 @@ func (m Model) renderSearch() string {
 			shown := len(m.searchResults)
 			switch {
 			case m.searchTruncated && m.searchEstimated != nil:
-				_, _ = fmt.Fprintf(&b, "%d shown · ≥%d estimated\n\n", shown, *m.searchEstimated)
+				_, _ = fmt.Fprintf(&b, "%d shown · more results (about %d total)\n\n", shown, *m.searchEstimated)
 			case m.searchTruncated:
 				_, _ = fmt.Fprintf(&b, "%d shown · more results\n\n", shown)
 			default:

@@ -563,8 +563,10 @@ Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
 it, or press `Enter` with a nonempty filter to search Jira's text index. Press
 `s` to open direct search: it defaults to text, and `Tab` switches between text
 and JQL while editing. JQL is sent unchanged; press `Enter` to search. Both modes
-show up to 50 results. The TUI does not offer a configurable limit or an
-`--all` equivalent; the CLI provides both options. Search results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
+default to 50 results. Press `Ctrl+L` in the search screen to set a limit from
+1 to 10,000, or enter `all` to fetch up to the same 10,000-issue safety cap as
+the CLI's `--all`. The selected limit applies to subsequent searches; a more-results
+indicator identifies confirmed truncation. Search results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
 detail returns to the same query, result list, and cursor. Press `s` from a
 result list to edit the query, or `Esc` to return to the board or boards list
 where search started.
