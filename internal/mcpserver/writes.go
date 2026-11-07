@@ -38,7 +38,7 @@ func writeTools() []writeTool {
 		{"create", "Create an issue without sprint placement. Optional parent requires a valid issue key and issueType Sub-task. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent"}, nil},
 		{"comment", "Append plain text as ADF. Non-idempotent; never retry automatically.", []string{"key", "body"}, nil, nil},
 		{"log_work", "Add worklog. Non-idempotent; never retry automatically.", []string{"key", "timeSpent"}, []string{"comment"}, nil},
-		{"assign", "Assign directly by accountId, unlike the CLI which resolves email. accountId must be non-empty and trimmed.", []string{"key", "accountId"}, nil, nil},
+		{"assign", "Assign using exactly one non-empty, trimmed accountId or email. Email is resolved through Jira before assignment; never retry automatically.", []string{"key"}, []string{"accountId", "email"}, nil},
 		{"move", "Transition to an exact, unambiguous status name.", []string{"key", "status"}, nil, nil},
 		{"update", "Set summary, description (plain text converted to ADF), priority (name), labels (non-empty trimmed names), dueDate (YYYY-MM-DD), components and fixVersions (name arrays). An empty string clears description and dueDate; [] clears components and fixVersions; null clears storyPoints. storyPoints is a finite decimal number or null and requires storyPointsField (customfield_NNN), and vice versa. Replacing a description this way may discard rich ADF formatting that plain text cannot represent. Metadata is checked before mutation; never retry automatically.", []string{"key", "fields"}, nil, nil},
 		{"delete", "Delete only with a single-use confirmationToken from a preview; expires after two minutes. Preview reveals only action and key. The token forces a deliberate second call and prevents a single-call accidental delete, but is not proof of human approval: the same agent receives and redeems it.", []string{"key"}, []string{"confirmationToken"}, nil},
@@ -62,8 +62,12 @@ func (a adapter) registerWrites(server *mcp.Server) {
 		if entry.action == "update" {
 			properties["fields"] = updateFieldsSchema()
 		}
+		schema := objectSchema(properties, entry.required...)
+		if entry.action == "assign" {
+			schema["oneOf"] = []any{map[string]any{"required": []string{"accountId"}}, map[string]any{"required": []string{"email"}}}
+		}
 		destructive := entry.action == "delete"
-		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: objectSchema(properties, entry.required...), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: slices.Contains([]string{"assign", "update", "sprint_move", "backlog"}, entry.action)}}, a.writeCall(entry, confirmations))
+		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: slices.Contains([]string{"assign", "update", "sprint_move", "backlog"}, entry.action)}}, a.writeCall(entry, confirmations))
 	}
 }
 func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) mcp.ToolHandler {
@@ -90,6 +94,22 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 			if !confirmations.consume(in.values["confirmationToken"], key) {
 				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "invalid_confirmation", "Confirmation invalid or expired", "Request a new preview."), nil
 			}
+		}
+		if entry.action == "assign" && in.values["email"] != "" {
+			resolver, ok := a.Writer.(interface {
+				ResolveAccountID(string) (string, string, error)
+			})
+			if !ok {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "configuration_error", "Identity resolver unavailable", "Check server configuration."), nil
+			}
+			account, _, err := resolver.ResolveAccountID(in.values["email"])
+			if err != nil || account == "" {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "lookup_failed", "Jira identity lookup failed", "Check Jira access and the email before retrying."), nil
+			}
+			if ctx.Err() != nil {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "cancelled", "Request cancelled", "No mutation was attempted."), nil
+			}
+			in.values["accountId"] = account
 		}
 		newKey, err := executeWrite(a.Writer, entry.action, in)
 		if newKey != "" {

@@ -755,7 +755,7 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_create` | `project`, `issueType`, `summary`, optional `description` and `parent` |
 | `gojira_comment` | `key`, `body` |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
-| `gojira_assign` | `key`, `accountId` |
+| `gojira_assign` | `key`, and exactly one of `accountId` or `email` (non-empty and trimmed) |
 | `gojira_move` | `key`, exact unambiguous `status` |
 | `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
 | `gojira_delete` | `key`, optional `confirmationToken` |
@@ -768,8 +768,10 @@ For parent creation, `parent` must be an uppercase Jira issue key such as `ABC-1
 with no surrounding whitespace, and `issueType` must explicitly be `Sub-task`.
 Unlike the CLI, MCP does not default the issue type when a parent is supplied.
 
-Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
-the CLI, it does not resolve an email. Creation never places an issue in a sprint;
+Assignment accepts an account ID directly or resolves an email with the same Jira
+lookup as the CLI. A failed lookup applies no mutation. Mutations are never retried
+automatically; verify an unknown outcome in Jira before retrying.
+Creation never places an issue in a sprint;
 `gojira_sprint_move` moves one existing issue into the sprint with that ID (list
 them with `gojira_sprints`), and `gojira_backlog` takes it out of its future and
 active sprints. Like the CLI, a success only means Jira accepted the request:

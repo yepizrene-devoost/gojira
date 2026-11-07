@@ -93,6 +93,23 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 			return nil, "invalid project"
 		}
 	}
+	if entry.action == "assign" {
+		_, hasAccount := fields["accountId"]
+		_, hasEmail := fields["email"]
+		if hasAccount == hasEmail {
+			return nil, "provide exactly one of accountId or email"
+		}
+		for _, name := range []string{"accountId", "email"} {
+			if value, ok := values[name]; ok {
+				if strings.TrimSpace(value) == "" {
+					return nil, "required arguments must not be empty"
+				}
+				if strings.TrimSpace(value) != value {
+					return nil, name + " must be trimmed"
+				}
+			}
+		}
+	}
 	if account, ok := values["accountId"]; ok && strings.TrimSpace(account) != account {
 		return nil, "accountId must be trimmed"
 	}

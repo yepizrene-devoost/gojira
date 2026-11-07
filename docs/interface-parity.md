@@ -40,7 +40,7 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Edit due date, components, fix versions, story points | `update` | `gojira_update` | `E` |
 | Comment | `comment` | `gojira_comment` | `m` |
 | Log work | `log` | `gojira_log_work` | `w` |
-| Assign | `assign` (by email) | **Partial**: `gojira_assign` takes an account ID only (find it with `gojira_users_search`) | `A` (by email) |
+| Assign | `assign` (by email) | `gojira_assign` (by email or account ID) | `A` (by email) |
 | Transition by status name | `move` | `gojira_move` | `t` |
 | Close or reopen by status category | `close`, `reopen` | `gojira_close`, `gojira_reopen` | `X` |
 | Delete | `delete --confirm KEY` | `gojira_delete` (preview plus single-use token) | `D` (type the key) |
