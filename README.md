@@ -507,7 +507,7 @@ validate on a disposable issue first; deletion is permanent.
 |---|---|
 | `↑/↓` or `k/j` | Navigate boards |
 | `Enter` | Open board |
-| `s` | Search all Jira tickets |
+| `s` | Search Jira (text by default; `Tab` switches to JQL) |
 | `q` | Quit |
 
 ### Kanban view
@@ -518,7 +518,7 @@ validate on a disposable issue first; deletion is permanent.
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
 | `Enter` | Open ticket detail in a floating modal |
 | `/` | Filter loaded tickets by key or summary (case-insensitive); `Enter` searches Jira for the same text |
-| `s` | Search all Jira tickets directly |
+| `s` | Search Jira directly (text by default; `Tab` switches to JQL) |
 | `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type, summary, description, optional parent key) |
@@ -560,13 +560,16 @@ issues are not separately added to the active sprint. The type defaults to
 `Sub-task` with a parent, and an explicitly selected type must be `Sub-task`.
 
 Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
-it, or press `Enter` with a nonempty filter to search Jira's text index. Search
-results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
+it, or press `Enter` with a nonempty filter to search Jira's text index. Press
+`s` to open direct search: it defaults to text, and `Tab` switches between text
+and JQL while editing. JQL is sent unchanged; press `Enter` to search. Both modes
+show up to 50 results. The TUI does not offer a configurable limit or an
+`--all` equivalent; the CLI provides both options. Search results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
 detail returns to the same query, result list, and cursor. Press `s` from a
 result list to edit the query, or `Esc` to return to the board or boards list
 where search started.
 
-A query shaped like an issue key (for example `MON-201`, in any case) looks that
+In text mode, a query shaped like an issue key (for example `MON-201`, in any case) looks that
 issue up directly and falls back to the text index when Jira does not know the
 key. The result header reports completeness honestly: `N shown` for a complete
 result, `N shown · ≥M estimated` when more results exist and Jira gave an

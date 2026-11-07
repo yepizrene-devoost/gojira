@@ -66,7 +66,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
-	{keys: "s", action: "Search all Jira tickets"},
+	{keys: "s", action: "Search Jira; Tab switches text/JQL"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
@@ -254,6 +254,8 @@ type Model struct {
 	spin                spinner.Model
 	version             string
 	searchInput         textinput.Model
+	searchJQL           bool
+	searchResultJQL     bool
 	searchQuery         string
 	searchEditing       bool
 	searchResults       []jira.Issue
@@ -1126,6 +1128,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.filterInput.Blur()
 			m.filterActive = false
+			m.searchJQL = false
 			return m.startSearch(query)
 		default:
 			var cmd tea.Cmd
@@ -2020,6 +2023,7 @@ func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	input.SetWidth(50)
 	input.Focus()
 	m.searchInput = input
+	m.searchJQL = false
 	m.searchQuery = ""
 	m.searchEditing = true
 	m.searchResults = nil
@@ -2041,12 +2045,17 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	}
 	if m.searchInput.Value() != query {
 		input := textinput.New()
+		input.Placeholder = "Jira text search"
+		if m.searchJQL {
+			input.Placeholder = "Jira JQL search"
+		}
 		input.SetWidth(50)
 		input.SetValue(query)
 		m.searchInput = input
 	}
 	m.searchInput.Blur()
 	m.searchQuery = query
+	m.searchResultJQL = m.searchJQL
 	m.searchEditing = false
 	m.searchResults = nil
 	m.searchCur = 0
@@ -2060,8 +2069,15 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.activeSearchRequest = requestID
 	m.view = viewSearch
 	client := m.client
+	jql := m.searchJQL
 	return m, func() tea.Msg {
-		result, err := client.SearchText(query, 50)
+		var result jira.SearchResult
+		var err error
+		if jql {
+			result, err = client.SearchJQL(query, 50)
+		} else {
+			result, err = client.SearchText(query, 50)
+		}
 		return searchMsg{requestID: requestID, issues: result.Issues, truncated: result.Truncated, estimated: result.EstimatedTotal, err: err}
 	}
 }
@@ -2089,15 +2105,34 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.searchInput.Blur()
 			m.searchEditing = false
 			if m.searchCompleted {
+				m.searchJQL = m.searchResultJQL
+				m.searchInput.Placeholder = "Jira text search"
+				if m.searchJQL {
+					m.searchInput.Placeholder = "Jira JQL search"
+				}
 				m.searchInput.SetValue(m.searchQuery)
 				return m, nil
 			}
 			m = m.exitSearch()
 			return m, nil
+		case "tab":
+			m.searchJQL = !m.searchJQL
+			m.searchInput.Placeholder = "Jira text search"
+			if m.searchJQL {
+				m.searchInput.Placeholder = "Jira JQL search"
+			}
+			if m.searchLoading {
+				m.searchLoading = false
+				m.activeSearchRequest = 0
+			}
+			return m, nil
 		case "enter":
-			query := strings.TrimSpace(m.searchInput.Value())
-			if query == "" {
+			query := m.searchInput.Value()
+			if strings.TrimSpace(query) == "" {
 				return m, nil
+			}
+			if !m.searchJQL {
+				query = strings.TrimSpace(query)
 			}
 			return m.startSearch(query)
 		default:
@@ -2562,13 +2597,22 @@ func (m Model) renderSearch() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("🔎 Jira Search"))
 	b.WriteString("\n\n")
+	mode := "Text"
+	if m.searchJQL {
+		mode = "JQL"
+	}
+	b.WriteString("Mode: " + mode + "  [Tab] switch\n")
 	b.WriteString("Query: ")
 	b.WriteString(m.searchInput.View())
 	b.WriteString("\n\n")
 
 	switch {
 	case m.searchEditing:
-		b.WriteString(subStyle.Render("Type a text query, then press Enter."))
+		if m.searchJQL {
+			b.WriteString(subStyle.Render("Type a JQL query, then press Enter."))
+		} else {
+			b.WriteString(subStyle.Render("Type a text query, then press Enter."))
+		}
 	case m.searchLoading:
 		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Searching Jira..."))
 	case m.searchErr != nil:
