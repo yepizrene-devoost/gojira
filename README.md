@@ -752,7 +752,7 @@ all existing read-only tools, instructions and results remain unchanged.
 
 | Tool | Arguments |
 | --- | --- |
-| `gojira_create` | `project`, `issueType`, `summary`, optional `description` |
+| `gojira_create` | `project`, `issueType`, `summary`, optional `description` and `parent` |
 | `gojira_comment` | `key`, `body` |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
 | `gojira_assign` | `key`, `accountId` |
@@ -763,6 +763,10 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_backlog` | `key` |
 | `gojira_close` | `key` |
 | `gojira_reopen` | `key` |
+
+For parent creation, `parent` must be an uppercase Jira issue key such as `ABC-12`,
+with no surrounding whitespace, and `issueType` must explicitly be `Sub-task`.
+Unlike the CLI, MCP does not default the issue type when a parent is supplied.
 
 Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
 the CLI, it does not resolve an email. Creation never places an issue in a sprint;

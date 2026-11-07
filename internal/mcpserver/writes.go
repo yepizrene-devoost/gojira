@@ -35,7 +35,7 @@ type writeTool struct {
 
 func writeTools() []writeTool {
 	return []writeTool{
-		{"create", "Create an issue without sprint placement. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description"}, nil},
+		{"create", "Create an issue without sprint placement. Optional parent requires a valid issue key and issueType Sub-task. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent"}, nil},
 		{"comment", "Append plain text as ADF. Non-idempotent; never retry automatically.", []string{"key", "body"}, nil, nil},
 		{"log_work", "Add worklog. Non-idempotent; never retry automatically.", []string{"key", "timeSpent"}, []string{"comment"}, nil},
 		{"assign", "Assign directly by accountId, unlike the CLI which resolves email. accountId must be non-empty and trimmed.", []string{"key", "accountId"}, nil, nil},
@@ -155,6 +155,15 @@ func executeWrite(w Writer, action string, request *writeRequest) (string, error
 		if in["description"] != "" {
 			doc := jira.TextToADF(in["description"])
 			description = &doc
+		}
+		if parent, ok := in["parent"]; ok {
+			writer, ok := w.(interface {
+				CreateIssueWithParent(string, string, string, *jira.ADFDoc, string) (string, error)
+			})
+			if !ok {
+				return "", &validationError{"parent creation is unavailable"}
+			}
+			return writer.CreateIssueWithParent(in["project"], in["issueType"], in["summary"], description, parent)
 		}
 		return w.CreateIssue(in["project"], in["issueType"], in["summary"], description)
 	case "comment":

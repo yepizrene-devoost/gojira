@@ -32,7 +32,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 		t.Fatalf("tools=%d", len(list.Tools))
 	}
 	schemas := []string{
-		`{"type":"object","properties":{"project":{"type":"string"},"issueType":{"type":"string"},"summary":{"type":"string"},"description":{"type":"string"}},"required":["project","issueType","summary"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"project":{"type":"string"},"issueType":{"type":"string"},"summary":{"type":"string"},"description":{"type":"string"},"parent":{"type":"string"}},"required":["project","issueType","summary"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"body":{"type":"string"}},"required":["key","body"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"timeSpent":{"type":"string"},"comment":{"type":"string"}},"required":["key","timeSpent"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"accountId":{"type":"string"}},"required":["key","accountId"],"additionalProperties":false}`,

@@ -80,6 +80,14 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 		}
 		values["key"] = key
 	}
+	if parent, ok := values["parent"]; ok {
+		if !writeKeyPattern.MatchString(parent) {
+			return nil, "invalid parent issue key"
+		}
+		if values["issueType"] != "Sub-task" {
+			return nil, "parent requires issueType Sub-task"
+		}
+	}
 	if project, ok := values["project"]; ok {
 		if !writeProjectPattern.MatchString(project) {
 			return nil, "invalid project"
