@@ -70,7 +70,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
-	{keys: "n", action: "Create issue"},
+	{keys: "n", action: "Create issue (optional parent key)"},
 	{keys: "a", action: "Add ticket to active sprint"},
 	{keys: "A", action: "Assign ticket by email"},
 	{keys: "S", action: "Choose a future/active sprint"},
@@ -277,6 +277,8 @@ type Model struct {
 	createField   int // 0 = type, 1 = summary, 2 = description
 	createSummary textinput.Model
 	createDesc    textinput.Model
+	createParent  textinput.Model
+	createTypeSelected bool
 	createErr     string
 
 	// Issue key to select after the next board reload
@@ -917,6 +919,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.createSummary.Blur()
 		m.createDesc.Blur()
+		m.createParent.Blur()
 		m.view = viewKanban
 		m.focusIssue = msg.key
 		switch {
@@ -1024,6 +1027,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.createSummary, cmd = m.createSummary.Update(msg)
 			case 2:
 				m.createDesc, cmd = m.createDesc.Update(msg)
+			case 3:
+				m.createParent, cmd = m.createParent.Update(msg)
 			}
 			return m, cmd
 		case viewKanban:
@@ -2177,9 +2182,14 @@ func (m Model) enterCreate() (tea.Model, tea.Cmd) {
 	m.createProject = project
 	m.createTypes = []string{"Task"} // replaced by createmeta when it lands
 	m.createTypeCur = 0
+	m.createTypeSelected = false
 	m.createField = 0
 	m.createSummary = sum
 	m.createDesc = desc
+	m.createParent = textinput.New()
+	m.createParent.Placeholder = "optional issue key"
+	m.createParent.CharLimit = 128
+	m.createParent.SetWidth(40)
 	m.createErr = ""
 	m.view = viewCreate
 
@@ -2193,7 +2203,8 @@ func (m Model) enterCreate() (tea.Model, tea.Cmd) {
 func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
 	m.createSummary.Blur()
 	m.createDesc.Blur()
-	m.createField = (m.createField + step) % 3
+	m.createParent.Blur()
+	m.createField = (m.createField + step) % 4
 	var cmd tea.Cmd
 	switch m.createField {
 	case 1:
@@ -2201,6 +2212,9 @@ func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
 		cmd = textinput.Blink
 	case 2:
 		m.createDesc.Focus()
+		cmd = textinput.Blink
+	case 3:
+		m.createParent.Focus()
 		cmd = textinput.Blink
 	}
 	return m, cmd
@@ -2213,12 +2227,13 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.createSummary.Blur()
 		m.createDesc.Blur()
+		m.createParent.Blur()
 		m.view = viewKanban
 		return m, nil
 	case "tab":
 		return m.cycleCreateField(1)
 	case "shift+tab":
-		return m.cycleCreateField(2)
+		return m.cycleCreateField(3)
 	case "enter":
 		return m.submitCreate()
 	}
@@ -2229,10 +2244,12 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "left", "up", "h", "k":
 			if m.createTypeCur > 0 {
 				m.createTypeCur--
+				m.createTypeSelected = true
 			}
 		case "right", "down", "l", "j":
 			if m.createTypeCur < len(m.createTypes)-1 {
 				m.createTypeCur++
+				m.createTypeSelected = true
 			}
 		}
 	case 1:
@@ -2243,9 +2260,15 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.createDesc, cmd = m.createDesc.Update(msg)
 		return m, cmd
+	case 3:
+		var cmd tea.Cmd
+		m.createParent, cmd = m.createParent.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
+
+var createParentKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]*-[1-9][0-9]*$`)
 
 func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 	summary := strings.TrimSpace(m.createSummary.Value())
@@ -2253,9 +2276,21 @@ func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 		m.createErr = "Summary is required"
 		return m, nil
 	}
+	parent := m.createParent.Value()
+	if parent != "" && !createParentKey.MatchString(parent) {
+		m.createErr = "Parent must be a Jira issue key (e.g. ABC-123)"
+		return m, nil
+	}
 	issueType := "Task"
 	if m.createTypeCur < len(m.createTypes) {
 		issueType = m.createTypes[m.createTypeCur]
+	}
+	if parent != "" {
+		if m.createTypeSelected && issueType != "Sub-task" {
+			m.createErr = "Parent requires issue type Sub-task"
+			return m, nil
+		}
+		issueType = "Sub-task"
 	}
 	var doc *jira.ADFDoc
 	if d := strings.TrimSpace(m.createDesc.Value()); d != "" {
@@ -2265,9 +2300,18 @@ func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 	client := m.client
 	project := m.createProject
 	sprintID := m.sprintID
+	if parent != "" {
+		sprintID = 0
+	}
 	m.createErr = ""
 	return m, func() tea.Msg {
-		key, err := client.CreateIssue(project, issueType, summary, doc)
+		var key string
+		var err error
+		if parent != "" {
+			key, err = client.CreateIssueWithParent(project, issueType, summary, doc, parent)
+		} else {
+			key, err = client.CreateIssue(project, issueType, summary, doc)
+		}
 		if err != nil {
 			return createdMsg{err: err}
 		}
@@ -2416,7 +2460,10 @@ func (m Model) View() tea.View {
 		if m.createTypeCur < len(m.createTypes) {
 			cur = m.createTypes[m.createTypeCur]
 		}
-		fields := []string{"Type", "Summary", "Description"}
+		if m.createParent.Value() != "" && !m.createTypeSelected {
+			cur = "Sub-task"
+		}
+		fields := []string{"Type", "Summary", "Description", "Parent"}
 		for i, label := range fields {
 			marker := "  "
 			if i == m.createField {
@@ -2434,12 +2481,16 @@ func (m Model) View() tea.View {
 				line = m.createSummary.View()
 			case 2:
 				line = m.createDesc.View()
+			case 3:
+				line = m.createParent.View()
 			}
 			b.WriteString(lipgloss.NewStyle().Bold(i == m.createField).Render(marker+padRight(label+":", 14)) + line + "\n")
 		}
 		b.WriteString("\n")
 
-		if m.sprintID > 0 {
+		if m.createParent.Value() != "" {
+			b.WriteString(subStyle.Render("Sub-task uses its parent; no separate sprint placement"))
+		} else if m.sprintID > 0 {
 			b.WriteString(subStyle.Render("Enter creates it directly in sprint: " + m.sprintName))
 		} else {
 			b.WriteString(subStyle.Render("No active sprint — the ticket will land in the backlog"))

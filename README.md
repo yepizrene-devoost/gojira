@@ -521,7 +521,7 @@ validate on a disposable issue first; deletion is permanent.
 | `s` | Search all Jira tickets directly |
 | `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
-| `n` | New issue in this board's project (type + summary + description) |
+| `n` | New issue in this board's project (type, summary, description, optional parent key) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `A` (Shift+A) | Assign the selected card by email: type the assignee's email, `Enter` assigns once, `Esc` cancels |
 | `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
@@ -554,7 +554,10 @@ footer collapses.
 
 Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues
-created with `n` go directly into the active sprint.
+created with `n` go directly into the active sprint. Enter an optional canonical
+parent issue key (for example `ARA-123`) to create a Sub-task instead; parented
+issues are not separately added to the active sprint. The type defaults to
+`Sub-task` with a parent, and an explicitly selected type must be `Sub-task`.
 
 Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
 it, or press `Enter` with a nonempty filter to search Jira's text index. Search

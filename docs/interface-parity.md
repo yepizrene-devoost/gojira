@@ -33,7 +33,7 @@ every row that says *Partial*, *No* or *In progress* is a known gap.
 | Capability | CLI | MCP | TUI |
 | --- | --- | --- | --- |
 | Create (type, summary, description) | `create` | `gojira_create` | `n` |
-| Create under a parent | `create --parent` | `gojira_create` with `parent` and explicit `issueType: Sub-task` | No |
+| Create under a parent | `create --parent` | `gojira_create` with `parent` and explicit `issueType: Sub-task` | `n` with optional parent key |
 | Create inside a sprint | `create --board` | No | `n` (active sprint) |
 | Edit summary, priority, labels | `update` | `gojira_update` | `U` |
 | Edit description | `update` | `gojira_update` (plain text replaces it) | `e` |
