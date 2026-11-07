@@ -508,7 +508,10 @@ validate on a disposable issue first; deletion is permanent.
 | `↑/↓` or `k/j` | Navigate boards |
 | `Enter` | Open board |
 | `s` | Search Jira (text by default; `Tab` switches to JQL) |
+| `u` | Search users |
 | `q` | Quit |
+
+User search accepts a nonempty query: press `Enter` to search, `↑/↓` to navigate results, and `Esc` to return. Results show display name, account ID, active status, completeness and warnings. An empty result can reflect missing Browse users permission; it does not prove the user does not exist. Search covers only the endpoint's first 1,000 active matches.
 
 ### Kanban view
 
@@ -519,6 +522,7 @@ validate on a disposable issue first; deletion is permanent.
 | `Enter` | Open ticket detail in a floating modal |
 | `/` | Filter loaded tickets by key or summary (case-insensitive); `Enter` searches Jira for the same text |
 | `s` | Search Jira directly (text by default; `Tab` switches to JQL) |
+| `u` | Search users |
 | `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
 | `n` | New issue in this board's project (type, summary, description, optional parent key) |

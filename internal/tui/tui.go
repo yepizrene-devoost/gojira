@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -23,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
+	"github.com/yepizrene-devoost/gojira/internal/reporting"
 )
 
 // ─── Palette ───────────────────────────────────────────────────────────
@@ -55,6 +57,12 @@ var (
 	detailBox          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
+type userSearchMsg struct {
+	request uint64
+	result reporting.UserSearchResult
+	err error
+}
+
 type helpEntry struct {
 	keys   string
 	action string
@@ -68,6 +76,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search Jira; Tab switches text/JQL, Ctrl+L sets limit"},
+	{keys: "u", action: "User search"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
@@ -151,6 +160,7 @@ const (
 	viewWorklog
 	viewCreate
 	viewSearch
+	viewUserSearch
 	viewDescriptionEdit
 	viewFieldsEdit
 	viewSprintChoose
@@ -168,6 +178,13 @@ type column struct {
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
 	assignment assignmentState
+	userSearchInput textinput.Model
+	userSearchError string
+	userSearchResult reporting.UserSearchResult
+	userSearchRequest uint64
+	userSearchCancel context.CancelFunc
+	userSearchReturn view
+	userSearchCursor int
 	basics basicsState
 	lifecycleRequest uint64
 	lifecycleBoard uint64
@@ -985,6 +1002,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
+	case userSearchMsg:
+		if m.view != viewUserSearch || msg.request != m.userSearchRequest {
+			return m, nil
+		}
+		if m.userSearchCancel != nil {
+			m.userSearchCancel()
+			m.userSearchCancel = nil
+		}
+		if msg.err != nil {
+			m.userSearchError = msg.err.Error()
+			m.userSearchResult = reporting.UserSearchResult{}
+			return m, nil
+		}
+		m.userSearchResult = msg.result
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch m.view {
 		case viewAssign:
@@ -1007,6 +1040,51 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewSearch:
 			return m.updateSearch(msg)
+		case viewUserSearch:
+			switch msg.String() {
+			case "ctrl+c":
+				m = m.invalidateUserSearch()
+				return m, tea.Quit
+			case "esc":
+				m = m.invalidateUserSearch()
+				m.view = m.userSearchReturn
+				return m, nil
+			case "down":
+				if m.userSearchCursor+1 < len(m.userSearchResult.Candidates) {
+					m.userSearchCursor++
+				}
+				return m, nil
+			case "up":
+				if m.userSearchCursor > 0 {
+					m.userSearchCursor--
+				}
+				return m, nil
+			}
+			if msg.String() == "enter" {
+				query := m.userSearchInput.Value()
+				if err := reporting.ValidateUserQuery(query); err != nil {
+					m.userSearchError = err.Error()
+					return m, nil
+				}
+				m.userSearchError = ""
+				m.userSearchResult = reporting.UserSearchResult{}
+				if m.userSearchCancel != nil {
+					m.userSearchCancel()
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.userSearchCancel = cancel
+				m.userSearchRequest++
+				request, client := m.userSearchRequest, m.client
+				return m, func() tea.Msg {
+					result, err := reporting.SearchUsers(ctx, client, query)
+					return userSearchMsg{request: request, result: result, err: err}
+				}
+			}
+			before := m.userSearchInput.Value()
+			var cmd tea.Cmd
+			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
+			if before != m.userSearchInput.Value() { m = m.invalidateUserSearch() }
+			return m, cmd
 		case viewDescriptionEdit:
 			return m.updateDescriptionEdit(msg)
 		case viewFieldsEdit:
@@ -1017,6 +1095,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		switch m.view {
+		case viewUserSearch:
+			before := m.userSearchInput.Value()
+			var cmd tea.Cmd
+			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
+			if before != m.userSearchInput.Value() { m = m.invalidateUserSearch() }
+			return m, cmd
 		case viewBasicsEdit:
 			return m.pasteBasics(msg)
 		case viewAssign:
@@ -1098,6 +1182,8 @@ func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		return m.openSearchInput()
+	case "u":
+		return m.openUserSearch()
 	}
 	return m, nil
 }
@@ -1259,6 +1345,8 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "s":
 		return m.openSearchInput()
+	case "u":
+		return m.openUserSearch()
 	case "o":
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
@@ -2024,6 +2112,25 @@ func (m Model) visibleColumns() []column {
 	return cols
 }
 
+func (m Model) invalidateUserSearch() Model {
+	if m.userSearchCancel != nil { m.userSearchCancel(); m.userSearchCancel = nil }
+	m.userSearchRequest++
+	m.userSearchResult = reporting.UserSearchResult{}
+	m.userSearchCursor = 0
+	m.userSearchError = ""
+	return m
+}
+
+func (m Model) openUserSearch() (tea.Model, tea.Cmd) {
+	m.userSearchReturn = m.view
+	m.userSearchResult = reporting.UserSearchResult{}
+	m.userSearchInput = textinput.New()
+	m.userSearchInput.Focus()
+	m.userSearchError = ""
+	m.view = viewUserSearch
+	return m, textinput.Blink
+}
+
 func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	returnView := m.view
 	if returnView != viewBoards {
@@ -2468,7 +2575,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [u] User search  [q] Quit"
 		if m.width > 0 {
 			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
 		}
@@ -2592,6 +2699,24 @@ func (m Model) View() tea.View {
 
 	case viewSearch:
 		b.WriteString(m.renderSearch())
+
+	case viewUserSearch:
+		b.WriteString(titleStyle.Render("User search") + "\n" + m.userSearchInput.View() + "\n" + m.userSearchError + "\n[Enter] Search  [↑↓] Results  [Esc] Back")
+		if m.userSearchCancel != nil { b.WriteString("\nSearching users...") }
+		if m.userSearchResult.Completeness != "" {
+			fmt.Fprintf(&b, "\nCompleteness: %s", m.userSearchResult.Completeness)
+			if len(m.userSearchResult.Candidates) == 0 { b.WriteString("\nNo users found") }
+			for _, warning := range m.userSearchResult.Warnings { fmt.Fprintf(&b, "\nWarning: %s", warning) }
+		}
+		pageSize := 10
+		if m.height > 0 { pageSize = max(1, m.height-8-len(m.userSearchResult.Warnings)) }
+		start := (m.userSearchCursor / pageSize) * pageSize
+		for i := start; i < min(start+pageSize, len(m.userSearchResult.Candidates)); i++ {
+			user := m.userSearchResult.Candidates[i]
+			marker := "  "
+			if i == m.userSearchCursor { marker = "→ " }
+			fmt.Fprintf(&b, "\n%s%s · %s · active: %t", marker, user.DisplayName, user.AccountID, user.Active)
+		}
 
 	case viewFieldsEdit:
 		background := m.renderKanban()
