@@ -17,6 +17,7 @@ var writeTimePattern = regexp.MustCompile(`^[1-9][0-9]*[wdhm]( +[1-9][0-9]*[wdhm
 type writeRequest struct {
 	values   map[string]string
 	update   *issuefields.Prepared
+	boardID  int
 	sprintID int
 }
 
@@ -37,7 +38,7 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	}
 	values := map[string]string{}
 	var update *issuefields.Prepared
-	sprintID := 0
+	boardID, sprintID := 0, 0
 	for name, raw := range fields {
 		if !allowed[name] {
 			return nil, "unexpected argument"
@@ -59,7 +60,13 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 			if !ok {
 				return nil, name + " must be a positive integer"
 			}
-			values[name], sprintID = strconv.Itoa(id), id
+			values[name] = strconv.Itoa(id)
+			switch name {
+			case "boardId":
+				boardID = id
+			case "sprintId":
+				sprintID = id
+			}
 			continue
 		}
 		var value string
@@ -122,7 +129,7 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	if token, ok := values["confirmationToken"]; ok && strings.TrimSpace(token) == "" {
 		return nil, "confirmationToken must not be empty"
 	}
-	return &writeRequest{values: values, update: update, sprintID: sprintID}, ""
+	return &writeRequest{values: values, update: update, boardID: boardID, sprintID: sprintID}, ""
 }
 
 // prepareUpdate decodes the heterogeneous update object once at the boundary.

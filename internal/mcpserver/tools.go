@@ -139,7 +139,7 @@ func (a adapter) tools() []tool {
 				if err != nil {
 					return nil, err
 				}
-				out := output{SchemaVersion: a.SchemaVersion, Data: jira.IssuesToTicketJSON(issues, a.Domain), Completeness: "unknown", Warning: "Issue retrieval has a 2000-issue safety cap; additional results may exist. Default board selection reads one page; each sprint query reads one page, including the fallback query."}
+				out := output{SchemaVersion: a.SchemaVersion, Data: jira.IssuesToTicketJSON(issues, a.Domain), Complete: false, Completeness: "unknown", Warning: "Issue retrieval has a 2000-issue safety cap; additional results may exist. Default board selection reads one page; each sprint query reads one page, including the fallback query."}
 				return out, nil
 			},
 		},

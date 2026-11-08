@@ -10,6 +10,19 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+// updateExportNoActiveSprint is updateModel for export tests that run without a
+// client and expect the board to have no active sprint: it answers the pending
+// sprint discovery with an empty reply. Tests that need another discovery result
+// deliver their own exportSprintsMsg instead.
+func updateExportNoActiveSprint(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
+	t.Helper()
+	m, cmd := updateModel(t, m, msg)
+	if m.view == viewExport && m.exportResolving && m.exportSprints == nil && m.client == nil && cmd != nil {
+		m, cmd = updateModel(t, m, exportSprintsMsg{request: m.exportRequest})
+	}
+	return m, cmd
+}
+
 func TestExportOpensWithVisibleBoardScope(t *testing.T) {
 	m := New(nil, "example.test")
 	m.view = viewKanban
@@ -27,7 +40,7 @@ func TestExportShowsAllBoardIssuesAsInitialScope(t *testing.T) {
 	m.view = viewKanban
 	m.boards = []jira.Board{{ID: 42, Name: "Delivery"}}
 	m.loadedBoardRequest = 1
-	m, _ = updateModel(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
 	if !strings.Contains(m.View().Content, "All board issues") {
 		t.Fatalf("initial export scope is not visible: %q", m.View().Content)
 	}
@@ -85,12 +98,12 @@ func TestExportReopensWithAllBoardIssues(t *testing.T) {
 	m.view = viewKanban
 	m.boards = []jira.Board{{ID: 42, Name: "Delivery"}}
 	m.loadedBoardRequest = 1
-	m, _ = updateModel(t, m, textKey("E"))
-	m, _ = updateModel(t, m, textKey("s"))
-	m, _ = updateModel(t, m, textKey("7"))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("s"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("7"))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
 	if !strings.Contains(m.View().Content, "All board issues") {
 		t.Fatalf("stale scope: %q", m.View().Content)
 	}
@@ -116,9 +129,9 @@ func TestExportCopiesCuratedTickets(t *testing.T) {
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return []jira.Issue{{Key: "ABC-1"}}, nil }
 	var copied string
 	m.exportCopy = func(s string) error { copied = s; return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
 	if cmd == nil {
 		t.Fatal("successful fetch did not request clipboard copy")
 	}
@@ -136,12 +149,12 @@ func TestExportIgnoresFetchFromPreviousView(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return []jira.Issue{{Key: "OLD-1"}}, nil }
 	m.exportCopy = func(string) error { t.Fatal("stale result copied"); return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	old := cmd()
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, textKey("E"))
-	_, cmd = updateModel(t, m, old)
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	_, cmd = updateExportNoActiveSprint(t, m, old)
 	if cmd != nil {
 		t.Fatal("stale result scheduled a copy")
 	}
@@ -153,11 +166,11 @@ func TestExportIgnoresFetchAfterScopeChange(t *testing.T) {
 	m.boards = []jira.Board{{ID: 42, Name: "Delivery"}}
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	old := cmd()
-	m, _ = updateModel(t, m, textKey("s"))
-	_, cmd = updateModel(t, m, old)
+	m, _ = updateExportNoActiveSprint(t, m, textKey("s"))
+	_, cmd = updateExportNoActiveSprint(t, m, old)
 	if cmd != nil {
 		t.Fatal("old scope scheduled a copy")
 	}
@@ -170,9 +183,9 @@ func TestExportFetchFailureIsVisibleAndDoesNotCopy(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, errors.New("fetch failed") }
 	m.exportCopy = func(string) error { t.Fatal("copied after fetch failure"); return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
 	if cmd != nil || !strings.Contains(m.View().Content, "fetch failed") {
 		t.Fatalf("fetch error not visible: %q", m.View().Content)
 	}
@@ -185,10 +198,10 @@ func TestExportClipboardFailureIsVisible(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return errors.New("clipboard unavailable") }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
 	if !strings.Contains(m.View().Content, "clipboard unavailable") {
 		t.Fatalf("clipboard failure not visible: %q", m.View().Content)
 	}
@@ -244,12 +257,12 @@ func TestExportIgnoresClipboardCompletionFromPreviousView(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return errors.New("old clipboard failure") }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
 	old := cmd()
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, old)
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, old)
 	if strings.Contains(m.View().Content, "old clipboard failure") {
 		t.Fatal("stale clipboard error appeared on board")
 	}
@@ -262,10 +275,10 @@ func TestExportClipboardSuccessIsVisible(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
 	if !strings.Contains(m.View().Content, "Export copied to clipboard") {
 		t.Fatalf("success not visible: %q", m.View().Content)
 	}
@@ -279,10 +292,10 @@ func TestExportCancelPreventsPendingClipboardWrite(t *testing.T) {
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	copied := false
 	m.exportCopy = func(string) error { copied = true; return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
 	cmd()
 	if copied {
 		t.Fatal("cancelled export wrote to clipboard")
@@ -297,10 +310,10 @@ func TestExportScopeChangePreventsPendingClipboardWrite(t *testing.T) {
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	copied := false
 	m.exportCopy = func(string) error { copied = true; return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, textKey("s"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("s"))
 	cmd()
 	if copied {
 		t.Fatal("previous scope wrote to clipboard")
@@ -315,10 +328,10 @@ func TestExportNewRequestPreventsPreviousClipboardWrite(t *testing.T) {
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	copied := false
 	m.exportCopy = func(string) error { copied = true; return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, oldCopy := updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, oldCopy := updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	oldCopy()
 	if copied {
 		t.Fatal("superseded export wrote to clipboard")
@@ -396,19 +409,19 @@ func TestExportBoardNavigationRejectsPreviousBoardResponse(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return []jira.Issue{{Key: "OLD-1"}}, nil }
 	m.exportCopy = func(string) error { t.Fatal("previous board copied"); return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	old := cmd()
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
-	m, _ = updateModel(t, m, boardLoadMsg{requestID: m.activeBoardRequest, boardID: 99})
-	m, _ = updateModel(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyDown))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, boardLoadMsg{requestID: m.activeBoardRequest, boardID: 99})
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
 	if !strings.Contains(m.View().Content, "Other") {
 		t.Fatalf("wrong board scope: %q", m.View().Content)
 	}
-	_, cmd = updateModel(t, m, old)
+	_, cmd = updateExportNoActiveSprint(t, m, old)
 	if cmd != nil {
 		t.Fatal("previous board response scheduled a copy")
 	}
@@ -422,14 +435,14 @@ func TestExportAlreadyStartedClipboardWriteCannotBeUndone(t *testing.T) {
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan tea.Msg, 1)
 	m.exportCopy = func(string) error { close(started); <-release; return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
 	go func() { done <- cmd() }()
 	<-started
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
 	close(release)
-	m, _ = updateModel(t, m, <-done)
+	m, _ = updateExportNoActiveSprint(t, m, <-done)
 	if strings.Contains(m.View().Content, "Export copied") {
 		t.Fatal("stale success appeared after leaving")
 	}
@@ -454,10 +467,10 @@ func TestExportRetryClearsPreviousFetchError(t *testing.T) {
 	m.boards = []jira.Board{{ID: 42, Name: "Delivery"}}
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, errors.New("fetch failed") }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, _ = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	if strings.Contains(m.View().Content, "fetch failed") {
 		t.Fatalf("stale fetch error remains during retry: %q", m.View().Content)
 	}
@@ -470,11 +483,11 @@ func TestExportNewRequestClearsPreviousSuccess(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	if strings.Contains(m.View().Content, "Export copied") {
 		t.Fatalf("stale success during new request: %q", m.View().Content)
 	}
@@ -487,11 +500,11 @@ func TestExportScopeChangeClearsPreviousSuccess(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, textKey("s"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("s"))
 	if strings.Contains(m.View().Content, "Export copied") {
 		t.Fatalf("stale success while changing scope: %q", m.View().Content)
 	}
@@ -503,11 +516,11 @@ func TestExportReopenClearsPreviousError(t *testing.T) {
 	m.boards = []jira.Board{{ID: 42, Name: "Delivery"}}
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, errors.New("old fetch error") }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, _ = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
-	m, _ = updateModel(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
 	if strings.Contains(m.View().Content, "old fetch error") {
 		t.Fatal("stale error persisted after reopening")
 	}
@@ -561,14 +574,14 @@ func TestExportFetchesExplicitBoardAndSelectedSprint(t *testing.T) {
 	m.loadedBoardRequest = 1
 	var board, sprint int
 	m.exportFetch = func(b, s int) ([]jira.Issue, error) { board, sprint = b, s; return nil, nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, _ = updateModel(t, m, textKey("s"))
-	m, _ = updateModel(t, m, textKey("7"))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
-	m, _ = updateModel(t, m, textKey("b"))
-	m, _ = updateModel(t, m, textKey("9"))
-	m, _ = updateModel(t, m, specialKey(tea.KeyEnter))
-	_, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("s"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("7"))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("b"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("9"))
+	m, _ = updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	_, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	if cmd == nil {
 		t.Fatal("no export fetch")
 	}
@@ -585,11 +598,11 @@ func TestExportBoardEntryInvalidatesOldFetch(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { t.Fatal("stale scope copied"); return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
 	old := cmd()
-	m, _ = updateModel(t, m, textKey("b"))
-	_, cmd = updateModel(t, m, old)
+	m, _ = updateExportNoActiveSprint(t, m, textKey("b"))
+	_, cmd = updateExportNoActiveSprint(t, m, old)
 	if cmd != nil {
 		t.Fatal("old board fetch scheduled a copy")
 	}
@@ -664,11 +677,11 @@ func TestExportBoardChangeClearsPreviousSuccess(t *testing.T) {
 	m.loadedBoardRequest = 1
 	m.exportFetch = func(int, int) ([]jira.Issue, error) { return nil, nil }
 	m.exportCopy = func(string) error { return nil }
-	m, _ = updateModel(t, m, textKey("E"))
-	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
-	m, cmd = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, cmd())
-	m, _ = updateModel(t, m, textKey("b"))
+	m, _ = updateExportNoActiveSprint(t, m, textKey("E"))
+	m, cmd := updateExportNoActiveSprint(t, m, specialKey(tea.KeyEnter))
+	m, cmd = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, cmd())
+	m, _ = updateExportNoActiveSprint(t, m, textKey("b"))
 	if strings.Contains(m.View().Content, "Export copied") {
 		t.Fatal("stale success after board scope change")
 	}

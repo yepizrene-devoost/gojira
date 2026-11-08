@@ -59,14 +59,14 @@ var (
 
 type timeReportMsg struct {
 	request uint64
-	result reporting.TimeReportResult
-	err error
+	result  reporting.TimeReportResult
+	err     error
 }
 
 type userSearchMsg struct {
 	request uint64
-	result reporting.UserSearchResult
-	err error
+	result  reporting.UserSearchResult
+	err     error
 }
 
 type helpEntry struct {
@@ -330,13 +330,13 @@ type Model struct {
 	sprintID int
 
 	// Create-issue form (viewCreate)
-	createProject string
-	createTypes   []string
-	createTypeCur int
-	createField   int // 0 = type, 1 = summary, 2 = description
-	createSummary textinput.Model
-	createDesc    textinput.Model
-	createParent  textinput.Model
+	createProject      string
+	createTypes        []string
+	createTypeCur      int
+	createField        int // 0 = type, 1 = summary, 2 = description
+	createSummary      textinput.Model
+	createDesc         textinput.Model
+	createParent       textinput.Model
 	createTypeSelected bool
 	createErr     string
 
@@ -1104,7 +1104,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
 	case timeReportMsg:
-		if m.view != viewTimeReport || msg.request != m.timeReportRequest { return m, nil }
+		if m.view != viewTimeReport || msg.request != m.timeReportRequest {
+			return m, nil
+		}
 		m.timeReportLoading = false
 		if msg.err == nil {
 			m.timeReportResult = &msg.result
@@ -1275,12 +1277,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewTimeReport:
 			if m.timeReportResult != nil || m.timeReportError != "" {
 				switch msg.String() {
-				case "down": m.timeReportScroll++; return m, nil
-				case "up": if m.timeReportScroll > 0 { m.timeReportScroll-- }; return m, nil
+				case "down":
+					m.timeReportScroll++
+					return m, nil
+				case "up":
+					if m.timeReportScroll > 0 {
+						m.timeReportScroll--
+					}
+					return m, nil
 				}
 			}
 			if msg.String() == "esc" {
-				if m.timeReportCancel != nil { m.timeReportCancel(); m.timeReportCancel = nil }
+				if m.timeReportCancel != nil {
+					m.timeReportCancel()
+					m.timeReportCancel = nil
+				}
 				m.timeReportRequest++
 				m.view = viewBoards
 				return m, nil
@@ -1288,7 +1299,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				filters := reporting.TimeFilters{AccountID: m.timeReportInputs[0].Value(), Project: m.timeReportInputs[1].Value(), From: m.timeReportInputs[2].Value(), To: m.timeReportInputs[3].Value(), Timezone: m.timeReportInputs[4].Value()}
 				if err := reporting.ValidateTimeFilters(filters); err != nil {
-					if m.timeReportCancel != nil { m.timeReportCancel(); m.timeReportCancel = nil }
+					if m.timeReportCancel != nil {
+						m.timeReportCancel()
+						m.timeReportCancel = nil
+					}
 					m.timeReportRequest++
 					m.timeReportLoading = false
 					m.timeReportResult = nil
@@ -1300,7 +1314,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.timeReportError = ""
 				m.timeReportLoading = true
 				client := m.client
-				if m.timeReportCancel != nil { m.timeReportCancel() }
+				if m.timeReportCancel != nil {
+					m.timeReportCancel()
+				}
 				ctx, cancel := context.WithCancel(context.Background())
 				m.timeReportCancel = cancel
 				m.timeReportRequest++
@@ -1376,7 +1392,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			before := m.userSearchInput.Value()
 			var cmd tea.Cmd
 			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
-			if before != m.userSearchInput.Value() { m = m.invalidateUserSearch() }
+			if before != m.userSearchInput.Value() {
+				m = m.invalidateUserSearch()
+			}
 			return m, cmd
 		case viewDescriptionEdit:
 			return m.updateDescriptionEdit(msg)
@@ -1392,7 +1410,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			before := m.userSearchInput.Value()
 			var cmd tea.Cmd
 			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
-			if before != m.userSearchInput.Value() { m = m.invalidateUserSearch() }
+			if before != m.userSearchInput.Value() {
+				m = m.invalidateUserSearch()
+			}
 			return m, cmd
 		case viewBasicsEdit:
 			return m.pasteBasics(msg)
@@ -2439,7 +2459,10 @@ func (m Model) visibleColumns() []column {
 }
 
 func (m Model) invalidateUserSearch() Model {
-	if m.userSearchCancel != nil { m.userSearchCancel(); m.userSearchCancel = nil }
+	if m.userSearchCancel != nil {
+		m.userSearchCancel()
+		m.userSearchCancel = nil
+	}
 	m.userSearchRequest++
 	m.userSearchResult = reporting.UserSearchResult{}
 	m.userSearchCursor = 0
@@ -2892,18 +2915,32 @@ func (m Model) View() tea.View {
 	case viewTimeReport:
 		if m.timeReportResult != nil {
 			fmt.Fprintf(&b, "Total: %d seconds\n", m.timeReportResult.TotalSeconds)
-			for _, row := range m.timeReportResult.Rows { fmt.Fprintf(&b, "%s: %d seconds\n", row.Key, row.Seconds) }
-			if m.timeReportResult.Complete { b.WriteString("complete\n") } else { b.WriteString("partial\n") }
-			for _, warning := range m.timeReportResult.Warnings { fmt.Fprintln(&b, warning) }
+			for _, row := range m.timeReportResult.Rows {
+				fmt.Fprintf(&b, "%s: %d seconds\n", row.Key, row.Seconds)
+			}
+			if m.timeReportResult.Complete {
+				b.WriteString("complete\n")
+			} else {
+				b.WriteString("partial\n")
+			}
+			for _, warning := range m.timeReportResult.Warnings {
+				fmt.Fprintln(&b, warning)
+			}
 		}
 		if m.timeReportResult == nil {
-			if m.timeReportLoading { b.WriteString("Loading report...\n") }
-			if m.timeReportError != "" { b.WriteString(m.timeReportError + "\n") }
+			if m.timeReportLoading {
+				b.WriteString("Loading report...\n")
+			}
+			if m.timeReportError != "" {
+				b.WriteString(m.timeReportError + "\n")
+			}
 			b.WriteString("Time report\nAccount ID: " + m.timeReportInputs[0].Value() + "\nProject: " + m.timeReportInputs[1].Value() + "\nFrom: " + m.timeReportInputs[2].Value() + "\nTo: " + m.timeReportInputs[3].Value() + "\nTimezone: " + m.timeReportInputs[4].Value())
 		}
 		if m.height > 0 && (m.timeReportResult != nil || m.timeReportError != "") {
 			content := strings.TrimRight(b.String(), "\n")
-			if m.width > 0 { content = ansi.Wrap(content, m.width, "") }
+			if m.width > 0 {
+				content = ansi.Wrap(content, m.width, "")
+			}
 			lines := strings.Split(content, "\n")
 			start := min(m.timeReportScroll, max(0, len(lines)-m.height))
 			return altScreenView(strings.Join(lines[start:min(start+m.height, len(lines))], "\n"))
@@ -3073,19 +3110,29 @@ func (m Model) View() tea.View {
 
 	case viewUserSearch:
 		b.WriteString(titleStyle.Render("User search") + "\n" + m.userSearchInput.View() + "\n" + m.userSearchError + "\n[Enter] Search  [↑↓] Results  [Esc] Back")
-		if m.userSearchCancel != nil { b.WriteString("\nSearching users...") }
+		if m.userSearchCancel != nil {
+			b.WriteString("\nSearching users...")
+		}
 		if m.userSearchResult.Completeness != "" {
 			fmt.Fprintf(&b, "\nCompleteness: %s", m.userSearchResult.Completeness)
-			if len(m.userSearchResult.Candidates) == 0 { b.WriteString("\nNo users found") }
-			for _, warning := range m.userSearchResult.Warnings { fmt.Fprintf(&b, "\nWarning: %s", warning) }
+			if len(m.userSearchResult.Candidates) == 0 {
+				b.WriteString("\nNo users found")
+			}
+			for _, warning := range m.userSearchResult.Warnings {
+				fmt.Fprintf(&b, "\nWarning: %s", warning)
+			}
 		}
 		pageSize := 10
-		if m.height > 0 { pageSize = max(1, m.height-8-len(m.userSearchResult.Warnings)) }
+		if m.height > 0 {
+			pageSize = max(1, m.height-8-len(m.userSearchResult.Warnings))
+		}
 		start := (m.userSearchCursor / pageSize) * pageSize
 		for i := start; i < min(start+pageSize, len(m.userSearchResult.Candidates)); i++ {
 			user := m.userSearchResult.Candidates[i]
 			marker := "  "
-			if i == m.userSearchCursor { marker = "→ " }
+			if i == m.userSearchCursor {
+				marker = "→ "
+			}
 			fmt.Fprintf(&b, "\n%s%s · %s · active: %t", marker, user.DisplayName, user.AccountID, user.Active)
 		}
 

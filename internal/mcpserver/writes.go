@@ -137,7 +137,7 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 			if reader, ok := a.Writer.(interface {
 				GetSprints(int) ([]jira.Sprint, error)
 			}); ok {
-				sprints, lookupErr := reader.GetSprints(in.sprintID)
+				sprints, lookupErr := reader.GetSprints(in.boardID)
 				if lookupErr != nil {
 					return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but active sprint lookup failed", "Check Jira before placing the issue; do not retry creation."), nil
 				}
