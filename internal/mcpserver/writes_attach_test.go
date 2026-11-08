@@ -57,10 +57,13 @@ type attachJira struct {
 	settings   string
 	postStatus int
 	postBody   string
-	metaReads  atomic.Int32
-	posts      atomic.Int32
-	mu         sync.Mutex
-	uploads    []string
+	// cutResponse accepts the upload but truncates the response, so the client
+	// reports an applied mutation without details.
+	cutResponse bool
+	metaReads   atomic.Int32
+	posts       atomic.Int32
+	mu          sync.Mutex
+	uploads     []string
 }
 
 func (j *attachJira) handler(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +83,9 @@ func (j *attachJira) handler(w http.ResponseWriter, r *http.Request) {
 			j.mu.Lock()
 			j.uploads = append(j.uploads, files[0].Filename)
 			j.mu.Unlock()
+		}
+		if j.cutResponse {
+			w.Header().Set("Content-Length", "100")
 		}
 		w.WriteHeader(j.postStatus)
 		_, _ = w.Write([]byte(j.postBody))
@@ -179,5 +185,26 @@ func TestAttachReportsJiraFailureWithItsMutationState(t *testing.T) {
 				t.Fatalf("isError=%v result=%v posts=%d", isError, got, jira.posts.Load())
 			}
 		})
+	}
+}
+
+func TestAttachReportsAnAppliedUploadExplicitlyAndNeverAsksToRetry(t *testing.T) {
+	jira := &attachJira{t: t, settings: `{"enabled":true,"uploadLimit":1024}`, postStatus: http.StatusOK, postBody: `[`, cutResponse: true}
+	cs := paritySession(t, true, jira.handler)
+	path := writeAttachFile(t, "note.txt", "hello")
+
+	isError, got := callWriteTool(t, cs, "gojira_attach", map[string]any{"key": "ABC-1", "path": path})
+	hint, _ := got["hint"].(string)
+	data, _ := got["data"].(map[string]any)
+	files, _ := data["files"].([]any)
+	lower := strings.ToLower(hint)
+	if !isError || got["mutationState"] != "applied" || got["issueKey"] != "ABC-1" || jira.posts.Load() != 1 {
+		t.Fatalf("isError=%v result=%v posts=%d", isError, got, jira.posts.Load())
+	}
+	if !strings.Contains(lower, "already in jira") || !strings.Contains(lower, "do not upload it again") || strings.Contains(lower, "retrying") || strings.Contains(lower, "access") {
+		t.Fatalf("hint = %q, want an explicit applied notice and no retry advice", hint)
+	}
+	if !reflect.DeepEqual(files, []any{"note.txt"}) {
+		t.Fatalf("data = %v, want the confirmed file retained", data)
 	}
 }

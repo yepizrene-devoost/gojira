@@ -244,3 +244,41 @@ func TestAttachPrintsALinePerFileEvenWithoutJiraDetails(t *testing.T) {
 		t.Fatalf("exit = %d stdout = %q stderr = %q, want a line naming notes.txt", code, stdout, stderr)
 	}
 }
+
+func TestAttachPartialFailureNamesTheFileJiraAcceptedWhenItsResponseIsCut(t *testing.T) {
+	dir := t.TempDir()
+	first := writeAttachFile(t, dir, "notes.txt", "alpha")
+	second := writeAttachFile(t, dir, "shot.png", "beta")
+	third := writeAttachFile(t, dir, "report.pdf", "gamma")
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/attachment/meta" {
+			_, _ = fmt.Fprint(w, `{"enabled":true,"uploadLimit":1000}`)
+			return
+		}
+		posts++
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("multipart file part: %v", err)
+			return
+		}
+		_, _ = io.Copy(io.Discard, file)
+		if header.Filename == "shot.png" {
+			// Accepted, but the response is cut short: applied with no details.
+			w.Header().Set("Content-Length", "100")
+			_, _ = fmt.Fprint(w, "[")
+			return
+		}
+		_, _ = fmt.Fprintf(w, `[{"id":"1","filename":%q,"size":1}]`, header.Filename)
+	}))
+	t.Cleanup(srv.Close)
+
+	code, _, stderr := runTestCLI(t, jira.NewClient(srv.URL, "email", "token"), "attach", "A-1", first, second, third, "--json")
+	if code != 1 || posts != 2 {
+		t.Fatalf("exit=%d posts=%d, want failure after the second upload", code, posts)
+	}
+	envelope := decodeMutationError(t, stderr)
+	if envelope.Code != "partial_failure" || envelope.MutationState != jira.MutationApplied || !strings.Contains(envelope.Message, "shot.png") {
+		t.Fatalf("envelope = %+v, want partial_failure, applied, naming shot.png", envelope)
+	}
+}

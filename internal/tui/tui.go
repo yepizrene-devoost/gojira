@@ -985,6 +985,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if errors.As(msg.err, &mutationErr) && mutationErr.State == jira.MutationUnknown {
 				m.err = fmt.Errorf("%w — the upload may have been applied; check Jira before retrying", msg.err)
 			}
+			if errors.As(msg.err, &mutationErr) && mutationErr.State == jira.MutationApplied {
+				names := make([]string, 0, len(msg.results))
+				for _, r := range msg.results {
+					names = append(names, filepath.Base(r.Path))
+				}
+				m.err = fmt.Errorf("%s already attached to %s, but the upload did not finish cleanly (%w) — do not upload it again", strings.Join(names, ", "), msg.issueKey, msg.err)
+			}
 			return m, nil
 		}
 		m.err = nil

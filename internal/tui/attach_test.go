@@ -27,6 +27,8 @@ type attachServer struct {
 	files   map[string]string
 	status  int
 	enabled bool
+	// cutResponse accepts the upload but truncates the response.
+	cutResponse bool
 }
 
 func newAttachServer(t *testing.T, status int) *attachServer {
@@ -66,6 +68,11 @@ func newAttachServer(t *testing.T, status int) *attachServer {
 		}
 		body, _ := io.ReadAll(f)
 		s.files[header.Filename] = string(body)
+		if s.cutResponse {
+			w.Header().Set("Content-Length", "100")
+			_, _ = w.Write([]byte("["))
+			return
+		}
 		_ = json.NewEncoder(w).Encode([]jira.Attachment{{ID: "1", Filename: header.Filename, Size: int64(len(body)), MimeType: "text/plain"}})
 	}))
 	t.Cleanup(s.srv.Close)
@@ -341,5 +348,30 @@ func TestAttachKnownAndValidationErrorsDoNotWarnUnknownState(t *testing.T) {
 	m, _ = updateModel(t, m, cmd())
 	if m.err == nil || strings.Contains(m.View().Content, "may have been applied") {
 		t.Fatalf("validation error was misreported: err=%v", m.err)
+	}
+}
+
+func TestAttachAppliedUploadWithAFailedResponseNamesTheFileAndNeverAsksToRetry(t *testing.T) {
+	srv := newAttachServer(t, http.StatusOK)
+	srv.cutResponse = true
+	m, cmd := startAttachUpload(t, srv)
+	m, _ = updateModel(t, m, cmd())
+
+	if m.err == nil {
+		t.Fatal("want the incomplete response reported")
+	}
+	got := strings.ToLower(visibleText(m))
+	for _, want := range []string{"note.txt", "already attached", "do not upload it again"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("visible view missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"before retrying", "may have been applied", "check jira"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("applied upload shows retry/unknown advice %q:\n%s", bad, got)
+		}
+	}
+	if _, posts := srv.counts(); posts != 1 {
+		t.Fatalf("uploads=%d, want 1", posts)
 	}
 }

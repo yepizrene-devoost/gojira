@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"io"
+	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/yepizrene-devoost/gojira/internal/attachments"
@@ -53,6 +54,21 @@ func (a adapter) attachFile(key, path string) *mcp.CallToolResult {
 	}
 	if recorder.dispatched {
 		state := jira.MutationStateOf(err)
+		if state == jira.MutationApplied {
+			// Jira accepted the file; the failure came afterwards. Keep what is
+			// known and never suggest uploading it again.
+			var uploaded []attachmentData
+			files := []string{}
+			for _, result := range results {
+				files = append(files, filepath.Base(result.Path))
+				for _, attachment := range result.Attachments {
+					uploaded = append(uploaded, attachmentData{ID: attachment.ID, Filename: attachment.Filename, Size: attachment.Size})
+				}
+			}
+			data := map[string]any{"files": files, "attachments": uploaded}
+			return writeResult("attach", key, state, data, "mutation_applied", "Jira accepted the attachment, but the upload did not finish cleanly",
+				"The attachment is already in Jira; do not upload it again.", jira.MutationDiagnostics(err))
+		}
 		hint := "Check Jira access before retrying."
 		if state == jira.MutationUnknown {
 			hint = "Verify the attachment in Jira before retrying; outcome unknown. Never retry automatically."

@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGetAttachmentSettingsReadsEnabledAndLimit(t *testing.T) {
@@ -116,5 +118,103 @@ func TestAddAttachmentTreatsAnUnreadableSuccessBodyAsUploaded(t *testing.T) {
 		AddAttachment("ARA-1", "a.txt", strings.NewReader("x"))
 	if err != nil || len(got) != 0 {
 		t.Fatalf("attachments=%+v err=%v, want no error: Jira already accepted the file", got, err)
+	}
+}
+
+// slowReader blocks its first Read until Jira has already answered, then
+// delivers its bytes. It records whether a Read is in flight or starts after
+// AddAttachment returned.
+type slowReader struct {
+	answered <-chan struct{}
+	reading  atomic.Bool
+	returned atomic.Bool
+	late     atomic.Int32
+	sent     bool
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if r.returned.Load() {
+		r.late.Add(1)
+	}
+	r.reading.Store(true)
+	defer r.reading.Store(false)
+	<-r.answered
+	time.Sleep(50 * time.Millisecond)
+	if r.sent {
+		return 0, io.EOF
+	}
+	r.sent = true
+	return copy(p, "payload"), nil
+}
+
+func TestAddAttachmentDoesNotReturnWhileItsBodyCopierStillReadsTheStream(t *testing.T) {
+	answered := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Answer before reading the upload, as Jira does when it rejects early.
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex()
+		w.WriteHeader(http.StatusForbidden)
+		_ = rc.Flush()
+		close(answered)
+	}))
+	defer srv.Close()
+	body := &slowReader{answered: answered}
+
+	_, err := NewClient(srv.URL, "me@example.com", "token").AddAttachment("ARA-1", "a.txt", body)
+	body.returned.Store(true)
+	if err == nil || MutationStateOf(err) != MutationNotApplied {
+		t.Fatalf("err=%v state=%v, want a rejected (not applied) upload", err, MutationStateOf(err))
+	}
+	if body.reading.Load() {
+		t.Fatal("AddAttachment returned while the body copier was still reading the caller's stream")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if body.late.Load() != 0 {
+		t.Fatal("the body copier read the caller's stream after AddAttachment returned")
+	}
+}
+
+// blockedReader never returns from its first Read until released, like a
+// stalled pipe handed to AddAttachment.
+type blockedReader struct {
+	release chan struct{}
+	reads   atomic.Int32
+}
+
+func (r *blockedReader) Read(p []byte) (int, error) {
+	r.reads.Add(1)
+	<-r.release
+	return 0, io.EOF
+}
+
+func TestAddAttachmentReturnsBoundedWhenTheCallerStreamNeverUnblocks(t *testing.T) {
+	old := bodyCopierGrace
+	bodyCopierGrace = 100 * time.Millisecond
+	t.Cleanup(func() { bodyCopierGrace = old })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex()
+		w.WriteHeader(http.StatusForbidden)
+		_ = rc.Flush()
+	}))
+	defer srv.Close()
+	body := &blockedReader{release: make(chan struct{})}
+	t.Cleanup(func() { close(body.release) })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewClient(srv.URL, "me@example.com", "token").AddAttachment("ARA-1", "a.txt", body)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || MutationStateOf(err) != MutationNotApplied {
+			t.Fatalf("err=%v state=%v, want the rejected upload classified", err, MutationStateOf(err))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("AddAttachment hung on a caller stream that never returns")
+	}
+	if got := body.reads.Load(); got != 1 {
+		t.Fatalf("reads = %d, want only the abandoned in-flight read", got)
 	}
 }
