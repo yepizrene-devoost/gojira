@@ -35,10 +35,10 @@ type writeTool struct {
 
 func writeTools() []writeTool {
 	return []writeTool{
-		{"create", "Create an issue without sprint placement. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description"}, nil},
+		{"create", "Create an issue; optional boardId adds it to the board's active sprint. Optional parent requires a valid issue key and issueType Sub-task and cannot be combined with boardId. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent", "boardId"}, []string{"boardId"}},
 		{"comment", "Append plain text as ADF. Non-idempotent; never retry automatically.", []string{"key", "body"}, nil, nil},
 		{"log_work", "Add worklog. Non-idempotent; never retry automatically.", []string{"key", "timeSpent"}, []string{"comment"}, nil},
-		{"assign", "Assign directly by accountId, unlike the CLI which resolves email. accountId must be non-empty and trimmed.", []string{"key", "accountId"}, nil, nil},
+		{"assign", "Assign using exactly one non-empty, trimmed accountId or email. Email is resolved through Jira before assignment; never retry automatically.", []string{"key"}, []string{"accountId", "email"}, nil},
 		{"move", "Transition to an exact, unambiguous status name.", []string{"key", "status"}, nil, nil},
 		{"update", "Set summary, description (plain text converted to ADF), priority (name), labels (non-empty trimmed names), dueDate (YYYY-MM-DD), components and fixVersions (name arrays). An empty string clears description and dueDate; [] clears components and fixVersions; null clears storyPoints. storyPoints is a finite decimal number or null and requires storyPointsField (customfield_NNN), and vice versa. Replacing a description this way may discard rich ADF formatting that plain text cannot represent. Metadata is checked before mutation; never retry automatically.", []string{"key", "fields"}, nil, nil},
 		{"delete", "Delete only with a single-use confirmationToken from a preview; expires after two minutes. Preview reveals only action and key. The token forces a deliberate second call and prevents a single-call accidental delete, but is not proof of human approval: the same agent receives and redeems it.", []string{"key"}, []string{"confirmationToken"}, nil},
@@ -46,6 +46,7 @@ func writeTools() []writeTool {
 		{"backlog", "Move one issue to the backlog, out of its future and active sprints. Idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"close", "Close an issue through the only available transition to a done-category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"reopen", "Reopen an issue through the only available transition to a new or in-progress category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
+		{"attach", "Upload the file at the given local path to one issue. Reads any local path the server process can read, with no allowlist, and sends its contents to Jira; non-regular files are refused. Non-idempotent; never retry automatically.", []string{"key", "path"}, nil, nil},
 	}
 }
 func (a adapter) registerWrites(server *mcp.Server) {
@@ -62,8 +63,12 @@ func (a adapter) registerWrites(server *mcp.Server) {
 		if entry.action == "update" {
 			properties["fields"] = updateFieldsSchema()
 		}
+		schema := objectSchema(properties, entry.required...)
+		if entry.action == "assign" {
+			schema["oneOf"] = []any{map[string]any{"required": []string{"accountId"}}, map[string]any{"required": []string{"email"}}}
+		}
 		destructive := entry.action == "delete"
-		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: objectSchema(properties, entry.required...), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: slices.Contains([]string{"assign", "update", "sprint_move", "backlog"}, entry.action)}}, a.writeCall(entry, confirmations))
+		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: slices.Contains([]string{"assign", "update", "sprint_move", "backlog"}, entry.action)}}, a.writeCall(entry, confirmations))
 	}
 }
 func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) mcp.ToolHandler {
@@ -79,6 +84,9 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 		if a.Writer == nil {
 			return writeResult(entry.action, key, jira.MutationNotApplied, nil, "configuration_error", "Writer unavailable", "Check server configuration."), nil
 		}
+		if entry.action == "attach" {
+			return a.attachFile(key, in.values["path"]), nil
+		}
 		if entry.action == "delete" {
 			if in.values["confirmationToken"] == "" {
 				token, err := confirmations.issue(key)
@@ -90,6 +98,22 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 			if !confirmations.consume(in.values["confirmationToken"], key) {
 				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "invalid_confirmation", "Confirmation invalid or expired", "Request a new preview."), nil
 			}
+		}
+		if entry.action == "assign" && in.values["email"] != "" {
+			resolver, ok := a.Writer.(interface {
+				ResolveAccountID(string) (string, string, error)
+			})
+			if !ok {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "configuration_error", "Identity resolver unavailable", "Check server configuration."), nil
+			}
+			account, _, err := resolver.ResolveAccountID(in.values["email"])
+			if err != nil || account == "" {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "lookup_failed", "Jira identity lookup failed", "Check Jira access and the email before retrying."), nil
+			}
+			if ctx.Err() != nil {
+				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "cancelled", "Request cancelled", "No mutation was attempted."), nil
+			}
+			in.values["accountId"] = account
 		}
 		newKey, err := executeWrite(a.Writer, entry.action, in)
 		if newKey != "" {
@@ -112,6 +136,35 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 				hint = "Verify the issue in Jira before retrying; outcome unknown. Never retry automatically."
 			}
 			return writeResult(entry.action, key, state, nil, code, "Jira operation failed", hint, jira.MutationDiagnostics(err)), nil
+		}
+		if entry.action == "create" && in.values["boardId"] != "" {
+			if reader, ok := a.Writer.(interface {
+				GetSprints(int) ([]jira.Sprint, error)
+			}); ok {
+				sprints, lookupErr := reader.GetSprints(in.boardID)
+				if lookupErr != nil {
+					return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but active sprint lookup failed", "Check Jira before placing the issue; do not retry creation."), nil
+				}
+				found := false
+				for _, sprint := range sprints {
+					if sprint.State == "active" {
+						found = true
+						if addErr := a.Writer.AddIssuesToSprint(sprint.ID, []string{key}); addErr != nil {
+							hint := "Check Jira before placing the issue; do not retry creation."
+							if jira.MutationStateOf(addErr) == jira.MutationUnknown {
+								hint = "Verify sprint placement in Jira before retrying; outcome unknown. Never retry automatically or recreate the issue."
+							}
+							return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but adding it to the active sprint failed", hint), nil
+						}
+						break
+					}
+				}
+				if !found {
+					return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but the board has no active sprint", "Issue is in the backlog; do not retry creation."), nil
+				}
+			} else {
+				return writeResult(entry.action, key, jira.MutationApplied, nil, "partial_failure", "Issue created but active sprint lookup is unavailable", "Check server configuration before placing the issue; do not retry creation."), nil
+			}
 		}
 		return writeResult(entry.action, key, jira.MutationApplied, nil, "", "", ""), nil
 	}
@@ -155,6 +208,15 @@ func executeWrite(w Writer, action string, request *writeRequest) (string, error
 		if in["description"] != "" {
 			doc := jira.TextToADF(in["description"])
 			description = &doc
+		}
+		if parent, ok := in["parent"]; ok {
+			writer, ok := w.(interface {
+				CreateIssueWithParent(string, string, string, *jira.ADFDoc, string) (string, error)
+			})
+			if !ok {
+				return "", &validationError{"parent creation is unavailable"}
+			}
+			return writer.CreateIssueWithParent(in["project"], in["issueType"], in["summary"], description, parent)
 		}
 		return w.CreateIssue(in["project"], in["issueType"], in["summary"], description)
 	case "comment":

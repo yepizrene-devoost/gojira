@@ -105,7 +105,7 @@ func TestMCPStdioProcess(t *testing.T) {
 		}
 	}()
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil || len(tools.Tools) != 8 {
+	if err != nil || len(tools.Tools) != 9 {
 		t.Fatalf("stdio tools: %v %v", tools, err)
 	}
 	guide, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gojira://guide"})
@@ -133,6 +133,8 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 			_, _ = w.Write([]byte(`{"accountId":"id","displayName":"Person","active":true,"emailAddress":"private@example.invalid"}`))
 		case "/rest/agile/1.0/board":
 			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
+		case "/rest/agile/1.0/board/1/issue":
+			_, _ = w.Write([]byte(`{"issues":[],"total":0}`))
 		case "/rest/agile/1.0/board/1/sprint":
 			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
 		case "/rest/api/3/issue/DEMO-1":
@@ -184,6 +186,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := map[string]map[string]any{"gojira_context": {}, "gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
+	expected["gojira_export"] = map[string]any{"boardId": 1}
 	expected["gojira_users_search"] = map[string]any{"query": "Person"}
 	expected["gojira_report_time"] = map[string]any{"accountId": "id", "project": "DEMO", "from": "2025-01-01", "to": "2025-01-01", "timezone": "UTC"}
 	if len(list.Tools) != len(expected) {

@@ -4,6 +4,30 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.5.0 – Attachments and interface parity
+
+### Attachments
+
+- Upload local files to Jira issues from the CLI (`gojira attach`), the opt-in
+  MCP write tool (`gojira_attach`), or the TUI ticket detail (`f`).
+- Uploads check Jira's attachment settings and file size before sending, use one
+  request per file, and do not automatically retry writes. The MCP tool can read
+  any regular file accessible to its server process; enable writes only for
+  trusted workflows.
+
+### Interface parity
+
+- MCP can create subtasks with a parent, assign issues by email, create issues
+  in an active sprint, and export board or sprint tickets as curated JSON.
+- The TUI supports parent selection for subtasks, Jira user search, configurable
+  search limits and JQL search, time reports, and copying board or sprint exports
+  to the clipboard.
+
+### Notes
+
+- TUI uploads cannot be cancelled after submission. If the outcome is unknown,
+  check Jira before retrying to avoid duplicate attachments.
+
 ## 📦 v0.4.0 – TUI refinements and search by issue key
 
 ### TUI

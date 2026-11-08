@@ -23,6 +23,207 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
 
+func TestCreateFormOffersOptionalParent(t *testing.T) {
+	m := Model{view: viewCreate, createTypes: []string{"Task"}, createProject: "ABC"}
+	if !strings.Contains(m.View().Content, "Parent") {
+		t.Fatal("create form must offer an optional parent issue key")
+	}
+}
+
+func TestCreateFormParentAcceptsInput(t *testing.T) {
+	m := Model{view: viewCreate, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	for i := 0; i < 3; i++ {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		m = updated.(Model)
+	}
+	for _, r := range "ABC-123" {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	if !strings.Contains(m.View().Content, "ABC-123") {
+		t.Fatal("parent field must accept an issue key")
+	}
+}
+
+func TestCreateRejectsMalformedParent(t *testing.T) {
+	for _, parent := range []string{"abc-1", "ABC-0", "ABC-01", "ABC/1", " ABC-1"} {
+		t.Run(parent, func(t *testing.T) {
+			posts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts++; w.WriteHeader(500) }))
+			defer srv.Close()
+			m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+			m.createSummary.SetValue("summary")
+			m.createParent.SetValue(parent)
+			updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			if cmd != nil {
+				cmd()
+			}
+			if posts != 0 || !strings.Contains(strings.ToLower(updated.(Model).View().Content), "parent") || updated.(Model).createErr == "" {
+				t.Fatalf("parent %q: posts=%d error=%q", parent, posts, updated.(Model).createErr)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsParentWithExplicitNonSubtaskType(t *testing.T) {
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts++; w.WriteHeader(500) }))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, createTypes: []string{"Task", "Bug"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	m.createParent.SetValue("ABC-1")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		cmd()
+	}
+	if posts != 0 || !strings.Contains(updated.(Model).View().Content, "Sub-task") {
+		t.Fatalf("posts=%d error=%q", posts, updated.(Model).createErr)
+	}
+}
+
+func TestCreateParentPayloadDefaultsToSubtask(t *testing.T) {
+	var body map[string]any
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		if r.Method != http.MethodPost || r.URL.Path != "/rest/api/3/issue" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		_, _ = io.WriteString(w, `{"key":"ABC-2"}`)
+	}))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	m.createParent.SetValue("ABC-1")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("missing create command")
+	}
+	cmd()
+	want := map[string]any{"fields": map[string]any{"project": map[string]any{"key": "ABC"}, "issuetype": map[string]any{"name": "Sub-task"}, "summary": "summary", "parent": map[string]any{"key": "ABC-1"}}}
+	if posts != 1 || !reflect.DeepEqual(body, want) {
+		t.Fatalf("posts=%d body=%v want=%v", posts, body, want)
+	}
+}
+
+func TestCreateParentSkipsSprintPlacement(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = io.WriteString(w, `{"key":"ABC-2"}`)
+	}))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, sprintID: 42, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	m.createParent.SetValue("ABC-1")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("missing create command")
+	}
+	result := cmd().(createdMsg)
+	if !reflect.DeepEqual(paths, []string{"/rest/api/3/issue"}) || result.sprintID != 0 {
+		t.Fatalf("paths=%v result=%+v", paths, result)
+	}
+}
+
+func TestCreateParentSprintHint(t *testing.T) {
+	m := Model{view: viewCreate, sprintID: 42, sprintName: "Sprint", createTypes: []string{"Task"}, createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createParent.SetValue("ABC-1")
+	view := m.View().Content
+	if strings.Contains(view, "directly in sprint") || !strings.Contains(strings.ToLower(view), "parent") {
+		t.Fatalf("misleading parent sprint hint: %s", view)
+	}
+}
+
+func TestCreateOrdinaryStillPlacesInActiveSprint(t *testing.T) {
+	var paths []string
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		_, _ = io.WriteString(w, `{"key":"ABC-2"}`)
+	}))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, sprintID: 42, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("missing create command")
+	}
+	result := cmd().(createdMsg)
+	want := []map[string]any{{"fields": map[string]any{"project": map[string]any{"key": "ABC"}, "issuetype": map[string]any{"name": "Task"}, "summary": "summary"}}, {"issues": []any{"ABC-2"}}}
+	if !reflect.DeepEqual(paths, []string{"/rest/api/3/issue", "/rest/agile/1.0/sprint/42/issue"}) || !reflect.DeepEqual(bodies, want) || result.err != nil {
+		t.Fatalf("paths=%v bodies=%v result=%+v", paths, bodies, result)
+	}
+}
+
+func TestCreateParentFailureDoesNotRetry(t *testing.T) {
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts++; w.WriteHeader(http.StatusInternalServerError) }))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, sprintID: 42, createTypes: []string{"Task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	m.createParent.SetValue("ABC-1")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("missing create command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if posts != 1 || m.createErr == "" || !strings.Contains(m.View().Content, "500") {
+		t.Fatalf("posts=%d error=%q", posts, m.createErr)
+	}
+}
+
+func TestCreateParentShowsDefaultSubtaskType(t *testing.T) {
+	m := Model{view: viewCreate, createTypes: []string{"Task"}, createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createParent.SetValue("ABC-1")
+	if !strings.Contains(m.View().Content, "◀ Sub-task ▶") {
+		t.Fatal("form must show the type that will be created")
+	}
+}
+
+func TestCreateParentWithExplicitSubtaskAndDescription(t *testing.T) {
+	var body map[string]any
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		_, _ = io.WriteString(w, `{"key":"ABC-2"}`)
+	}))
+	defer srv.Close()
+	m := Model{client: jira.NewClient(srv.URL, "", ""), view: viewCreate, createTypes: []string{"Task", "Sub-task"}, createProject: "ABC", createSummary: textinput.New(), createDesc: textinput.New(), createParent: textinput.New()}
+	m.createSummary.SetValue("summary")
+	m.createDesc.SetValue("description")
+	m.createParent.SetValue("A_B2-123")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated.(Model)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("missing create command")
+	}
+	cmd()
+	var adf any
+	encoded, _ := json.Marshal(jira.TextToADF("description"))
+	_ = json.Unmarshal(encoded, &adf)
+	want := map[string]any{"fields": map[string]any{"project": map[string]any{"key": "ABC"}, "issuetype": map[string]any{"name": "Sub-task"}, "summary": "summary", "description": adf, "parent": map[string]any{"key": "A_B2-123"}}}
+	if posts != 1 || !reflect.DeepEqual(body, want) {
+		t.Fatalf("posts=%d body=%v want=%v", posts, body, want)
+	}
+}
+
 func TestBoardLoadBacklogSources(t *testing.T) {
 	for _, scenario := range []string{"optimized", "fallback", "all optional fail", "future fails", "active fails", "config fails", "sprints fail", "no active"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -2104,7 +2305,7 @@ func TestSearchRenderShowsHonestCompleteness(t *testing.T) {
 		{
 			name:       "truncated with estimate",
 			msg:        searchMsg{issues: issues(50), truncated: true, estimated: ptrInt(412)},
-			want:       "50 shown · ≥412 estimated",
+			want:       "50 shown · more results (about 412 total)",
 			mustAbsent: []string{"· 0 total"},
 		},
 		{

@@ -187,6 +187,12 @@ func (c *Client) mutate(method, path string, payload []byte) ([]byte, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	return c.dispatchMutation(req)
+}
+
+// dispatchMutation sends an already built write exactly once and classifies the
+// outcome. Every write, JSON or multipart, goes through it so none can be retried.
+func (c *Client) dispatchMutation(req *http.Request) ([]byte, error) {
 	writeClient := *c.http
 	writeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse

@@ -135,7 +135,7 @@ func TestReadOnlyDefaultNoWritesRegression(t *testing.T) {
 			}
 		}
 	}
-	if len(list.Tools) != 8 || calls.Load() != 0 {
+	if len(list.Tools) != 9 || calls.Load() != 0 {
 		t.Fatalf("tools=%d calls=%d", len(list.Tools), calls.Load())
 	}
 }
