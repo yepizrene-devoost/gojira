@@ -176,6 +176,7 @@ setup wizard, or connect to Jira.
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
+| `gojira attach <KEY> <file>...` | Attach local files to an issue, one request per file (`--json`); every path and Jira's size limit are checked before anything is uploaded, and the first failed upload stops the rest |
 | `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
