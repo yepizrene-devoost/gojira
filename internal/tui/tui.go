@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
 	"math/big"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -23,6 +25,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/yepizrene-devoost/gojira/internal/attachments"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 	"github.com/yepizrene-devoost/gojira/internal/reporting"
 )
@@ -80,6 +83,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "Enter", action: "Open ticket detail"},
 	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
+	{keys: "f (detail)", action: "Attach a file by path; Enter uploads"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
 	{keys: "s", action: "Search Jira; Tab switches text/JQL, Ctrl+L sets limit"},
 	{keys: "u", action: "User search"},
@@ -177,6 +181,7 @@ const (
 	viewAssign
 	viewBasicsEdit
 	viewExport
+	viewAttach
 )
 
 type column struct {
@@ -277,6 +282,10 @@ type Model struct {
 	worklogIssue                  string
 	nextWorklogRequest            uint64
 	activeWorklogRequest          uint64
+	attachInput                   textinput.Model
+	attachIssue                   string
+	nextAttachRequest             uint64
+	activeAttachRequest           uint64
 	descriptionInput              textarea.Model
 	descriptionOriginal           string
 	commentEntry                  bool
@@ -412,6 +421,12 @@ type transitionDoneMsg struct {
 type worklogDoneMsg struct {
 	requestID uint64
 	issueKey  string
+	err       error
+}
+type attachDoneMsg struct {
+	requestID uint64
+	issueKey  string
+	results   []attachments.Result
 	err       error
 }
 type descriptionUpdatedMsg struct {
@@ -957,6 +972,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = "Worklog added"
 		return m, clearToastAfter(3 * time.Second)
 
+	case attachDoneMsg:
+		if m.view != viewAttach || msg.requestID == 0 || msg.requestID != m.activeAttachRequest ||
+			msg.issueKey == "" || msg.issueKey != m.attachIssue || m.detail == nil || msg.issueKey != m.detail.Key {
+			return m, nil
+		}
+		m.activeAttachRequest = 0
+		m.view = viewDetail
+		if msg.err != nil {
+			m.err = msg.err
+			var mutationErr *jira.MutationError
+			if errors.As(msg.err, &mutationErr) && mutationErr.State == jira.MutationUnknown {
+				m.err = fmt.Errorf("%w — the upload may have been applied; check Jira before retrying", msg.err)
+			}
+			return m, nil
+		}
+		m.err = nil
+		names := make([]string, 0, len(msg.results))
+		for _, r := range msg.results {
+			names = append(names, filepath.Base(r.Path))
+		}
+		m.toast = "Attached " + strings.Join(names, ", ")
+		return m, clearToastAfter(3 * time.Second)
+
 	case descriptionUpdatedMsg:
 		if m.view != viewDescriptionEdit || !m.descriptionSubmitting ||
 			msg.requestID == 0 || msg.requestID != m.activeDescriptionRequest ||
@@ -1345,6 +1383,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTransition(msg)
 		case viewWorklog:
 			return m.updateWorklog(msg)
+		case viewAttach:
+			return m.updateAttach(msg)
 		case viewCreate:
 			return m.updateCreate(msg)
 		case viewSearch:
@@ -1424,6 +1464,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewWorklog:
 			var cmd tea.Cmd
 			m.worklogInput, cmd = m.worklogInput.Update(msg)
+			return m, cmd
+		case viewAttach:
+			var cmd tea.Cmd
+			m.attachInput, cmd = m.attachInput.Update(msg)
 			return m, cmd
 		case viewCreate:
 			var cmd tea.Cmd
@@ -1959,6 +2003,18 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = viewWorklog
 			return m, textinput.Blink
 		}
+	case "f":
+		if m.detail != nil && !m.detailLoading {
+			ti := textinput.New()
+			ti.Placeholder = "e.g. ~/Downloads/report.pdf"
+			ti.Focus()
+			m.attachInput = ti
+			m.attachIssue = m.detail.Key
+			m.activeAttachRequest = 0
+			m.err = nil
+			m.view = viewAttach
+			return m, textinput.Blink
+		}
 	case "E":
 		if m.detail != nil { return m.openFieldsEdit() }
 	case "U":
@@ -2408,6 +2464,44 @@ func (m Model) updateTransition(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) updateAttach(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		if m.activeAttachRequest != 0 {
+			// The upload cannot be aborted; staying here keeps its result visible.
+			return m, nil
+		}
+		m.err = nil
+		m.view = viewDetail
+		return m, nil
+	case "enter":
+		if m.activeAttachRequest != 0 {
+			return m, nil
+		}
+		// Keep the input exact: surrounding spaces can be part of a file name.
+		path := m.attachInput.Value()
+		if strings.TrimSpace(path) == "" {
+			m.err = fmt.Errorf("a file path is required")
+			return m, nil
+		}
+		key := m.attachIssue
+		client := m.client
+		m.nextAttachRequest++
+		requestID := m.nextAttachRequest
+		m.activeAttachRequest = requestID
+		return m, func() tea.Msg {
+			results, err := attachments.Upload(client, key, []string{path})
+			return attachDoneMsg{requestID: requestID, issueKey: key, results: results, err: err}
+		}
+	default:
+		var cmd tea.Cmd
+		m.attachInput, cmd = m.attachInput.Update(msg)
+		return m, cmd
+	}
 }
 
 func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -3043,6 +3137,23 @@ func (m Model) View() tea.View {
 			}
 			b.WriteString("\n")
 			b.WriteString(subStyle.Render("[↑↓] Navigate  [Enter] Confirm  [esc] Cancel"))
+		}
+
+	case viewAttach:
+		b.WriteString(titleStyle.Render("📎 Attach file: " + m.attachIssue))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("Path (e.g. ~/Downloads/report.pdf):"))
+		b.WriteString("\n")
+		b.WriteString(m.attachInput.View())
+		b.WriteString("\n\n")
+		if m.err != nil {
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		}
+		if m.activeAttachRequest != 0 {
+			b.WriteString(subStyle.Render("Uploading… please wait; it cannot be cancelled once started."))
+		} else {
+			b.WriteString(subStyle.Render("[Enter] Upload  [esc] Cancel"))
 		}
 
 	case viewWorklog:
@@ -3904,5 +4015,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[A] Assign  [U] Summary, priority, labels"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[A] Assign  [U] Summary, priority, labels  [f] Attach"
 }

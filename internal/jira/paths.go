@@ -27,6 +27,8 @@ const (
 	pathIssueWorklog           = "/rest/api/3/issue/%s/worklog"
 	pathIssueComment           = "/rest/api/3/issue/%s/comment"
 	pathIssueAssign            = "/rest/api/3/issue/%s/assignee"
+	pathIssueAttachments       = "/rest/api/3/issue/%s/attachments"
+	pathAttachmentMeta         = "/rest/api/3/attachment/meta"
 	pathSearchJQL              = "/rest/api/3/search/jql"
 	pathSearchApproximateCount = "/rest/api/3/search/approximate-count"
 	pathReportingUsers         = "/rest/api/3/user/search"

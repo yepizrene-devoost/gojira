@@ -176,6 +176,7 @@ setup wizard, or connect to Jira.
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
+| `gojira attach <KEY> <file>...` | Attach local files to an issue, one request per file (`--json`); every path and Jira's size limit are checked before anything is uploaded, and the first failed upload stops the rest |
 | `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
 | `gojira version` | Version marker + build revision (`--json`) |
@@ -483,6 +484,7 @@ including the MCP server and per-option gaps, is in
 | Create ticket (optionally in a sprint) | `create` | `n` |
 | Edit fields | `update` | `e` (description), `U` (summary, priority, labels), `E` (other fields) |
 | Add comment | `comment` | `m` |
+| Attach a file | `attach` | `f` |
 | Log work / show worklog | `log` (`--show`) | `w` |
 | Transition by name | `move` | `t` |
 | Close / reopen by status category | `close`, `reopen` | `X` |
@@ -613,6 +615,7 @@ falls back to a one-line title on very small terminals.
 | `c` | Copy ticket as JSON to clipboard |
 | `e` | Edit the description; `Ctrl+S` confirms and `Esc` cancels without writing |
 | `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
+| `f` | Attach a file: type a local path (a leading `~/` is expanded), `Enter` uploads it; `Esc` cancels before submission, not during an upload |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog (cancel or success returns to this detail modal) |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
@@ -787,6 +790,7 @@ all existing read-only tools, instructions and results remain unchanged.
 | --- | --- |
 | `gojira_create` | `project`, `issueType`, `summary`, optional `description`, `parent`, and positive integer `boardId` |
 | `gojira_comment` | `key`, `body` |
+| `gojira_attach` | `key`, `path`. Uploads a local file to the issue. It accepts any path the server process can read, with no allowlist, so a prompt-injected agent could upload sensitive files such as `.env`; only regular files are accepted |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
 | `gojira_assign` | `key`, and exactly one of `accountId` or `email` (non-empty and trimmed) |
 | `gojira_move` | `key`, exact unambiguous `status` |
