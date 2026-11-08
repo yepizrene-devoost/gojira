@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -21,7 +22,7 @@ var configCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a configuration value",
-	Long:  "Keys: domain, email, board, project, token, people.<alias>",
+	Long:  "Keys: domain, email, board, project, token, update_check, people.<alias>",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
@@ -42,6 +43,12 @@ var configSetCmd = &cobra.Command{
 			cfg.Project = value
 		case key == "token":
 			return config.SaveToken(value)
+		case key == "update_check":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("invalid value %q for update_check (use true or false)", value)
+			}
+			cfg.UpdateCheck = &parsed
 		case strings.HasPrefix(key, "people."):
 			alias := strings.TrimPrefix(key, "people.")
 			if cfg.People == nil {
@@ -49,7 +56,7 @@ var configSetCmd = &cobra.Command{
 			}
 			cfg.People[alias] = value
 		default:
-			return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, people.<alias>)", key)
+			return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, update_check, people.<alias>)", key)
 		}
 
 		return cfg.Save()
@@ -89,6 +96,8 @@ var configGetCmd = &cobra.Command{
 			} else {
 				fmt.Println("****")
 			}
+		case key == "update_check":
+			fmt.Println(cfg.UpdateCheckEnabled())
 		case strings.HasPrefix(key, "people."):
 			alias := strings.TrimPrefix(key, "people.")
 			if cfg.People != nil {
@@ -99,7 +108,7 @@ var configGetCmd = &cobra.Command{
 			}
 			return fmt.Errorf("alias %q not found", alias)
 		default:
-			return fmt.Errorf("unknown key %q", key)
+			return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, update_check, people.<alias>)", key)
 		}
 		return nil
 	},
