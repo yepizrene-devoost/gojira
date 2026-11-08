@@ -64,18 +64,24 @@ func runTUI() error {
 				return release.TagName, err
 			},
 			func(latest string) {
-				recorded, err := config.Load()
-				if err != nil {
-					return
-				}
-				recorded.RecordUpdateCheck(time.Now(), latest)
-				_ = recorded.Save()
+				recordUpdateCheck(latest)
 			},
 		)
 	}
 	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
+}
+
+// recordUpdateCheck stores the result of a release check through the
+// serialized configuration writer, so it cannot race a concurrent config
+// writer in another process. Failures are ignored: the release check is
+// optional startup decoration and never disturbs the TUI.
+func recordUpdateCheck(latest string) {
+	_ = config.Update(func(cfg *config.Config) error {
+		cfg.RecordUpdateCheck(time.Now(), latest)
+		return nil
+	})
 }
 
 func init() {

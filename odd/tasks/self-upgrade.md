@@ -247,3 +247,52 @@ Every slice is above the ~400-line guidance, as agreed when the split was approv
 one cohesive feature whose risky half (slices 3 and 5) is isolated, and splitting further would
 have meant moving already-proven code between files for no review benefit. Nothing is pushed,
 merged or released, and issue #41 remains open.
+
+L7 (external review finding on PR #43, `cmd/tui.go`): configuration writes used an
+unserialized read-modify-write — `Config.Save()` rewrites the whole file, so a concurrent
+writer (for example `gojira config set` in another terminal) could be lost between the load
+and the save. The reviewer's literal suggestion — reuse the config loaded at TUI startup
+instead of reloading — was rejected: reusing a startup snapshot widens the loss window instead
+of closing it, because every later write still races against the stale snapshot. Fix: one
+serialized mutation entry point for all config writers, `config.Update(mutate)` in
+`internal/config/write.go`. It creates the config directory, takes an exclusive
+`config.yaml.lock` (`os.OpenFile` with `O_CREATE|O_EXCL|O_WRONLY` 0600, retrying every 10ms up
+to `lockWaitTimeout` = 5s, then an error wrapping the exported `ErrWriteLocked`; a lock whose
+mtime is older than `lockStaleAfter` = 30s is removed and the attempt retried, so a crashed
+writer cannot block configuration forever; symlinks are inspected with `Lstat` and never
+followed), then `Load()` → `mutate` → `Save()`, releasing the lock on every path — so a
+concurrent caller's mutation is applied to the state the previous one wrote and no write is
+lost. `cmd/config.go` now validates the key name first (an unknown key still fails without
+touching disk with the same message, which lists `update_check`), keeps `token` on the
+`config.SaveToken` path, and performs the mutation through `config.Update`. `cmd/tui.go`
+replaces the inline recorder closure with the package-level `recordUpdateCheck(latest)` next to
+`runTUI`, implemented as `config.Update` recording the timestamp and ignoring the returned
+error exactly as the closure ignored failures.
+
+RED/GREEN evidence (strict TDD, one RED per rule observed before its implementation; each run
+under two seconds):
+- Rule a, serialization: `go test -count=1 -run TestUpdateSerializesConcurrentWriters
+  ./internal/config/` failed with `undefined: Update` (the unserialized/missing path); GREEN
+  `ok ... 0.528s` after `write.go`, asserting B cannot complete while A holds the mutation and
+  both mutations survive in the loaded config.
+- Rule b, held lock: RED `undefined: lockWaitTimeout`, `undefined: ErrWriteLocked`; GREEN with
+  `lockWaitTimeout` shrunk to 50ms and restored via `t.Cleanup` — `Update` returns an error
+  wrapping `ErrWriteLocked` and the config file bytes are unchanged.
+- Rule c, stale lock: RED `undefined: lockStaleAfter`; GREEN — a lock file aged past
+  `lockStaleAfter` with `os.Chtimes` is reclaimed, `Update` succeeds and the lock is removed.
+- Rule d, mutate error: RED `undefined: Update`; GREEN — the sentinel error propagates via
+  `errors.Is` and the config file is not written.
+- Rule e, TUI regression: `go test -count=1 -run TestRecordUpdateCheckPreservesUnrelatedValues
+  ./cmd/` failed with `undefined: recordUpdateCheck`; GREEN `ok ... 0.343s` —
+  `recordUpdateCheck("v9.9.9")` writes `update_last_check` (valid RFC3339) and
+  `update_latest_version` while preserving the unrelated pre-existing `email`, `domain` and
+  `board` values.
+
+Suite and static checks: `go test -count=1 ./internal/config/ ./cmd/ ./internal/tui/` all ok;
+`go test ./...` all packages ok; `go vet ./...` clean; `golangci-lint run` → 0 issues;
+`gofmt -l internal/config cmd` empty. Differential against a binary built from HEAD (via
+`git archive` into /tmp, nothing staged or committed): `config set` and `config get` for
+`domain`, `email`, `board`, `project` and `people.<alias>`, plus an unknown key and an invalid
+`update_check` value, produced byte-identical stdout, stderr, exit codes and `config.yaml` on
+base and change, and left no `.lock` file behind. `gojira upgrade`, the public JSON contracts
+and the TUI model are untouched.
