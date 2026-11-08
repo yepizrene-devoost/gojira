@@ -2,13 +2,16 @@
 
 GoJira exposes the same Jira business operations through three surfaces: the
 CLI (humans and scripts), the MCP server (agents) and the TUI (humans, visually).
-The goal ([issue #30](https://github.com/yepizrene-devoost/gojira/issues/30)) is
+The goal ([issue #30](https://github.com/yepizrene-devoost/gojira/issues/30),
+completed in [issue #33](https://github.com/yepizrene-devoost/gojira/issues/33)) is
 that anything you can do in one surface you can also do in the others, with
 equivalent options. Controls differ on purpose: flags in the CLI, structured
 arguments in MCP, selectors and forms in the TUI.
 
-This matrix is the checklist for that goal. It is **not** a claim of full parity:
-every row that says *Partial*, *No* or *In progress* is a known gap.
+This matrix is the checklist for that goal. Every row below is implemented on all
+three surfaces; the limits of a row are written in the row itself, and the one
+capability left out on purpose is listed under "Different on purpose". A change
+that opens a gap must mark its row *Partial* or *No* again.
 
 | Status | Meaning |
 | --- | --- |
