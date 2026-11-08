@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/yepizrene-devoost/gojira/internal/config"
 	"github.com/yepizrene-devoost/gojira/internal/tui"
+	"github.com/yepizrene-devoost/gojira/internal/upgrade"
 )
 
 var tuiCmd = newTUICommand(runTUI)
@@ -49,7 +53,26 @@ func runTUI() error {
 	fmt.Fprintf(os.Stderr, "✓ Connected to %s\n", info)
 
 	// ── Launch TUI ────────────────────────────────────────────────
+	// The release check is optional startup decoration: any config failure
+	// simply leaves it off and never disturbs the TUI.
+	cfg, cfgErr := config.Load()
 	m := tui.New(client, domain).WithVersion(version)
+	if cfgErr == nil && cfg.UpdateCheckEnabled() && cfg.UpdateCheckDue(time.Now(), config.UpdateCheckInterval) {
+		m = m.WithUpdateCheck(
+			func(ctx context.Context) (string, error) {
+				release, err := upgrade.NewClient("", &http.Client{Timeout: 4 * time.Second}).LatestRelease(ctx)
+				return release.TagName, err
+			},
+			func(latest string) {
+				recorded, err := config.Load()
+				if err != nil {
+					return
+				}
+				recorded.RecordUpdateCheck(time.Now(), latest)
+				_ = recorded.Save()
+			},
+		)
+	}
 	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
