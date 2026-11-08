@@ -228,7 +228,7 @@ func TestAttachUploadErrorShowsErrorAndStaysUsable(t *testing.T) {
 	if reads, posts := srv.counts(); reads != 1 || posts != 1 {
 		t.Fatalf("failed upload was retried or skipped: reads=%d uploads=%d, want 1 and 1", reads, posts)
 	}
-	if m.err == nil || m.view != viewDetail || !strings.Contains(m.View().Content, "API 403") {
+	if m.err == nil || m.view != viewDetail || !strings.Contains(visibleText(m), "API 403") {
 		t.Fatalf("upload error was not shown in the detail: view=%v err=%v", m.view, m.err)
 	}
 
