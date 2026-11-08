@@ -46,6 +46,7 @@ func writeTools() []writeTool {
 		{"backlog", "Move one issue to the backlog, out of its future and active sprints. Idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"close", "Close an issue through the only available transition to a done-category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"reopen", "Reopen an issue through the only available transition to a new or in-progress category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
+		{"attach", "Upload the file at the given local path to one issue. Reads any local path the server process can read, with no allowlist, and sends its contents to Jira; non-regular files are refused. Non-idempotent; never retry automatically.", []string{"key", "path"}, nil, nil},
 	}
 }
 func (a adapter) registerWrites(server *mcp.Server) {
@@ -82,6 +83,9 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 		}
 		if a.Writer == nil {
 			return writeResult(entry.action, key, jira.MutationNotApplied, nil, "configuration_error", "Writer unavailable", "Check server configuration."), nil
+		}
+		if entry.action == "attach" {
+			return a.attachFile(key, in.values["path"]), nil
 		}
 		if entry.action == "delete" {
 			if in.values["confirmationToken"] == "" {

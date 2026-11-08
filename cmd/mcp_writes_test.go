@@ -52,7 +52,7 @@ func TestMCPWrites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list.Tools) != 20 {
+			if len(list.Tools) != 21 {
 				t.Fatalf("tools=%d", len(list.Tools))
 			}
 			for _, tool := range list.Tools {

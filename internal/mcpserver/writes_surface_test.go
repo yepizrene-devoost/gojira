@@ -27,7 +27,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"gojira_boards", "gojira_context", "gojira_export", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete", "gojira_sprint_move", "gojira_backlog", "gojira_close", "gojira_reopen"}
+	names := []string{"gojira_boards", "gojira_context", "gojira_export", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete", "gojira_sprint_move", "gojira_backlog", "gojira_close", "gojira_reopen", "gojira_attach"}
 	if len(list.Tools) != len(names) {
 		t.Fatalf("tools=%d", len(list.Tools))
 	}
@@ -43,6 +43,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"},"path":{"type":"string"}},"required":["key","path"],"additionalProperties":false}`,
 	}
 	for i, tool := range list.Tools {
 		if tool.Name != names[i] {
