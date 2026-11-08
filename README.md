@@ -179,6 +179,7 @@ setup wizard, or connect to Jira.
 | `gojira attach <KEY> <file>...` | Attach local files to an issue, one request per file (`--json`); every path and Jira's size limit are checked before anything is uploaded, and the first failed upload stops the rest |
 | `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
 | `gojira config` | Manage configuration: `init`, `set`, `get`, `path`, `test` |
+| `gojira upgrade` | Replace an installer-owned binary with the latest published release (`--check`, `--yes`, `--json`) |
 | `gojira version` | Version marker + build revision (`--json`) |
 
 Lifecycle commands use only transitions currently available on the issue, never workflow names.
@@ -192,6 +193,41 @@ errors use the existing classified error envelope. Lifecycle validation used loc
 HTTP simulations only; no live Jira verification or deletion was performed.
 TUI lifecycle shortcuts and typed-key deletion confirmation are not implemented yet;
 the existing `t` transition picker remains available.
+
+### Upgrading gojira
+
+`gojira upgrade` replaces this binary with the latest published release. It is unrelated to
+`gojira update`, which updates a Jira issue.
+
+| Flag | Effect |
+|---|---|
+| `--check` | Report the available version and change nothing |
+| `--yes` | Install without asking; required when there is no terminal |
+| `--json` | One `schemaVersion: v1` document on stdout, diagnostics on stderr |
+
+Only an installer-managed binary is replaced: `$GOJIRA_INSTALL_DIR`, `~/.local/bin`, or
+`%LOCALAPPDATA%\Programs\gojira` on Windows. Package-manager paths, `go install` locations,
+symlinks and unknown installations are refused with instructions instead of being
+overwritten. Set `GOJIRA_INSTALL_DIR` to the directory that holds the binary when you
+installed it somewhere else.
+
+The download is verified against `checksums.txt` from the same release. A matching checksum
+proves transfer integrity only: it is published next to the artifact, so it does not
+authenticate the publisher. Every refusal, download failure or checksum mismatch leaves the
+installed binary untouched and reports `mutationState: not_applied`. A replacement that cannot
+be completed reports `unknown` and is never retried automatically. On Windows the previous
+binary is moved aside first, so it is never lost; a failed placement is rolled back, and when
+Windows blocks both steps the command reports `unknown`, keeps the previous binary at
+`gojira.exe.old.<suffix>` next to the destination, and asks you to verify before retrying.
+
+A development build (version marker `dev`, or a snapshot tag) is never replaced: build a
+release or install a published one with the installer scripts.
+
+The TUI also notifies you about a newer release without ever installing anything: one
+background check runs at startup, at most once every 24 hours, and stays completely silent
+when you are offline or when the running binary is a development build. The check is enabled
+by default; disable it with `gojira config set update_check false` and read it back with
+`gojira config get update_check`.
 
 ### Agent usage examples
 
