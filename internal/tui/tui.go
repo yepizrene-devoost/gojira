@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
+	"github.com/yepizrene-devoost/gojira/internal/reporting"
 )
 
 // ─── Palette ───────────────────────────────────────────────────────────
@@ -54,6 +57,18 @@ var (
 	detailBox          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan).Padding(1, 2)
 )
 
+type timeReportMsg struct {
+	request uint64
+	result  reporting.TimeReportResult
+	err     error
+}
+
+type userSearchMsg struct {
+	request uint64
+	result  reporting.UserSearchResult
+	err     error
+}
+
 type helpEntry struct {
 	keys   string
 	action string
@@ -66,16 +81,19 @@ var kanbanHelp = []helpEntry{
 	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
-	{keys: "s", action: "Search all Jira tickets"},
+	{keys: "s", action: "Search Jira; Tab switches text/JQL, Ctrl+L sets limit"},
+	{keys: "u", action: "User search"},
+	{keys: "r", action: "Time report (from boards)"},
 	{keys: "t", action: "Transition ticket"},
 	{keys: "X", action: "Close/reopen by status category"},
 	{keys: "D", action: "Permanently delete (type exact key)"},
-	{keys: "n", action: "Create issue"},
+	{keys: "n", action: "Create issue (optional parent key)"},
 	{keys: "a", action: "Add ticket to active sprint"},
 	{keys: "A", action: "Assign ticket by email"},
 	{keys: "S", action: "Choose a future/active sprint"},
 	{keys: "b", action: "Move ticket to backlog"},
 	{keys: "C", action: "Copy column as JSON"},
+	{keys: "E", action: "Export current board or sprint as JSON to clipboard"},
 	{keys: "Esc or q", action: "Back to boards"},
 	{keys: "Ctrl+C", action: "Quit"},
 }
@@ -150,12 +168,15 @@ const (
 	viewWorklog
 	viewCreate
 	viewSearch
+	viewUserSearch
+	viewTimeReport
 	viewDescriptionEdit
 	viewFieldsEdit
 	viewSprintChoose
 	viewDeleteConfirm
 	viewAssign
 	viewBasicsEdit
+	viewExport
 )
 
 type column struct {
@@ -166,24 +187,55 @@ type column struct {
 // Model is the top-level Bubble Tea model for GoJira's TUI.
 // Kept as a single model with NO sub-model message routing.
 type Model struct {
-	assignment assignmentState
-	basics basicsState
-	lifecycleRequest uint64
-	lifecycleBoard uint64
-	lifecycleSearch uint64
-	lifecycleBusy bool
-	lifecycleKey string
-	lifecycleReturn view
-	deleteInput textinput.Model
-	sprintChoices []jira.Sprint
-	sprintChoiceCur int
-	sprintMoveKey string
-	sprintMoveReturn view
-	sprintMoveRequest uint64
-	sprintMoveBoard uint64
-	sprintMoveSearch uint64
-	sprintMoveLoading bool
-	sprintMoveSubmitting bool
+	exportFetch                   func(int, int) ([]jira.Issue, error)
+	exportSprints                 func(int) ([]jira.Sprint, error)
+	exportResolving               bool
+	exportDiscoveryFailed         bool
+	exportCopy                    func(string) error
+	exportRequest                 uint64
+	exportContext                 context.Context
+	exportCancel                  context.CancelFunc
+	exportError                   string
+	exportSelectingSprint         bool
+	exportSelectingBoard          bool
+	exportBoardInput              string
+	exportBoardID                 int
+	exportSprintInput             string
+	exportSprintID                int
+	exportSprintExplicit          bool
+	timeReportInputs              [5]textinput.Model
+	timeReportFocus               int
+	timeReportScroll              int
+	timeReportError               string
+	timeReportLoading             bool
+	timeReportCancel              context.CancelFunc
+	timeReportRequest             uint64
+	timeReportResult              *reporting.TimeReportResult
+	assignment                    assignmentState
+	userSearchInput               textinput.Model
+	userSearchError               string
+	userSearchResult              reporting.UserSearchResult
+	userSearchRequest             uint64
+	userSearchCancel              context.CancelFunc
+	userSearchReturn              view
+	userSearchCursor              int
+	basics                        basicsState
+	lifecycleRequest              uint64
+	lifecycleBoard                uint64
+	lifecycleSearch               uint64
+	lifecycleBusy                 bool
+	lifecycleKey                  string
+	lifecycleReturn               view
+	deleteInput                   textinput.Model
+	sprintChoices                 []jira.Sprint
+	sprintChoiceCur               int
+	sprintMoveKey                 string
+	sprintMoveReturn              view
+	sprintMoveRequest             uint64
+	sprintMoveBoard               uint64
+	sprintMoveSearch              uint64
+	sprintMoveLoading             bool
+	sprintMoveSubmitting          bool
 	client                        *jira.Client
 	domain                        string
 	view                          view
@@ -254,6 +306,13 @@ type Model struct {
 	spin                spinner.Model
 	version             string
 	searchInput         textinput.Model
+	searchLimitInput    textinput.Model
+	searchLimitEditing  bool
+	searchLimitErr      string
+	searchLimit         int
+	searchLimitAll      bool
+	searchJQL           bool
+	searchResultJQL     bool
 	searchQuery         string
 	searchEditing       bool
 	searchResults       []jira.Issue
@@ -271,12 +330,14 @@ type Model struct {
 	sprintID int
 
 	// Create-issue form (viewCreate)
-	createProject string
-	createTypes   []string
-	createTypeCur int
-	createField   int // 0 = type, 1 = summary, 2 = description
-	createSummary textinput.Model
-	createDesc    textinput.Model
+	createProject      string
+	createTypes        []string
+	createTypeCur      int
+	createField        int // 0 = type, 1 = summary, 2 = description
+	createSummary      textinput.Model
+	createDesc         textinput.Model
+	createParent       textinput.Model
+	createTypeSelected bool
 	createErr     string
 
 	// Issue key to select after the next board reload
@@ -291,6 +352,20 @@ type Model struct {
 	boardLoading       bool
 }
 
+type exportSprintsMsg struct {
+	request uint64
+	sprints []jira.Sprint
+	err     error
+}
+type exportFetchMsg struct {
+	request uint64
+	issues  []jira.Issue
+	err     error
+}
+type exportClipboardMsg struct {
+	request uint64
+	err     error
+}
 type boardsMsg struct{ boards []jira.Board }
 type boardLoadMsg struct {
 	requestID  uint64
@@ -673,6 +748,59 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case exportSprintsMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		m.exportResolving = false
+		if msg.err != nil {
+			m.exportDiscoveryFailed = !m.exportSprintExplicit
+			m.exportError = msg.err.Error()
+			return m, nil
+		}
+		for _, sprint := range msg.sprints {
+			if !m.exportSprintExplicit && sprint.State == "active" {
+				m.exportSprintID = sprint.ID
+				break
+			}
+		}
+		return m, nil
+
+	case exportFetchMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.exportError = msg.err.Error()
+			return m, nil
+		}
+		data, err := json.MarshalIndent(jira.IssuesToTicketJSON(msg.issues, m.domain), "", "  ")
+		if err != nil {
+			return m, nil
+		}
+		copyFn := m.exportCopy
+		if copyFn == nil {
+			copyFn = clipboard.WriteAll
+		}
+		request, ctx := msg.request, m.exportContext
+		return m, func() tea.Msg {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return exportClipboardMsg{request: request, err: copyFn(string(data))}
+		}
+
+	case exportClipboardMsg:
+		if m.view != viewExport || msg.request != m.exportRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.toast = "Clipboard error: " + msg.err.Error()
+			return m, nil
+		}
+		m.toast = "Export copied to clipboard"
+		return m, nil
+
 	case boardsMsg:
 		m.boards = msg.boards
 		return m, nil
@@ -917,6 +1045,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.createSummary.Blur()
 		m.createDesc.Blur()
+		m.createParent.Blur()
 		m.view = viewKanban
 		m.focusIssue = msg.key
 		switch {
@@ -974,14 +1103,238 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, loadCmd := m.startBoardLoad(board)
 		return loaded, tea.Batch(loadCmd, clearToastAfter(3*time.Second))
 
+	case timeReportMsg:
+		if m.view != viewTimeReport || msg.request != m.timeReportRequest {
+			return m, nil
+		}
+		m.timeReportLoading = false
+		if msg.err == nil {
+			m.timeReportResult = &msg.result
+		} else {
+			m.timeReportResult = nil
+			m.timeReportError = msg.err.Error()
+		}
+		return m, nil
+
+	case userSearchMsg:
+		if m.view != viewUserSearch || msg.request != m.userSearchRequest {
+			return m, nil
+		}
+		if m.userSearchCancel != nil {
+			m.userSearchCancel()
+			m.userSearchCancel = nil
+		}
+		if msg.err != nil {
+			m.userSearchError = msg.err.Error()
+			m.userSearchResult = reporting.UserSearchResult{}
+			return m, nil
+		}
+		m.userSearchResult = msg.result
+		return m, nil
+
 	case tea.KeyPressMsg:
 		switch m.view {
+		case viewExport:
+			if msg.String() == "ctrl+c" {
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportRequest++
+				return m, tea.Quit
+			}
+			if m.exportSelectingBoard {
+				if msg.String() == "esc" {
+					m.exportSelectingBoard = false
+					return m, nil
+				}
+				if msg.String() == "enter" {
+					if id, err := strconv.Atoi(m.exportBoardInput); err == nil && id > 0 {
+						m.exportBoardID = id
+						m.exportSelectingBoard = false
+						m.exportError = ""
+						if !m.exportSprintExplicit {
+							m.exportSprintID = 0
+						}
+						m.exportDiscoveryFailed = false
+						m.exportResolving = true
+						m.exportRequest++
+						request, fetch := m.exportRequest, m.exportSprints
+						return m, func() tea.Msg {
+							if fetch == nil {
+								fetch = m.client.GetSprints
+							}
+							sprints, err := fetch(id)
+							return exportSprintsMsg{request: request, sprints: sprints, err: err}
+						}
+					} else {
+						m.exportError = "Enter a positive board ID"
+					}
+				} else if msg.String() == "backspace" && len(m.exportBoardInput) > 0 {
+					m.exportBoardInput = m.exportBoardInput[:len(m.exportBoardInput)-1]
+				} else if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
+					m.exportBoardInput += msg.String()
+				} else if len(msg.String()) == 1 {
+					m.exportError = "Board ID: digits only"
+				}
+				return m, nil
+			}
+			if m.exportSelectingSprint {
+				if msg.String() == "esc" {
+					m.exportSelectingSprint = false
+					return m, nil
+				}
+				if msg.String() == "enter" {
+					if id, err := strconv.Atoi(m.exportSprintInput); err == nil && id > 0 {
+						m.exportSprintID = id
+						m.exportSprintExplicit = true
+						if m.exportResolving {
+							m.exportRequest++
+						}
+						m.exportResolving = false
+						m.exportDiscoveryFailed = false
+						m.exportError = ""
+						m.exportSelectingSprint = false
+					} else {
+						m.exportError = "Enter a positive sprint ID"
+					}
+				} else if msg.String() == "backspace" && len(m.exportSprintInput) > 0 {
+					m.exportSprintInput = m.exportSprintInput[:len(m.exportSprintInput)-1]
+				} else if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
+					m.exportSprintInput += msg.String()
+				} else if len(msg.String()) == 1 {
+					m.exportError = "Sprint ID: digits only"
+				}
+			} else if msg.String() == "a" {
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportRequest++
+				m.exportResolving = false
+				m.exportDiscoveryFailed = false
+				m.exportSprintID = 0
+				m.exportSprintExplicit = true
+				m.exportError = ""
+				m.toast = ""
+			} else if msg.String() == "b" {
+				m.toast = ""
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				if !m.exportResolving {
+					m.exportRequest++
+				}
+				m.exportBoardInput = ""
+				m.exportSelectingBoard = true
+			} else if msg.String() == "s" {
+				m.toast = ""
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				if !m.exportResolving {
+					m.exportRequest++
+				}
+				m.exportSprintInput = ""
+				m.exportSelectingSprint = true
+			} else if msg.String() == "enter" {
+				if m.exportResolving || m.exportDiscoveryFailed {
+					return m, nil
+				}
+				m.exportError = ""
+				m.toast = ""
+				fetch := m.exportFetch
+				if fetch == nil {
+					fetch = m.client.GetBoardIssues
+				}
+				board, sprint := m.boards[m.boardCur].ID, m.exportSprintID
+				if m.exportBoardID > 0 {
+					board = m.exportBoardID
+				}
+				m.exportRequest++
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.exportContext, m.exportCancel = context.WithCancel(context.Background())
+				request := m.exportRequest
+				return m, func() tea.Msg {
+					issues, err := fetch(board, sprint)
+					return exportFetchMsg{request: request, issues: issues, err: err}
+				}
+			}
+			if msg.String() == "esc" {
+				m.exportRequest++
+				if m.exportCancel != nil {
+					m.exportCancel()
+				}
+				m.view = viewKanban
+			}
+			return m, nil
 		case viewAssign:
 			return m.updateAssignment(msg)
 		case viewDeleteConfirm:
 			return m.updateDeleteConfirm(msg)
 		case viewSprintChoose:
 			return m.updateSprintChoose(msg)
+		case viewTimeReport:
+			if m.timeReportResult != nil || m.timeReportError != "" {
+				switch msg.String() {
+				case "down":
+					m.timeReportScroll++
+					return m, nil
+				case "up":
+					if m.timeReportScroll > 0 {
+						m.timeReportScroll--
+					}
+					return m, nil
+				}
+			}
+			if msg.String() == "esc" {
+				if m.timeReportCancel != nil {
+					m.timeReportCancel()
+					m.timeReportCancel = nil
+				}
+				m.timeReportRequest++
+				m.view = viewBoards
+				return m, nil
+			}
+			if msg.String() == "enter" {
+				filters := reporting.TimeFilters{AccountID: m.timeReportInputs[0].Value(), Project: m.timeReportInputs[1].Value(), From: m.timeReportInputs[2].Value(), To: m.timeReportInputs[3].Value(), Timezone: m.timeReportInputs[4].Value()}
+				if err := reporting.ValidateTimeFilters(filters); err != nil {
+					if m.timeReportCancel != nil {
+						m.timeReportCancel()
+						m.timeReportCancel = nil
+					}
+					m.timeReportRequest++
+					m.timeReportLoading = false
+					m.timeReportResult = nil
+					m.timeReportScroll = 0
+					m.timeReportError = err.Error()
+					return m, nil
+				}
+				m.timeReportResult = nil
+				m.timeReportError = ""
+				m.timeReportLoading = true
+				client := m.client
+				if m.timeReportCancel != nil {
+					m.timeReportCancel()
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.timeReportCancel = cancel
+				m.timeReportRequest++
+				request := m.timeReportRequest
+				return m, func() tea.Msg {
+					result, err := reporting.TimeReport(ctx, client, filters)
+					return timeReportMsg{request: request, result: result, err: err}
+				}
+			}
+			if msg.String() == "tab" {
+				m.timeReportInputs[m.timeReportFocus].Blur()
+				m.timeReportFocus = (m.timeReportFocus + 1) % len(m.timeReportInputs)
+				m.timeReportInputs[m.timeReportFocus].Focus()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.timeReportInputs[m.timeReportFocus], cmd = m.timeReportInputs[m.timeReportFocus].Update(msg)
+			return m, cmd
 		case viewBoards:
 			return m.updateBoards(msg)
 		case viewKanban:
@@ -996,6 +1349,53 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewSearch:
 			return m.updateSearch(msg)
+		case viewUserSearch:
+			switch msg.String() {
+			case "ctrl+c":
+				m = m.invalidateUserSearch()
+				return m, tea.Quit
+			case "esc":
+				m = m.invalidateUserSearch()
+				m.view = m.userSearchReturn
+				return m, nil
+			case "down":
+				if m.userSearchCursor+1 < len(m.userSearchResult.Candidates) {
+					m.userSearchCursor++
+				}
+				return m, nil
+			case "up":
+				if m.userSearchCursor > 0 {
+					m.userSearchCursor--
+				}
+				return m, nil
+			}
+			if msg.String() == "enter" {
+				query := m.userSearchInput.Value()
+				if err := reporting.ValidateUserQuery(query); err != nil {
+					m.userSearchError = err.Error()
+					return m, nil
+				}
+				m.userSearchError = ""
+				m.userSearchResult = reporting.UserSearchResult{}
+				if m.userSearchCancel != nil {
+					m.userSearchCancel()
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				m.userSearchCancel = cancel
+				m.userSearchRequest++
+				request, client := m.userSearchRequest, m.client
+				return m, func() tea.Msg {
+					result, err := reporting.SearchUsers(ctx, client, query)
+					return userSearchMsg{request: request, result: result, err: err}
+				}
+			}
+			before := m.userSearchInput.Value()
+			var cmd tea.Cmd
+			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
+			if before != m.userSearchInput.Value() {
+				m = m.invalidateUserSearch()
+			}
+			return m, cmd
 		case viewDescriptionEdit:
 			return m.updateDescriptionEdit(msg)
 		case viewFieldsEdit:
@@ -1006,6 +1406,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		switch m.view {
+		case viewUserSearch:
+			before := m.userSearchInput.Value()
+			var cmd tea.Cmd
+			m.userSearchInput, cmd = m.userSearchInput.Update(msg)
+			if before != m.userSearchInput.Value() {
+				m = m.invalidateUserSearch()
+			}
+			return m, cmd
 		case viewBasicsEdit:
 			return m.pasteBasics(msg)
 		case viewAssign:
@@ -1024,6 +1432,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.createSummary, cmd = m.createSummary.Update(msg)
 			case 2:
 				m.createDesc, cmd = m.createDesc.Update(msg)
+			case 3:
+				m.createParent, cmd = m.createParent.Update(msg)
 			}
 			return m, cmd
 		case viewKanban:
@@ -1034,6 +1444,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		case viewSearch:
+			if m.searchLimitEditing {
+				var cmd tea.Cmd
+				m.searchLimitInput, cmd = m.searchLimitInput.Update(msg)
+				return m, cmd
+			}
 			if m.searchEditing {
 				var cmd tea.Cmd
 				m.searchInput, cmd = m.searchInput.Update(msg)
@@ -1060,6 +1475,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "r":
+		for i := range m.timeReportInputs {
+			m.timeReportInputs[i] = textinput.New()
+		}
+		m.timeReportFocus = 0
+		m.timeReportScroll = 0
+		m.timeReportError = ""
+		m.timeReportLoading = false
+		m.timeReportResult = nil
+		m.timeReportInputs[0].Focus()
+		m.view = viewTimeReport
+		return m, nil
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up", "k":
@@ -1080,6 +1507,8 @@ func (m Model) updateBoards(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		return m.openSearchInput()
+	case "u":
+		return m.openUserSearch()
 	}
 	return m, nil
 }
@@ -1121,6 +1550,7 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.filterInput.Blur()
 			m.filterActive = false
+			m.searchJQL = false
 			return m.startSearch(query)
 		default:
 			var cmd tea.Cmd
@@ -1240,6 +1670,29 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "s":
 		return m.openSearchInput()
+	case "u":
+		return m.openUserSearch()
+	case "E":
+		if m.boardCur >= 0 && m.boardCur < len(m.boards) && m.loadedBoardRequest != 0 {
+			m.exportSprintID = 0
+			m.exportSprintExplicit = false
+			m.exportBoardID = 0
+			m.exportError = ""
+			m.exportDiscoveryFailed = false
+			m.exportSelectingSprint = false
+			m.view = viewExport
+			m.exportResolving = true
+			m.exportRequest++
+			request, board, fetch := m.exportRequest, m.boards[m.boardCur].ID, m.exportSprints
+			return m, func() tea.Msg {
+				if fetch == nil {
+					fetch = m.client.GetSprints
+				}
+				sprints, err := fetch(board)
+				return exportSprintsMsg{request: request, sprints: sprints, err: err}
+			}
+		}
+		return m, nil
 	case "o":
 		if m.colCur < len(cols) {
 			issues := cols[m.colCur].issues
@@ -2005,6 +2458,28 @@ func (m Model) visibleColumns() []column {
 	return cols
 }
 
+func (m Model) invalidateUserSearch() Model {
+	if m.userSearchCancel != nil {
+		m.userSearchCancel()
+		m.userSearchCancel = nil
+	}
+	m.userSearchRequest++
+	m.userSearchResult = reporting.UserSearchResult{}
+	m.userSearchCursor = 0
+	m.userSearchError = ""
+	return m
+}
+
+func (m Model) openUserSearch() (tea.Model, tea.Cmd) {
+	m.userSearchReturn = m.view
+	m.userSearchResult = reporting.UserSearchResult{}
+	m.userSearchInput = textinput.New()
+	m.userSearchInput.Focus()
+	m.userSearchError = ""
+	m.view = viewUserSearch
+	return m, textinput.Blink
+}
+
 func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	returnView := m.view
 	if returnView != viewBoards {
@@ -2015,6 +2490,7 @@ func (m Model) openSearchInput() (tea.Model, tea.Cmd) {
 	input.SetWidth(50)
 	input.Focus()
 	m.searchInput = input
+	m.searchJQL = false
 	m.searchQuery = ""
 	m.searchEditing = true
 	m.searchResults = nil
@@ -2036,12 +2512,17 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	}
 	if m.searchInput.Value() != query {
 		input := textinput.New()
+		input.Placeholder = "Jira text search"
+		if m.searchJQL {
+			input.Placeholder = "Jira JQL search"
+		}
 		input.SetWidth(50)
 		input.SetValue(query)
 		m.searchInput = input
 	}
 	m.searchInput.Blur()
 	m.searchQuery = query
+	m.searchResultJQL = m.searchJQL
 	m.searchEditing = false
 	m.searchResults = nil
 	m.searchCur = 0
@@ -2055,8 +2536,19 @@ func (m Model) startSearch(query string) (tea.Model, tea.Cmd) {
 	m.activeSearchRequest = requestID
 	m.view = viewSearch
 	client := m.client
+	jql := m.searchJQL
+	limit := m.searchLimit
+	if limit == 0 {
+		limit = 50
+	}
 	return m, func() tea.Msg {
-		result, err := client.SearchText(query, 50)
+		var result jira.SearchResult
+		var err error
+		if jql {
+			result, err = client.SearchJQL(query, limit)
+		} else {
+			result, err = client.SearchText(query, limit)
+		}
 		return searchMsg{requestID: requestID, issues: result.Issues, truncated: result.Truncated, estimated: result.EstimatedTotal, err: err}
 	}
 }
@@ -2076,6 +2568,43 @@ func (m Model) exitSearch() Model {
 
 func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.searchLimitEditing {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.searchLimitEditing = false
+			return m, nil
+		case "enter":
+			value := strings.TrimSpace(m.searchLimitInput.Value())
+			all := strings.EqualFold(value, "all")
+			n, err := strconv.Atoi(value)
+			if all {
+				n = 10000
+			}
+			if !all && (err != nil || n < 1 || n > 10000) {
+				m.searchLimitErr = "Invalid limit: enter 1–10000 or all"
+				return m, nil
+			}
+			m.searchLimit = n
+			m.searchLimitAll = all
+			m.searchLimitErr = ""
+			m.searchLimitEditing = false
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.searchLimitInput, cmd = m.searchLimitInput.Update(msg)
+			return m, cmd
+		}
+	}
+	if key == "ctrl+l" {
+		m.searchLimitErr = ""
+		m.searchLimitInput = textinput.New()
+		m.searchLimitInput.Placeholder = "50"
+		m.searchLimitInput.Focus()
+		m.searchLimitEditing = true
+		return m, textinput.Blink
+	}
 	if m.searchEditing {
 		switch key {
 		case "ctrl+c":
@@ -2084,15 +2613,34 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.searchInput.Blur()
 			m.searchEditing = false
 			if m.searchCompleted {
+				m.searchJQL = m.searchResultJQL
+				m.searchInput.Placeholder = "Jira text search"
+				if m.searchJQL {
+					m.searchInput.Placeholder = "Jira JQL search"
+				}
 				m.searchInput.SetValue(m.searchQuery)
 				return m, nil
 			}
 			m = m.exitSearch()
 			return m, nil
+		case "tab":
+			m.searchJQL = !m.searchJQL
+			m.searchInput.Placeholder = "Jira text search"
+			if m.searchJQL {
+				m.searchInput.Placeholder = "Jira JQL search"
+			}
+			if m.searchLoading {
+				m.searchLoading = false
+				m.activeSearchRequest = 0
+			}
+			return m, nil
 		case "enter":
-			query := strings.TrimSpace(m.searchInput.Value())
-			if query == "" {
+			query := m.searchInput.Value()
+			if strings.TrimSpace(query) == "" {
 				return m, nil
+			}
+			if !m.searchJQL {
+				query = strings.TrimSpace(query)
 			}
 			return m.startSearch(query)
 		default:
@@ -2177,9 +2725,14 @@ func (m Model) enterCreate() (tea.Model, tea.Cmd) {
 	m.createProject = project
 	m.createTypes = []string{"Task"} // replaced by createmeta when it lands
 	m.createTypeCur = 0
+	m.createTypeSelected = false
 	m.createField = 0
 	m.createSummary = sum
 	m.createDesc = desc
+	m.createParent = textinput.New()
+	m.createParent.Placeholder = "optional issue key"
+	m.createParent.CharLimit = 128
+	m.createParent.SetWidth(40)
 	m.createErr = ""
 	m.view = viewCreate
 
@@ -2193,7 +2746,8 @@ func (m Model) enterCreate() (tea.Model, tea.Cmd) {
 func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
 	m.createSummary.Blur()
 	m.createDesc.Blur()
-	m.createField = (m.createField + step) % 3
+	m.createParent.Blur()
+	m.createField = (m.createField + step) % 4
 	var cmd tea.Cmd
 	switch m.createField {
 	case 1:
@@ -2201,6 +2755,9 @@ func (m Model) cycleCreateField(step int) (tea.Model, tea.Cmd) {
 		cmd = textinput.Blink
 	case 2:
 		m.createDesc.Focus()
+		cmd = textinput.Blink
+	case 3:
+		m.createParent.Focus()
 		cmd = textinput.Blink
 	}
 	return m, cmd
@@ -2213,12 +2770,13 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.createSummary.Blur()
 		m.createDesc.Blur()
+		m.createParent.Blur()
 		m.view = viewKanban
 		return m, nil
 	case "tab":
 		return m.cycleCreateField(1)
 	case "shift+tab":
-		return m.cycleCreateField(2)
+		return m.cycleCreateField(3)
 	case "enter":
 		return m.submitCreate()
 	}
@@ -2229,10 +2787,12 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "left", "up", "h", "k":
 			if m.createTypeCur > 0 {
 				m.createTypeCur--
+				m.createTypeSelected = true
 			}
 		case "right", "down", "l", "j":
 			if m.createTypeCur < len(m.createTypes)-1 {
 				m.createTypeCur++
+				m.createTypeSelected = true
 			}
 		}
 	case 1:
@@ -2243,9 +2803,15 @@ func (m Model) updateCreate(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.createDesc, cmd = m.createDesc.Update(msg)
 		return m, cmd
+	case 3:
+		var cmd tea.Cmd
+		m.createParent, cmd = m.createParent.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
+
+var createParentKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]*-[1-9][0-9]*$`)
 
 func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 	summary := strings.TrimSpace(m.createSummary.Value())
@@ -2253,9 +2819,21 @@ func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 		m.createErr = "Summary is required"
 		return m, nil
 	}
+	parent := m.createParent.Value()
+	if parent != "" && !createParentKey.MatchString(parent) {
+		m.createErr = "Parent must be a Jira issue key (e.g. ABC-123)"
+		return m, nil
+	}
 	issueType := "Task"
 	if m.createTypeCur < len(m.createTypes) {
 		issueType = m.createTypes[m.createTypeCur]
+	}
+	if parent != "" {
+		if m.createTypeSelected && issueType != "Sub-task" {
+			m.createErr = "Parent requires issue type Sub-task"
+			return m, nil
+		}
+		issueType = "Sub-task"
 	}
 	var doc *jira.ADFDoc
 	if d := strings.TrimSpace(m.createDesc.Value()); d != "" {
@@ -2265,9 +2843,18 @@ func (m Model) submitCreate() (tea.Model, tea.Cmd) {
 	client := m.client
 	project := m.createProject
 	sprintID := m.sprintID
+	if parent != "" {
+		sprintID = 0
+	}
 	m.createErr = ""
 	return m, func() tea.Msg {
-		key, err := client.CreateIssue(project, issueType, summary, doc)
+		var key string
+		var err error
+		if parent != "" {
+			key, err = client.CreateIssueWithParent(project, issueType, summary, doc, parent)
+		} else {
+			key, err = client.CreateIssue(project, issueType, summary, doc)
+		}
 		if err != nil {
 			return createdMsg{err: err}
 		}
@@ -2299,6 +2886,65 @@ func (m Model) View() tea.View {
 	var b strings.Builder
 
 	switch m.view {
+	case viewExport:
+		board := m.boards[m.boardCur]
+		if m.exportBoardID == 0 {
+			fmt.Fprintf(&b, "Export\nBoard: %s (id=%d)\n", board.Name, board.ID)
+		} else {
+			fmt.Fprintf(&b, "Export\nBoard ID: %d\n", m.exportBoardID)
+		}
+		if m.exportResolving {
+			b.WriteString("Resolving default sprint...\n")
+		} else if m.exportDiscoveryFailed {
+			b.WriteString("Default sprint unresolved\n")
+		} else if m.exportSprintID == 0 {
+			b.WriteString("All board issues\n")
+		} else {
+			fmt.Fprintf(&b, "Sprint: %d\n", m.exportSprintID)
+		}
+		if m.exportSelectingSprint {
+			fmt.Fprintf(&b, "Sprint ID: %s\n", m.exportSprintInput)
+		}
+		if m.exportSelectingBoard {
+			fmt.Fprintf(&b, "Board ID: %s\n", m.exportBoardInput)
+		}
+		b.WriteString("sprint discovery completeness unknown.\nExport completeness unknown; retrieval has a 2000-issue safety threshold.\n[b] Board ID  [s] Sprint ID  [a] All board  [Enter] Copy JSON  [Esc] Back\n")
+		if m.exportError != "" {
+			fmt.Fprintf(&b, "Error: %s\n", m.exportError)
+		}
+	case viewTimeReport:
+		if m.timeReportResult != nil {
+			fmt.Fprintf(&b, "Total: %d seconds\n", m.timeReportResult.TotalSeconds)
+			for _, row := range m.timeReportResult.Rows {
+				fmt.Fprintf(&b, "%s: %d seconds\n", row.Key, row.Seconds)
+			}
+			if m.timeReportResult.Complete {
+				b.WriteString("complete\n")
+			} else {
+				b.WriteString("partial\n")
+			}
+			for _, warning := range m.timeReportResult.Warnings {
+				fmt.Fprintln(&b, warning)
+			}
+		}
+		if m.timeReportResult == nil {
+			if m.timeReportLoading {
+				b.WriteString("Loading report...\n")
+			}
+			if m.timeReportError != "" {
+				b.WriteString(m.timeReportError + "\n")
+			}
+			b.WriteString("Time report\nAccount ID: " + m.timeReportInputs[0].Value() + "\nProject: " + m.timeReportInputs[1].Value() + "\nFrom: " + m.timeReportInputs[2].Value() + "\nTo: " + m.timeReportInputs[3].Value() + "\nTimezone: " + m.timeReportInputs[4].Value())
+		}
+		if m.height > 0 && (m.timeReportResult != nil || m.timeReportError != "") {
+			content := strings.TrimRight(b.String(), "\n")
+			if m.width > 0 {
+				content = ansi.Wrap(content, m.width, "")
+			}
+			lines := strings.Split(content, "\n")
+			start := min(m.timeReportScroll, max(0, len(lines)-m.height))
+			return altScreenView(strings.Join(lines[start:min(start+m.height, len(lines))], "\n"))
+		}
 	case viewBoards:
 		header, indent := m.boardsHeader()
 		pad := strings.Repeat(" ", indent)
@@ -2309,7 +2955,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n\n")
 		}
 		if len(m.boards) == 0 {
-			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards..."))
+			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards...\n[r] Time report"))
 			return altScreenView(b.String())
 		}
 		for i, board := range m.boards {
@@ -2337,7 +2983,7 @@ func (m Model) View() tea.View {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
-		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [q] Quit"
+		hint := "[↑↓] Navigate  [Enter] Select  [s] Search  [u] User search  [r] Time report  [q] Quit"
 		if m.width > 0 {
 			hint = ansi.Truncate(hint, max(m.width-indent, 1), "…")
 		}
@@ -2416,7 +3062,10 @@ func (m Model) View() tea.View {
 		if m.createTypeCur < len(m.createTypes) {
 			cur = m.createTypes[m.createTypeCur]
 		}
-		fields := []string{"Type", "Summary", "Description"}
+		if m.createParent.Value() != "" && !m.createTypeSelected {
+			cur = "Sub-task"
+		}
+		fields := []string{"Type", "Summary", "Description", "Parent"}
 		for i, label := range fields {
 			marker := "  "
 			if i == m.createField {
@@ -2434,12 +3083,16 @@ func (m Model) View() tea.View {
 				line = m.createSummary.View()
 			case 2:
 				line = m.createDesc.View()
+			case 3:
+				line = m.createParent.View()
 			}
 			b.WriteString(lipgloss.NewStyle().Bold(i == m.createField).Render(marker+padRight(label+":", 14)) + line + "\n")
 		}
 		b.WriteString("\n")
 
-		if m.sprintID > 0 {
+		if m.createParent.Value() != "" {
+			b.WriteString(subStyle.Render("Sub-task uses its parent; no separate sprint placement"))
+		} else if m.sprintID > 0 {
 			b.WriteString(subStyle.Render("Enter creates it directly in sprint: " + m.sprintName))
 		} else {
 			b.WriteString(subStyle.Render("No active sprint — the ticket will land in the backlog"))
@@ -2454,6 +3107,34 @@ func (m Model) View() tea.View {
 
 	case viewSearch:
 		b.WriteString(m.renderSearch())
+
+	case viewUserSearch:
+		b.WriteString(titleStyle.Render("User search") + "\n" + m.userSearchInput.View() + "\n" + m.userSearchError + "\n[Enter] Search  [↑↓] Results  [Esc] Back")
+		if m.userSearchCancel != nil {
+			b.WriteString("\nSearching users...")
+		}
+		if m.userSearchResult.Completeness != "" {
+			fmt.Fprintf(&b, "\nCompleteness: %s", m.userSearchResult.Completeness)
+			if len(m.userSearchResult.Candidates) == 0 {
+				b.WriteString("\nNo users found")
+			}
+			for _, warning := range m.userSearchResult.Warnings {
+				fmt.Fprintf(&b, "\nWarning: %s", warning)
+			}
+		}
+		pageSize := 10
+		if m.height > 0 {
+			pageSize = max(1, m.height-8-len(m.userSearchResult.Warnings))
+		}
+		start := (m.userSearchCursor / pageSize) * pageSize
+		for i := start; i < min(start+pageSize, len(m.userSearchResult.Candidates)); i++ {
+			user := m.userSearchResult.Candidates[i]
+			marker := "  "
+			if i == m.userSearchCursor {
+				marker = "→ "
+			}
+			fmt.Fprintf(&b, "\n%s%s · %s · active: %t", marker, user.DisplayName, user.AccountID, user.Active)
+		}
 
 	case viewFieldsEdit:
 		background := m.renderKanban()
@@ -2511,13 +3192,37 @@ func (m Model) renderSearch() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("🔎 Jira Search"))
 	b.WriteString("\n\n")
+	mode := "Text"
+	if m.searchJQL {
+		mode = "JQL"
+	}
+	b.WriteString("Mode: " + mode + "  [Tab] switch\n")
+	limit := m.searchLimit
+	if limit == 0 {
+		limit = 50
+	}
+	if m.searchLimitEditing {
+		b.WriteString("Limit: " + m.searchLimitInput.View() + " [Enter] apply  [esc] cancel\n")
+		b.WriteString(subStyle.Render("Enter 1–10000 or all (max 10000).") + "\n")
+		if m.searchLimitErr != "" {
+			b.WriteString(errStyle.Render(m.searchLimitErr) + "\n")
+		}
+	} else if m.searchLimitAll {
+		b.WriteString("Limit: all (max 10000)  [ctrl+l] change for next search\n")
+	} else {
+		fmt.Fprintf(&b, "Limit: %d  [ctrl+l] change for next search\n", limit)
+	}
 	b.WriteString("Query: ")
 	b.WriteString(m.searchInput.View())
 	b.WriteString("\n\n")
 
 	switch {
 	case m.searchEditing:
-		b.WriteString(subStyle.Render("Type a text query, then press Enter."))
+		if m.searchJQL {
+			b.WriteString(subStyle.Render("Type a JQL query, then press Enter."))
+		} else {
+			b.WriteString(subStyle.Render("Type a text query, then press Enter."))
+		}
 	case m.searchLoading:
 		b.WriteString(subStyle.Render(m.spinnerPrefix() + "Searching Jira..."))
 	case m.searchErr != nil:
@@ -2529,7 +3234,7 @@ func (m Model) renderSearch() string {
 			shown := len(m.searchResults)
 			switch {
 			case m.searchTruncated && m.searchEstimated != nil:
-				_, _ = fmt.Fprintf(&b, "%d shown · ≥%d estimated\n\n", shown, *m.searchEstimated)
+				_, _ = fmt.Fprintf(&b, "%d shown · more results (about %d total)\n\n", shown, *m.searchEstimated)
 			case m.searchTruncated:
 				_, _ = fmt.Fprintf(&b, "%d shown · more results\n\n", shown)
 			default:

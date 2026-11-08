@@ -30,6 +30,23 @@ Repository instructions for coding agents working in this project.
 - All documentation, code comments, commit messages and GitHub issues are
   written in **English**.
 
+## Strict Test-Driven Development
+
+- Strict TDD is mandatory for all project behavior changes, without exception:
+  write a deterministic test for each behavior rule first, run it and observe it
+  fail for that specific missing behavior (RED), then implement the smallest
+  change and run it successfully (GREEN). Refactor only while tests remain green.
+- A failure caused only by a missing command, tool, or unrelated setup is not
+  evidence that a specific behavior rule is missing. Record the test command,
+  the relevant failure, and the subsequent passing result for each rule.
+- Test through the public interface with isolated state. Cover rejection paths
+  and confirm rejected mutations leave stored state and counters unchanged;
+  preserve existing behavior with regression tests.
+- If a meaningful deterministic RED or the required runner is unavailable, stop
+  and report the blocker. Do not implement first, invent evidence, or waive this
+  rule on your own. Documentation-only changes do not require a synthetic RED;
+  verify them structurally instead.
+
 ## Review Before Commit
 
 - Work stays **uncommitted in the working tree** until the user has seen it.

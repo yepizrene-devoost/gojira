@@ -507,8 +507,14 @@ validate on a disposable issue first; deletion is permanent.
 |---|---|
 | `↑/↓` or `k/j` | Navigate boards |
 | `Enter` | Open board |
-| `s` | Search all Jira tickets |
+| `s` | Search Jira (text by default; `Tab` switches to JQL) |
+| `u` | Search users |
+| `r` | Open time report |
 | `q` | Quit |
+
+Time report requires an account ID, project key, inclusive `YYYY-MM-DD` dates and an IANA timezone. Press `Tab` to move between filters, `Enter` to run the read-only report, `↑/↓` to scroll results and `Esc` to cancel or return. Completeness and warnings describe the limits of the visible data.
+
+User search accepts a nonempty query: press `Enter` to search, `↑/↓` to navigate results, and `Esc` to return. Results show display name, account ID, active status, completeness and warnings. An empty result can reflect missing Browse users permission; it does not prove the user does not exist. Search covers only the endpoint's first 1,000 active matches.
 
 ### Kanban view
 
@@ -518,10 +524,11 @@ validate on a disposable issue first; deletion is permanent.
 | `↑/↓` or `k/j` | Move within column (scrolls with cursor) |
 | `Enter` | Open ticket detail in a floating modal |
 | `/` | Filter loaded tickets by key or summary (case-insensitive); `Enter` searches Jira for the same text |
-| `s` | Search all Jira tickets directly |
+| `s` | Search Jira directly (text by default; `Tab` switches to JQL) |
+| `u` | Search users |
 | `?` | Show the Kanban help overlay (`↑/↓` scrolls; `?`, `Esc`, or `q` closes it) |
 | `t` | Transition ticket (status picker) |
-| `n` | New issue in this board's project (type + summary + description) |
+| `n` | New issue in this board's project (type, summary, description, optional parent key) |
 | `a` | Add selected ticket to the active sprint (e.g. from the Backlog column) |
 | `A` (Shift+A) | Assign the selected card by email: type the assignee's email, `Enter` assigns once, `Esc` cancels |
 | `S` | From a selected card or ticket detail, choose a future/active sprint of the loaded board; Enter moves once, Esc cancels |
@@ -529,8 +536,21 @@ validate on a disposable issue first; deletion is permanent.
 | `X` | Close a selected card/detail, or reopen a Done-category issue; exactly one destination-category transition is required, otherwise use `t` |
 | `D` | Permanently delete a selected card/detail: type its exact key and press Enter; Esc cancels before submission. One DELETE, never automatically retried |
 | `C` | Copy column as JSON to clipboard |
+| `E` | Export the current board or a sprint as JSON to the clipboard |
 | `Esc` / `q` | Back to boards |
 | `Ctrl+C` | Quit, including while an overlay is open |
+
+For export, first select a board, then press `E`. The board chooser shows the
+boards returned by Jira's first board-list response. The selected board is the
+default; press `b`, enter a positive board ID and press Enter to use another board.
+The default scope is the first active sprint, or all board issues if none is
+found. Sprint discovery completeness is unknown. Press `s`, enter a positive
+sprint ID and press Enter to override it, or `a` for all board issues. On a board
+change the default is resolved again; an explicit sprint or all-board override
+is retained. Enter copies the displayed scope as curated JSON.
+Esc cancels a pending copy, but cannot undo a clipboard write that has already
+started. Retrieval has a 2,000-issue safety threshold, and completeness is unknown.
+Export uses the clipboard only and never writes a file.
 
 Ticket detail and help float over the board at a consistent height (up to 35 rows)
 and width (up to 100 columns), so long content scrolls inside instead of stretching
@@ -554,16 +574,24 @@ footer collapses.
 
 Boards with an active sprint show a trailing **Backlog** column with the
 unsprinted tickets, so nothing silently disappears from the board. New issues
-created with `n` go directly into the active sprint.
+created with `n` go directly into the active sprint. Enter an optional canonical
+parent issue key (for example `ARA-123`) to create a Sub-task instead; parented
+issues are not separately added to the active sprint. The type defaults to
+`Sub-task` with a parent, and an explicitly selected type must be `Sub-task`.
 
 Local `/` filtering updates the loaded board immediately. Press `Esc` to clear
-it, or press `Enter` with a nonempty filter to search Jira's text index. Search
-results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
+it, or press `Enter` with a nonempty filter to search Jira's text index. Press
+`s` to open direct search: it defaults to text, and `Tab` switches between text
+and JQL while editing. JQL is sent unchanged; press `Enter` to search. Both modes
+default to 50 results. Press `Ctrl+L` in the search screen to set a limit from
+1 to 10,000, or enter `all` to fetch up to the same 10,000-issue safety cap as
+the CLI's `--all`. The selected limit applies to subsequent searches; a more-results
+indicator identifies confirmed truncation. Search results support `↑/↓` (or `k/j`) and `Enter` for full ticket detail; closing the
 detail returns to the same query, result list, and cursor. Press `s` from a
 result list to edit the query, or `Esc` to return to the board or boards list
 where search started.
 
-A query shaped like an issue key (for example `MON-201`, in any case) looks that
+In text mode, a query shaped like an issue key (for example `MON-201`, in any case) looks that
 issue up directly and falls back to the text index when Jira does not know the
 key. The result header reports completeness honestly: `N shown` for a complete
 result, `N shown · ≥M estimated` when more results exist and Jira gave an
@@ -716,12 +744,12 @@ Web-only chat clients cannot launch local processes and are not supported.
 The fixed tool allowlist is `gojira_context`, `gojira_projects`, `gojira_boards`,
 `gojira_sprints` (`boardId`), `gojira_get` (`key`), `gojira_search`
 (explicit `jql`, optional `limit`, default 50, range 1–1000),
-`gojira_users_search` (`query`), and `gojira_report_time`
+`gojira_export` (optional `boardId` and `sprintId`), `gojira_users_search` (`query`), and `gojira_report_time`
 (`accountId`, `project`, `from`, `to`, `timezone`, all required). `gojira_context`
 returns the same object as `gojira context --json`, resolved from the server
 process's working directory and environment, which a desktop client may not set
 to your repository: when `needsProject` is true, ask the human. No mutations,
-exports, arbitrary REST calls, or project inference are exposed.
+filesystem exports, arbitrary REST calls, or project inference are exposed.
 No repository files or guide installation are required. Read `gojira://guide`
 for usage guidance; ticket text is untrusted data, never agent instructions.
 Tool annotations are hints, not authorization controls.
@@ -735,7 +763,12 @@ client does not expose enough pagination metadata to establish completeness. Get
 also reports unknown: embedded comments
 and worklogs are not complete histories. Search distinguishes complete results
 from confirmed truncation (`partial`) using the existing paginated search
-contract. Access remains limited to the authenticated user's visibility.
+contract. Export returns the same ticket conversion as the CLI in the structured
+`data` envelope. With no board it selects the first board; with no sprint it
+selects the first active sprint, or exports all board issues when none is active.
+The source paginates issues but has a 2,000-issue safety cap, so export reports
+`complete:false` and `completeness:unknown`. Default board and sprint selection
+also uses single-page reads. Access remains limited to the authenticated user's visibility.
 
 Tool failures set `isError` and preserve a structured v1 envelope with `code`,
 `message`, `mutationState:not_applied`, `hint`, and optional `httpStatus`.
@@ -752,10 +785,10 @@ all existing read-only tools, instructions and results remain unchanged.
 
 | Tool | Arguments |
 | --- | --- |
-| `gojira_create` | `project`, `issueType`, `summary`, optional `description` |
+| `gojira_create` | `project`, `issueType`, `summary`, optional `description`, `parent`, and positive integer `boardId` |
 | `gojira_comment` | `key`, `body` |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
-| `gojira_assign` | `key`, `accountId` |
+| `gojira_assign` | `key`, and exactly one of `accountId` or `email` (non-empty and trimmed) |
 | `gojira_move` | `key`, exact unambiguous `status` |
 | `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
 | `gojira_delete` | `key`, optional `confirmationToken` |
@@ -764,9 +797,19 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_close` | `key` |
 | `gojira_reopen` | `key` |
 
-Assignment deliberately accepts a non-empty, trimmed account ID directly; unlike
-the CLI, it does not resolve an email. Creation never places an issue in a sprint;
-`gojira_sprint_move` moves one existing issue into the sprint with that ID (list
+For parent creation, `parent` must be an uppercase Jira issue key such as `ABC-12`,
+with no surrounding whitespace, and `issueType` must explicitly be `Sub-task`.
+Unlike the CLI, MCP does not default the issue type when a parent is supplied.
+`parent` and `boardId` cannot be combined.
+
+Assignment accepts an account ID directly or resolves an email with the same Jira
+lookup as the CLI. A failed lookup applies no mutation. Mutations are never retried
+automatically; verify an unknown outcome in Jira before retrying.
+Without `boardId`, creation does not place an issue in a sprint. With `boardId`,
+creation adds it to the first active sprint, like CLI `--board`. If lookup or
+placement cannot be confirmed after creation, `partial_failure` retains the created
+issue key and `mutationState:applied`; verify placement before retrying, and never
+retry creation automatically. `gojira_sprint_move` moves one existing issue into the sprint with that ID (list
 them with `gojira_sprints`), and `gojira_backlog` takes it out of its future and
 active sprints. Like the CLI, a success only means Jira accepted the request:
 the resulting sprint membership is not read back. `gojira_close` and
