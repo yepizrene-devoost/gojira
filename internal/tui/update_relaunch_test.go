@@ -41,7 +41,7 @@ func TestRelaunchRunsOnce(t *testing.T) {
 	relaunchSeam = func() error { calls++; return nil }
 	t.Cleanup(func() { relaunchSeam = prevSeam })
 	m := installedModel(t).finishUpdate()
-	m, cmd := updateModel(t, m, textKey("r"))
+	_, cmd := updateModel(t, m, textKey("r"))
 	if cmd == nil {
 		t.Fatal("r did not start the relaunch")
 	}
