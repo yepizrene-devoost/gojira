@@ -55,6 +55,14 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 			values[name] = string(raw)
 			continue
 		}
+		if slices.Contains(writeBooleanArgs[entry.action], name) {
+			var flag bool
+			if json.Unmarshal(raw, &flag) != nil {
+				return nil, name + " must be a boolean"
+			}
+			values[name] = strconv.FormatBool(flag)
+			continue
+		}
 		if slices.Contains(entry.integers, name) {
 			id, ok := positiveJiraID(raw)
 			if !ok {
@@ -122,6 +130,30 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	}
 	if account, ok := values["accountId"]; ok && strings.TrimSpace(account) != account {
 		return nil, "accountId must be trimmed"
+	}
+	if entry.action == "update_worklog" {
+		// Blank optional fields are dropped so an empty string never travels.
+		for _, name := range []string{"timeSpent", "comment"} {
+			if value, ok := values[name]; ok && strings.TrimSpace(value) == "" {
+				delete(values, name)
+			}
+		}
+		// S14d: clearing is content and conflicts with a replacement comment;
+		// both rules fire before any request is issued.
+		clears := values["clearComment"] == "true"
+		if clears {
+			if _, hasComment := values["comment"]; hasComment {
+				return nil, "clearComment cannot be combined with comment"
+			}
+		}
+		if _, hasTime := values["timeSpent"]; !hasTime {
+			if _, hasComment := values["comment"]; !hasComment && !clears {
+				return nil, "one of timeSpent, comment or clearComment is required"
+			}
+		}
+	}
+	if id, ok := values["worklogId"]; ok && strings.TrimSpace(id) != id {
+		return nil, "worklogId must be trimmed"
 	}
 	if spent, ok := values["timeSpent"]; ok && !writeTimePattern.MatchString(spent) {
 		return nil, "invalid timeSpent; use positive Jira durations such as 2h 30m"

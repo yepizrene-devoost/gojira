@@ -25,6 +25,8 @@ const (
 	pathIssueEditMeta          = "/rest/api/3/issue/%s/editmeta"
 	pathIssueTransitions       = "/rest/api/3/issue/%s/transitions"
 	pathIssueWorklog           = "/rest/api/3/issue/%s/worklog"
+	pathIssueWorklogAll        = "/rest/api/3/issue/%s/worklog?startAt=0&maxResults=1000"
+	pathIssueWorklogEntry      = "/rest/api/3/issue/%s/worklog/%s"
 	pathIssueComment           = "/rest/api/3/issue/%s/comment"
 	pathIssueAssign            = "/rest/api/3/issue/%s/assignee"
 	pathIssueAttachments       = "/rest/api/3/issue/%s/attachments"
@@ -72,6 +74,12 @@ func ValidateCustomFieldID(fieldID string) error {
 
 func issuePath(path, key string) string {
 	return fmt.Sprintf(path, url.PathEscape(key))
+}
+
+// worklogEntryPath addresses one worklog of an issue. Both segments are escaped
+// so an id can never alter the path shape.
+func worklogEntryPath(key, worklogID string) string {
+	return fmt.Sprintf(pathIssueWorklogEntry, url.PathEscape(key), url.PathEscape(worklogID))
 }
 
 func pathIssueWithFields(key, fields string) string {

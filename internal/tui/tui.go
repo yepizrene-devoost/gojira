@@ -171,6 +171,9 @@ const (
 	viewDetail
 	viewTransition
 	viewWorklog
+	viewWorklogList
+	viewWorklogEdit
+	viewWorklogDelete
 	viewCreate
 	viewSearch
 	viewUserSearch
@@ -285,6 +288,18 @@ type Model struct {
 	worklogIssue                  string
 	nextWorklogRequest            uint64
 	activeWorklogRequest          uint64
+	worklogList                   []jira.Worklog
+	worklogCur                    int
+	worklogTarget                 jira.Worklog
+	nextWorklogListRequest        uint64
+	activeWorklogListRequest      uint64
+	worklogListLoading            bool
+	worklogEditInputs             [2]textinput.Model
+	worklogEditFocus              int
+	worklogMutationBusy           bool
+	nextWorklogMutationRequest    uint64
+	activeWorklogMutationRequest  uint64
+	worklogMutationWarning        error
 	attachInput                   textinput.Model
 	attachIssue                   string
 	nextAttachRequest             uint64
@@ -428,6 +443,25 @@ type worklogDoneMsg struct {
 	requestID uint64
 	issueKey  string
 	err       error
+}
+
+// worklogListMsg carries one S15 collection read of the worklog list.
+type worklogListMsg struct {
+	request  uint64
+	issueKey string
+	worklogs []jira.Worklog
+	err      error
+}
+
+type worklogMutationDoneMsg struct {
+	request   uint64
+	issueKey  string
+	worklogID string
+	action    string
+	err       error
+	// warning carries the S12 post-update verification result when the
+	// mutation succeeded; it is not an update failure.
+	warning error
 }
 type attachDoneMsg struct {
 	requestID uint64
@@ -897,6 +931,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.detailLoading = false
+		// Consume a pending worklog verification warning so the successful
+		// refetch shows it instead of wiping it with a plain nil.
+		pendingWarning := m.worklogMutationWarning
+		m.worklogMutationWarning = nil
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -904,7 +942,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.issue == nil || msg.issue.Key != msg.issueKey {
 			return m, nil
 		}
-		m.err = nil
+		m.err = pendingWarning
 		m.detail = msg.issue
 		m.detailScroll = 0
 		return m, nil
@@ -997,6 +1035,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		loaded, cmd := m.startBoardLoad(m.boards[m.boardCur])
 		return loaded, cmd
 
+	case worklogListMsg:
+		if m.view != viewWorklogList || msg.request == 0 || msg.request != m.activeWorklogListRequest ||
+			msg.issueKey == "" || msg.issueKey != m.worklogIssue {
+			return m, nil
+		}
+		m.activeWorklogListRequest = 0
+		m.worklogListLoading = false
+		m.worklogList = nil
+		m.err = nil
+		if msg.err != nil {
+			// S15: a failed read surfaces inside the list; it never closes
+			// the view and never falls back to the embedded page.
+			m.err = msg.err
+			return m, nil
+		}
+		m.worklogList = msg.worklogs // Jira's order is authoritative; no sorting.
+		m.worklogCur = 0
+		return m, nil
+
 	case worklogDoneMsg:
 		if m.view != viewWorklog || msg.requestID == 0 || msg.requestID != m.activeWorklogRequest ||
 			msg.issueKey == "" || msg.issueKey != m.worklogIssue || m.detail == nil || msg.issueKey != m.detail.Key {
@@ -1011,6 +1068,31 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.toast = "Worklog added"
 		return m, clearToastAfter(3 * time.Second)
+
+	case worklogMutationDoneMsg:
+		if m.view != viewWorklogEdit && m.view != viewWorklogDelete {
+			return m, nil
+		}
+		if msg.request == 0 || msg.request != m.activeWorklogMutationRequest ||
+			m.detail == nil || msg.issueKey == "" || msg.issueKey != m.detail.Key {
+			return m, nil
+		}
+		m.activeWorklogMutationRequest = 0
+		m.worklogMutationBusy = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.err = msg.warning
+		m.worklogMutationWarning = msg.warning
+		m.view = viewDetail
+		if msg.action == "delete" {
+			m.toast = "Worklog deleted"
+		} else {
+			m.toast = "Worklog updated"
+		}
+		refreshed, refresh := m.reloadDetail()
+		return refreshed, tea.Batch(refresh, clearToastAfter(3*time.Second))
 
 	case attachDoneMsg:
 		if m.view != viewAttach || msg.requestID == 0 || msg.requestID != m.activeAttachRequest ||
@@ -1430,6 +1512,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTransition(msg)
 		case viewWorklog:
 			return m.updateWorklog(msg)
+		case viewWorklogList:
+			return m.updateWorklogList(msg)
+		case viewWorklogEdit:
+			return m.updateWorklogEdit(msg)
+		case viewWorklogDelete:
+			return m.updateWorklogDelete(msg)
 		case viewAttach:
 			return m.updateAttach(msg)
 		case viewCreate:
@@ -2055,6 +2143,28 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = viewWorklog
 			return m, textinput.Blink
 		}
+	case "W":
+		if m.detail != nil {
+			// S15: the list is read from the full collection, not from the
+			// embedded page of the ticket read, so it starts empty and loads.
+			m.worklogList = nil
+			m.worklogCur = 0
+			m.worklogMutationBusy = false
+			m.activeWorklogMutationRequest = 0
+			m.worklogIssue = m.detail.Key
+			m.err = nil
+			m.worklogListLoading = true
+			m.nextWorklogListRequest++
+			request := m.nextWorklogListRequest
+			m.activeWorklogListRequest = request
+			key := m.worklogIssue
+			client := m.client
+			m.view = viewWorklogList
+			return m, func() tea.Msg {
+				worklogs, err := client.GetAllWorklogs(key)
+				return worklogListMsg{request: request, issueKey: key, worklogs: worklogs, err: err}
+			}
+		}
 	case "f":
 		if m.detail != nil && !m.detailLoading {
 			ti := textinput.New()
@@ -2597,6 +2707,169 @@ func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.worklogInput, cmd = m.worklogInput.Update(msg)
 		}
 		return m, cmd
+	}
+}
+
+// updateWorklogList selects one of the issue's worklogs to edit or delete.
+func (m Model) updateWorklogList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		// esc returns to the detail modal and drops the pending reply.
+		m.activeWorklogListRequest = 0
+		m.worklogListLoading = false
+		m.err = nil
+		m.view = viewDetail
+		return m, nil
+	case "up", "k":
+		if m.worklogCur > 0 {
+			m.worklogCur--
+		}
+		return m, nil
+	case "down", "j":
+		if m.worklogCur < len(m.worklogList)-1 {
+			m.worklogCur++
+		}
+		return m, nil
+	case "e":
+		if m.worklogCur < 0 || m.worklogCur >= len(m.worklogList) {
+			return m, nil
+		}
+		m.worklogTarget = m.worklogList[m.worklogCur]
+		timeInput := textinput.New()
+		timeInput.Placeholder = "e.g. 30m, 2h, 1d"
+		timeInput.CharLimit = 20
+		timeInput.SetValue(m.worklogTarget.TimeSpent)
+		timeInput.Focus()
+		commentInput := textinput.New()
+		commentInput.Placeholder = "optional comment"
+		commentInput.CharLimit = 500
+		commentInput.SetValue(m.worklogTarget.Comment)
+		m.worklogEditInputs = [2]textinput.Model{timeInput, commentInput}
+		m.worklogEditFocus = 0
+		m.worklogMutationBusy = false
+		m.activeWorklogMutationRequest = 0
+		m.err = nil
+		m.view = viewWorklogEdit
+		return m, textinput.Blink
+	case "d":
+		if m.worklogCur < 0 || m.worklogCur >= len(m.worklogList) {
+			return m, nil
+		}
+		m.worklogTarget = m.worklogList[m.worklogCur]
+		m.worklogMutationBusy = false
+		m.activeWorklogMutationRequest = 0
+		m.err = nil
+		m.view = viewWorklogDelete
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateWorklogEdit rewrites one worklog. Ctrl+S submits once; a blank duration
+// never reaches Jira.
+func (m Model) updateWorklogEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.activeWorklogMutationRequest = 0
+		m.worklogMutationBusy = false
+		m.err = nil
+		m.view = viewWorklogList
+		return m, nil
+	case "tab", "shift+tab":
+		m.worklogEditInputs[m.worklogEditFocus].Blur()
+		m.worklogEditFocus = 1 - m.worklogEditFocus
+		m.worklogEditInputs[m.worklogEditFocus].Focus()
+		return m, nil
+	case "ctrl+s":
+		if m.worklogMutationBusy {
+			return m, nil
+		}
+		timeSpent := strings.TrimSpace(m.worklogEditInputs[0].Value())
+		if timeSpent == "" {
+			m.err = errors.New("time spent is required")
+			return m, nil
+		}
+		comment := strings.TrimSpace(m.worklogEditInputs[1].Value())
+		// S14: the comment field is prefilled, so emptying it is a deliberate
+		// clear. One PUT carries the duration and the null comment together;
+		// an already-empty comment keeps the plain update.
+		clearComment := comment == "" && strings.TrimSpace(m.worklogTarget.Comment) != ""
+		key, worklogID := m.worklogIssue, m.worklogTarget.ID
+		m.worklogMutationBusy = true
+		m.nextWorklogMutationRequest++
+		request := m.nextWorklogMutationRequest
+		m.activeWorklogMutationRequest = request
+		client := m.client
+		return m, func() tea.Msg {
+			var err error
+			if clearComment {
+				err = client.UpdateWorklogAndClearComment(key, worklogID, timeSpent)
+			} else {
+				err = client.UpdateWorklog(key, worklogID, timeSpent, comment)
+			}
+			// S12: once the update is accepted, re-read the entry so a
+			// duration Jira did not keep travels with the same message.
+			var warning error
+			if err == nil && timeSpent != "" {
+				warning = client.VerifyWorklogUpdate(key, worklogID, timeSpent)
+			}
+			return worklogMutationDoneMsg{request: request, issueKey: key, worklogID: worklogID, action: "update", err: err, warning: warning}
+		}
+	default:
+		var cmd tea.Cmd
+		m.worklogEditInputs[m.worklogEditFocus], cmd = m.worklogEditInputs[m.worklogEditFocus].Update(msg)
+		return m, cmd
+	}
+}
+
+// updateWorklogDelete removes one worklog only after an explicit `y`.
+func (m Model) updateWorklogDelete(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.activeWorklogMutationRequest = 0
+		m.worklogMutationBusy = false
+		m.err = nil
+		m.view = viewWorklogList
+		return m, nil
+	case "y":
+		if m.worklogMutationBusy {
+			return m, nil
+		}
+		key, worklogID := m.worklogIssue, m.worklogTarget.ID
+		m.worklogMutationBusy = true
+		m.nextWorklogMutationRequest++
+		request := m.nextWorklogMutationRequest
+		m.activeWorklogMutationRequest = request
+		client := m.client
+		return m, func() tea.Msg {
+			err := client.DeleteWorklog(key, worklogID)
+			return worklogMutationDoneMsg{request: request, issueKey: key, worklogID: worklogID, action: "delete", err: err}
+		}
+	}
+	return m, nil
+}
+
+// reloadDetail requests the issue again so embedded worklogs, comments and
+// fields reflect a mutation that was just applied.
+func (m Model) reloadDetail() (Model, tea.Cmd) {
+	if m.detailIssueKey == "" {
+		return m, nil
+	}
+	m.detailLoading = true
+	m.nextDetailRequest++
+	request := m.nextDetailRequest
+	m.activeDetailRequest = request
+	key, boardRequest, searchRequest := m.detailIssueKey, m.detailBoardRequest, m.detailSearchRequest
+	client := m.client
+	return m, func() tea.Msg {
+		issue, err := client.GetIssueFull(key)
+		return detailMsg{issue: issue, issueKey: key, boardRequest: boardRequest, searchRequest: searchRequest, detailRequest: request, err: err}
 	}
 }
 
@@ -3241,6 +3514,89 @@ func (m Model) View() tea.View {
 		b.WriteString(m.worklogCommentInput.View())
 		b.WriteString("\n\n")
 		b.WriteString(subStyle.Render("[Tab] Next  [Enter] Confirm  [esc] Cancel"))
+
+	case viewWorklogList:
+		b.WriteString(titleStyle.Render("⏱ Worklogs: " + m.worklogIssue))
+		b.WriteString("\n\n")
+		switch {
+		case m.err != nil:
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		case m.worklogListLoading:
+			b.WriteString(subStyle.Render("Loading worklogs..."))
+			b.WriteString("\n\n")
+		case len(m.worklogList) == 0:
+			b.WriteString(subStyle.Render("No worklogs to manage"))
+			b.WriteString("\n\n")
+		default:
+			for i, worklog := range m.worklogList {
+				marker := "  "
+				if i == m.worklogCur {
+					marker = "→ "
+				}
+				line := fmt.Sprintf("#%s  %s", worklog.ID, worklog.TimeSpent)
+				if worklog.Author.DisplayName != "" {
+					line += "  " + worklog.Author.DisplayName
+				}
+				if worklog.Comment != "" {
+					line += "  " + worklog.Comment
+				}
+				b.WriteString(marker + line)
+				b.WriteString("\n")
+			}
+			count := fmt.Sprintf("%d worklogs", len(m.worklogList))
+			if len(m.worklogList) >= 1000 {
+				count += fmt.Sprintf(" — first %d of possibly more", len(m.worklogList))
+			}
+			b.WriteString(subStyle.Render(count))
+			b.WriteString("\n\n")
+		}
+		b.WriteString(subStyle.Render("[↑↓] Select  [e] Edit  [d] Delete  [esc] Back"))
+
+	case viewWorklogEdit:
+		b.WriteString(titleStyle.Render(fmt.Sprintf("✎ Worklog: %s #%s", m.worklogIssue, m.worklogTarget.ID)))
+		b.WriteString("\n\n")
+		timeMarker, commentMarker := "  ", "  "
+		if m.worklogEditFocus == 0 {
+			timeMarker = "→ "
+		} else {
+			commentMarker = "→ "
+		}
+		b.WriteString(timeMarker + subStyle.Render("Time spent (e.g. 30m, 2h, 1d):"))
+		b.WriteString("\n  ")
+		b.WriteString(m.worklogEditInputs[0].View())
+		b.WriteString("\n\n")
+		b.WriteString(commentMarker + subStyle.Render("Comment (optional, sent as ADF):"))
+		b.WriteString("\n  ")
+		b.WriteString(m.worklogEditInputs[1].View())
+		b.WriteString("\n\n")
+		if m.err != nil {
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		}
+		if m.worklogMutationBusy {
+			b.WriteString(subStyle.Render("Saving once; awaiting Jira..."))
+		} else {
+			b.WriteString(subStyle.Render("[Tab] Next  [ctrl+s] Save  [esc] Cancel"))
+		}
+
+	case viewWorklogDelete:
+		b.WriteString(titleStyle.Render(fmt.Sprintf("🗑 Delete worklog %s #%s", m.worklogIssue, m.worklogTarget.ID)))
+		b.WriteString("\n\n")
+		b.WriteString("Time spent: " + m.worklogTarget.TimeSpent + "\n")
+		if m.worklogTarget.Comment != "" {
+			b.WriteString("Comment: " + m.worklogTarget.Comment + "\n")
+		}
+		b.WriteString("\n")
+		if m.err != nil {
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		}
+		if m.worklogMutationBusy {
+			b.WriteString(subStyle.Render("Deleting once; awaiting Jira..."))
+		} else {
+			b.WriteString(subStyle.Render("[y] Delete  [esc] Cancel"))
+		}
 
 	case viewCreate:
 		b.WriteString(titleStyle.Render("✚ New Issue · " + m.createProject))
@@ -4101,5 +4457,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[A] Assign  [U] Summary, priority, labels  [f] Attach"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[W] Manage  [A] Assign  [U] Summary, priority, labels  [f] Attach"
 }
