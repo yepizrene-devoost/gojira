@@ -128,6 +128,9 @@ When available, load these skills while working in this project:
 
 - `.agents/workflows/dflow.md` — branch types, merge rules, finish flow
   (generated from `.dflow.yaml`; regenerate with `dflow agent`).
+- `.agents/workflows/issue-closing.md` — the closure checklist every issue
+  closure follows; `dflow` never closes issues, so this is not part of the
+  branch workflow.
 - `internal/jira/paths.go` — every Jira REST/Agile endpoint.
 - `README.md` — user-facing commands and keyboard shortcuts; update it in the
   same work unit that changes a command or key binding.
@@ -154,6 +157,12 @@ release is always a standalone decision with its own explicit confirmation.
   does not neutralize a closing keyword in a commit message.
 - The confirmation names the exact action and the state it changes ("cierro
   el issue #3 como completed"); execution waits for a plain, standalone yes.
+- After that yes, close the issue by following
+  `.agents/workflows/issue-closing.md`, never with `gh issue close` alone. A
+  closure is complete only when the closing comment is posted, every ended
+  `status:` label is removed (`status:approved` included, since the branch flow
+  that merges the work never touches issue labels), and
+  `gh issue view <n> --json state,stateReason,labels` has been run and quoted.
 
 <!-- dflow:workflow-reference -->
 ## dflow Workflow
