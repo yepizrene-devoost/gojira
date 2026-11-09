@@ -116,4 +116,11 @@ Design decisions (implementation decisions, documented per S3 before code):
 
 ## Commit slices
 
-(awaiting explicit maintainer instruction; nothing committed)
+- 038d4f8 feat(jira): read, list, update and delete comments by id (T1)
+- 00d8f05 feat(cli): manage comments by id with list, read, edit and delete (T2)
+- 487b748 feat(mcp): comment history tool and comment update/delete with token (T3, T4)
+- 775b550 feat(tui): manage comments from the detail view (T5)
+- 483ecf5 docs: comment management across cli, mcp and tui (T6 + ODD doc)
+
+Delivered with explicit maintainer instruction, without RDD review
+("haz los commits sin rdd").
