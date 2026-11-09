@@ -477,11 +477,11 @@ func TestInitRunsTheUpdateCheckAsynchronously(t *testing.T) {
 	}
 }
 
-// Boreas finding on PR #49: the empty-boards branch of viewBoards used to
-// return early; it now breaks out of the switch so the update-prompt overlay
-// and toast can compose. That fallthrough is only safe when the rest of the
-// function tolerates an empty board list. Pin the rendered output for the
-// empty state, with and without the update prompt open.
+// The empty-boards branch of viewBoards breaks out of the view switch instead of
+// returning early, so the update-prompt overlay and the toast compose over the
+// loading state. Pin the rendered output for the empty state, with and without
+// the update prompt open: the loading content survives, no board content leaks,
+// and the prompt composes without displacing it.
 func TestBoardsViewEmptyListRendersLoadingState(t *testing.T) {
 	m := makeTestModel(1, 1)
 	m.view = viewBoards
