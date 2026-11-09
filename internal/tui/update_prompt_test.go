@@ -476,3 +476,43 @@ func TestInitRunsTheUpdateCheckAsynchronously(t *testing.T) {
 		t.Fatal("Init's batch did not report the newer release")
 	}
 }
+
+// Boreas finding on PR #49: the empty-boards branch of viewBoards used to
+// return early; it now breaks out of the switch so the update-prompt overlay
+// and toast can compose. That fallthrough is only safe when the rest of the
+// function tolerates an empty board list. Pin the rendered output for the
+// empty state, with and without the update prompt open.
+func TestBoardsViewEmptyListRendersLoadingState(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.view = viewBoards
+	m.boards = nil
+	m.updatePromptOpen = false
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "Loading boards...") || !strings.Contains(out, "[r] Time report") {
+		t.Fatalf("empty boards view lost the loading state:\n%s", out)
+	}
+	if strings.Contains(out, "Test Board") || strings.Contains(out, "[↑↓] Navigate") {
+		t.Fatalf("empty boards view leaked board content:\n%s", out)
+	}
+	// The header helper must tolerate the cursor pointing past the empty list
+	// without panicking; reaching here proves it did.
+	_ = m.updateStatusLine()
+}
+
+func TestBoardsViewEmptyListComposesUpdatePrompt(t *testing.T) {
+	m := makeTestModel(1, 1)
+	m.view = viewBoards
+	m.boards = nil
+	m.updatePromptOpen = true
+	m.updatePromptLatest = "v0.9.0"
+	m.updatePromptCur = int(updatePromptKeep)
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "Loading boards...") {
+		t.Fatalf("empty boards view lost the loading state:\n%s", out)
+	}
+	for _, want := range []string{"Update now", "View changes", "Keep current version"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("update prompt is missing %q over the empty boards state:\n%s", want, out)
+		}
+	}
+}
