@@ -20,10 +20,6 @@ const (
 	keyringUser    = "api-token"
 )
 
-// UpdateCheckInterval is the minimum age of the last recorded release check
-// before the TUI checks for a newer release again.
-const UpdateCheckInterval = 24 * time.Hour
-
 var (
 	keyringSet = keyring.Set
 	keyringGet = keyring.Get
