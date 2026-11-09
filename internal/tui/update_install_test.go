@@ -185,11 +185,13 @@ func TestUpgradeNowInstallsAndReportsSuccess(t *testing.T) {
 	if m.updateUpgrading {
 		t.Fatal("install still marked busy after success")
 	}
-	if want := "Installed gojira v0.5.0 → v0.6.0"; !strings.Contains(m.toast, want) {
-		t.Fatalf("toast = %q, want it to contain %q", m.toast, want)
+	// Issue #52: the relaunch modal replaced the immediate toast as the
+	// success surface; the restart honesty moves to the Later/failure path.
+	if !m.updateRelaunchOffered {
+		t.Fatal("a finished install did not offer the relaunch step")
 	}
-	if !strings.Contains(m.toast, "restart") || !strings.Contains(m.toast, "keeps v0.5.0") {
-		t.Fatalf("toast must say plainly that a restart is needed and the session keeps the old version: %q", m.toast)
+	if !strings.Contains(plain, "Restart gojira now") {
+		t.Fatalf("relaunch modal not shown after success:\n%s", plain)
 	}
 	if m.updateAvailable != "" {
 		t.Fatalf("updateAvailable = %q, want the S10 status line state cleared", m.updateAvailable)
@@ -463,8 +465,11 @@ func TestUpgradeEscWhileBusyDismissesWithoutCancelling(t *testing.T) {
 	}
 
 	m = settleUpgrade(t, m, cmd)
-	if want := "Installed gojira v0.5.0 → v0.6.0"; !strings.Contains(m.toast, want) {
-		t.Fatalf("toast = %q, want it to contain %q", m.toast, want)
+	// Issue #52: a finished install now opens the relaunch modal; the toast
+	// moves to the Later/failure fallback, so here the offer itself is the
+	// honesty surface.
+	if !m.updateRelaunchOffered {
+		t.Fatal("a finished install did not offer the relaunch step")
 	}
 	if m.updateAvailable != "" {
 		t.Fatalf("updateAvailable = %q, want the status line resolved by the finished install", m.updateAvailable)
