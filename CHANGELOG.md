@@ -4,6 +4,20 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.8.3 – Self-update launch fix
+
+### Self-update launch fix
+
+- A binary the TUI self-update placed could be killed by Gatekeeper on launch
+  (SIGKILL): the quarantine attribute macOS attaches to files a non-notarized
+  app downloads arms the kill together with the immutable provenance attribute
+  (repro: exit 137 with both, exit 0 with quarantine removed). The installer
+  now clears `com.apple.quarantine` from the staged binary before the atomic
+  placement, so the placed file — and any in-place relaunch — starts cleanly.
+  The clearing is best-effort (a failure never fails the install) and is a
+  no-op outside macOS; provenance itself is immutable on macOS 26 and harmless
+  alone.
+
 ## 📦 v0.8.2 – Update-flow fixes
 
 ### Update-flow fixes
