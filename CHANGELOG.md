@@ -4,6 +4,30 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.8.0 – Update prompt
+
+### Update prompt
+
+- The TUI now checks for a newer release on every start instead of once a day.
+  The check sends the stored `ETag` as `If-None-Match`, so an unchanged release
+  answers `304` and does not consume GitHub's rate limit; releases published the
+  same day are no longer invisible. `update_check_interval` (a duration; absent
+  or `0` means every start) spaces checks out when wanted, `update_check false`
+  disables them, and offline use, failures and development builds stay silent.
+- When a newer release exists, a centred modal offers **Update now**, **View
+  changes** and **Keep current version**, with the cursor starting on Keep.
+  `u`, `v` and `c` are direct shortcuts, and a dismissed or viewed version never
+  prompts again. A status line in the boards header stays until the running
+  version is current.
+- **Update now installs from the TUI**: the same verified installer the CLI uses
+  — ownership is checked before any network access, the download is verified
+  against the release checksums, and placement stays atomic. Progress and every
+  refusal render inside the modal, and an installation in flight cannot be
+  cancelled. The running session keeps the old binary until it is restarted.
+- This reverses the v0.6.0 statement that the TUI never installs anything. The
+  decision was taken deliberately for convenience; every installer guard is
+  unchanged.
+
 ## 📦 v0.7.0 – Worklog management
 
 ### Worklog management
