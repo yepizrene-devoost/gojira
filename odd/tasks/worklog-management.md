@@ -49,16 +49,16 @@ Scope: read the worklog id, update and delete one worklog from `gojira log`, MCP
 
 ## Tasks
 
-- T1 — Foundation (S1, S2, S3): `internal/jira/types.go`, `internal/jira/paths.go`, `internal/jira/client_worklog.go`, tests. **done** — `go test ./internal/jira/` green; new tests `TestGetWorklogExposesID`, `TestUpdateWorklogSendsOnlySuppliedFields`, `TestUpdateWorklogRequiresAChange`, `TestDeleteWorklogSendsEntryPath`, `TestTicketJSONWorklogsExposeID`, `TestTicketJSONWorklogWithoutIDOmitsField`. commit: pending.
-- T2 — CLI (S4, S5): `cmd/log.go`, `cmd/log_test.go`. **done** — `go test ./cmd/ -run TestLog` green (12 tests, 9 new), `go vet ./cmd/` clean; rejected input makes no request and prints nothing to stdout. commit: pending.
-- T3 — MCP (S6, S7): `internal/mcpserver/writes.go`, `writes_validation.go`, `write_confirmation.go`, `writes_surface_test.go`, `writes_worklog_requests_test.go`. **done** — `go test ./internal/mcpserver/` green (214 tests); token binding generalized to `action:key[:worklogId]` so a `delete` token cannot redeem on a worklog.
-- T4 — TUI (S8, S9, S10): `internal/tui/tui.go`, `internal/tui/tui_test.go`. **done** — `go test ./internal/tui/ -run TestWorklog` green; new views `viewWorklogList`/`viewWorklogEdit`/`viewWorklogDelete`, `W` entry point, `reloadDetail` refetch. commit: pending.
-- T5 — Docs (S11): `README.md`. **done** — CLI `log` row, TUI `W` row and flow paragraph, MCP tool table, additive `id` in both worklog JSON descriptions, parity matrix row, token/confirmation paragraph. commit: pending.
-- T6 — Verification: **done** — `go build ./...` OK, `go vet ./...` OK, `go test ./... -count=1` zero failures, `gofmt -l` empty on all touched files. commit: pending.
-- T7 — Post-write verification (S12): **done** — client `VerifyWorklogUpdate` (4 tests), CLI stderr warning with exit 0, TUI warning preserved through the detail refetch, MCP `hint` with state kept `applied`. commit: pending.
-- T8 — CLI flags (S13, S14b): **done** — `--show`/`--id` rejected first, `--clear-comment` with its conflicts, and the combined `--time --clear-comment` reduced to one request by the parent after the worker's two-request version was caught by a new test. commit: pending.
-- T9 — MCP clearing (S14d): **done** — `clearComment` boolean, one request for both combinations, `one of timeSpent, comment or clearComment is required`; the parent updated the schema pin in `writes_surface_test.go` that the worker could not touch. commit: pending.
-- T10 — TUI clearing and complete list (S14c, S15): **done** — `W` loads the full collection with a scoped request, loading state and in-list error; safe the emptied prefilled comment as one PUT with a null comment. commit: pending.
+- T1 — Foundation (S1, S2, S3): `internal/jira/types.go`, `internal/jira/paths.go`, `internal/jira/client_worklog.go`, tests. **done** — `go test ./internal/jira/` green; new tests `TestGetWorklogExposesID`, `TestUpdateWorklogSendsOnlySuppliedFields`, `TestUpdateWorklogRequiresAChange`, `TestDeleteWorklogSendsEntryPath`, `TestTicketJSONWorklogsExposeID`, `TestTicketJSONWorklogWithoutIDOmitsField`. commit: 4bc0f50.
+- T2 — CLI (S4, S5): `cmd/log.go`, `cmd/log_test.go`. **done** — `go test ./cmd/ -run TestLog` green, `go vet ./cmd/` clean; rejected input makes no request and prints nothing to stdout. commit: b9806c6.
+- T3 — MCP (S6, S7): `internal/mcpserver/writes.go`, `writes_validation.go`, `write_confirmation.go`, `writes_surface_test.go`, `writes_worklog_requests_test.go`. **done** — `go test ./internal/mcpserver/` green; token binding generalized to `action:key[:worklogId]` so a `delete` token cannot redeem on a worklog. commit: 0004f15.
+- T4 — TUI (S8, S9, S10): `internal/tui/tui.go`, `internal/tui/tui_test.go`. **done** — `go test ./internal/tui/ -run TestWorklog` green; views `viewWorklogList`/`viewWorklogEdit`/`viewWorklogDelete`, `W` entry point, `reloadDetail` refetch. commit: 8160460.
+- T5 — Docs (S11): `README.md`. **done** — CLI `log` row, TUI `W` row and flow paragraph, MCP tool table, additive `id` in both worklog JSON descriptions, parity matrix row, token/confirmation paragraph. commit: a607481.
+- T6 — Verification: **done** — `go build ./...` OK, `go vet ./...` OK, `go test ./... -count=1` zero failures (14 packages), `gofmt -l` clean on every touched file except the two `internal/tui` files that were already unformatted at HEAD. No separate commit: verification accompanies each slice.
+- T7 — Post-write verification (S12): **done** — client `VerifyWorklogUpdate`, CLI stderr warning with exit 0, TUI warning preserved through the detail refetch, MCP `hint` with state kept `applied`. commits: 4bc0f50, b9806c6, 0004f15, 8160460.
+- T8 — CLI flags (S13, S14b): **done** — `--show`/`--id` rejected first, `--clear-comment` with its conflicts, and the combined `--time --clear-comment` reduced to one request by the parent after the two-request version was caught by a new test. commit: b9806c6.
+- T9 — MCP clearing (S14d): **done** — `clearComment` boolean, one request for both combinations, `one of timeSpent, comment or clearComment is required`; the parent updated the schema pin in `writes_surface_test.go` that the worker could not touch. commit: 0004f15.
+- T10 — TUI clearing and complete list (S14c, S15): **done** — `W` loads the full collection with a scoped request, loading state and in-list error; the emptied prefilled comment is saved as one PUT with a null comment. commit: 8160460.
 
 ## Log
 
@@ -96,3 +96,14 @@ Scope: read the worklog id, update and delete one worklog from `gojira log`, MCP
 
 - L18 (decision, parent): the combined "change duration and clear comment" case is one `PUT` everywhere. The client exposes `UpdateWorklogAndClearComment`; the CLI no longer issues two mutations, the MCP tool uses the same call, and the TUI's emptied prefilled comment goes through it.
 - L19 (decision, parent): the MCP schema pin in `writes_surface_test.go` belongs to the surface that registers the tool, so the parent updated it instead of widening a worker's edit surface.
+
+## Commit slices
+
+- C1 `feat(jira)`: `internal/jira/*` plus this document.
+- C2 `feat(cli)`: `cmd/log.go`, `cmd/log_test.go`.
+- C3 `feat(mcp)`: `internal/mcpserver/*`, `cmd/mcp_writes_test.go`.
+- C4 `feat(tui)`: `internal/tui/tui.go`, `internal/tui/tui_test.go`.
+- C5 `docs`: `README.md`.
+- C6 `docs(odd)`: commit identities and this slice map.
+
+Slice boundary rule: each slice is one cohesive behavior with the tests that pin it. C2 and C4 exceed the ~400-line review guidance because their tests travel with the rules they pin, and splitting them would separate a rule from the test that proves it.
