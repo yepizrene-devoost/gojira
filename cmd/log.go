@@ -68,7 +68,7 @@ var logCmd = &cobra.Command{
 
 func init() {
 	logCmd.Flags().StringP("time", "t", "", "Time spent (e.g. 30m, 2h, 1d)")
-	logCmd.Flags().StringP("comment", "c", "", "Worklog comment")
+	logCmd.Flags().StringP("comment", "c", "", "Worklog comment (sent as an ADF document)")
 	logCmd.Flags().Bool("show", false, "Show existing worklogs")
 	logCmd.Flags().Bool("json", false, "Show worklogs or output the resulting issue as JSON")
 	rootCmd.AddCommand(logCmd)

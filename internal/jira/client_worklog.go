@@ -19,12 +19,19 @@ func (c *Client) GetWorklog(issueKey string) ([]Worklog, error) {
 	return r.Worklogs, nil
 }
 
+// AddWorklog records time spent. Jira rejects a worklog whose comment is not a
+// valid ADF document, so a blank comment is omitted and a supplied one is sent
+// as ADF, matching AddComment's body convention.
 func (c *Client) AddWorklog(issueKey, timeSpent, comment string) error {
-	payload, _ := json.Marshal(map[string]string{
-		"timeSpent": timeSpent,
-		"comment":   comment,
-	})
-	_, err := c.mutate(http.MethodPost, issuePath(pathIssueWorklog, issueKey), payload)
+	body := map[string]interface{}{"timeSpent": timeSpent}
+	if comment != "" {
+		body["comment"] = TextToADF(comment)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	_, err = c.mutate(http.MethodPost, issuePath(pathIssueWorklog, issueKey), payload)
 	return err
 }
 
