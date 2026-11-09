@@ -235,7 +235,7 @@ setup wizard, or connect to Jira.
 | `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
 | `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
-| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment` converted to ADF, `--show` for history) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment` converted to ADF on create and update, `--show` for history); `--id <ID>` updates that worklog with `--time` and/or `--comment` (still `--json`-capable), or deletes it with `--delete --confirm <ID>`; `--clear-comment` with `--id` removes the comment (alone, or in one request with `--time`); `--comment` does not apply to `--delete`; `--show` cannot be combined with `--id` |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
@@ -417,7 +417,9 @@ Atlassian v3 worklog/comment pages consulted: only supplied values are exposed,
 with no inferred total or pagination requests. Those pages document ADF worklog
 comments; every worklog written by `log`, the MCP `log_work` tool or the TUI
 sends its comment as ADF for that reason. `log --show --json` continues to emit
-flattened string comments and also accepts legacy strings or missing comments. No live Jira verification was
+flattened string comments and also accepts legacy strings or missing comments.
+Each entry carries Jira's worklog id as an optional `id` string field; the field
+is additive and is omitted when Jira supplies no id. No live Jira verification was
 performed (local tests only).
 
 ### TicketJSON v1 contract
@@ -451,7 +453,7 @@ date formats are preserved verbatim.
 | `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `timeLogged` | string | Optional `fields.timetracking.timeSpent` from full issue reads (`get` and mutation re-fetch); omitted when absent or empty, never calculated from entries. |
-| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
+| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with optional `id` (additive; omitted when Jira supplies none), string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
 | `worklogsTotal` | integer | Only included when Jira supplies `fields.worklog.total`, including zero. Entries may be truncated; absence is not zero. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
@@ -586,6 +588,7 @@ including the MCP server and per-option gaps, is in
 | Add comment | `comment` | `m` |
 | Attach a file | `attach` | `f` |
 | Log work / show worklog | `log` (`--show`) | `w` |
+| Update / delete a worklog | `log --id` (`--delete --confirm`) | `W`, then `e` or `d` |
 | Transition by name | `move` | `t` |
 | Close / reopen by status category | `close`, `reopen` | `X` |
 | Delete permanently (typed confirmation) | `delete --confirm KEY` | `D` |
@@ -665,6 +668,26 @@ worklog form collects the time spent and an optional comment: `Tab` moves
 between the two fields and `Enter` submits from either one. The comment is sent
 as an ADF document, because Jira rejects a worklog whose comment is not valid
 ADF; a blank comment is omitted from the request instead of being sent empty.
+After an update, gojira re-reads that worklog and reports a duration Jira did not
+keep, because an entry owned by another app can accept the write and still keep
+the old value: the CLI prints `warning:` on stderr and keeps its success status,
+the TUI shows the warning in the detail modal next to its success toast, and the
+MCP result carries it in `hint` while staying applied.
+Worklog management lives in the `W` list, which reads the complete worklog
+collection from the worklog endpoint (not the page embedded in the ticket read),
+shows `Loading worklogs...` while it fetches, reports a read error inside the
+list, and appends `first 1000 of possibly more` when the bound is reached. `↑`/`↓`
+select an entry, `e` opens an
+edit form prefilled with the current duration and comment and saved once with
+`Ctrl+S`, and `d` opens a deletion that only executes after `y` (`Esc` cancels
+without writing). Saving the comment empty is an explicit removal: the worklog is
+written with a JSON null comment in the same request as the duration, because an
+empty string is not a worklog body Jira accepts. `--clear-comment` is the CLI
+equivalent. Success returns to the detail modal, refetches the issue, and
+toasts the result.
+Editor's note: clearing a comment sends `"comment": null`; the wire payload is
+pinned by tests, but that removal path has not been verified against a live Jira
+site from this repository.
 The transition flow shows bounded progress while loading choices and submitting a
 move; repeated keys cannot start duplicate requests. `Esc` explicitly dismisses
 pending transition UI and ignores its late reply, but cannot cancel an HTTP
@@ -722,6 +745,7 @@ falls back to a one-line title on very small terminals.
 | `f` | Attach a file: type a local path (a leading `~/` is expanded), `Enter` uploads it; `Esc` cancels before submission, not during an upload |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog: type the time spent, `Tab` moves to an optional comment, `Enter` submits; cancel or success returns to this detail modal |
+| `W` (Shift+W) | Manage worklogs: `↑/↓` select an entry (`k/j` also work), `e` edits it prefilled and saves with `Ctrl+S`, `d` opens a deletion that requires `y`, `Esc` goes back |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
 | `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |
@@ -896,6 +920,8 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_comment` | `key`, `body` |
 | `gojira_attach` | `key`, `path`. Uploads a local file to the issue. It accepts any path the server process can read, with no allowlist, so a prompt-injected agent could upload sensitive files such as `.env`; only regular files are accepted |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
+| `gojira_update_worklog` | `key`, `worklogId`, one of `timeSpent` or `comment` (both are allowed; omitting both is rejected before any request) |
+| `gojira_delete_worklog` | `key`, `worklogId`, optional `confirmationToken`: without a token the call returns a preview plus a single-use token that expires after two minutes and performs no request |
 | `gojira_assign` | `key`, and exactly one of `accountId` or `email` (non-empty and trimmed) |
 | `gojira_move` | `key`, exact unambiguous `status` |
 | `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
@@ -936,7 +962,8 @@ rejected value returns a `validation_error` naming the field with
 `mutationState:not_applied`. Replacing a description sends plain text converted
 to ADF and may discard rich ADF formatting that plain text cannot represent;
 prefer appending a comment when formatting matters. Create,
-comment and log_work are non-idempotent. No write is automatically retried.
+comment, log_work, and update_worklog are non-idempotent. No write is
+automatically retried.
 Results report `schemaVersion:v1`, `action`, optional `issueKey`, and
 `mutationState` (`applied`, `not_applied`, `unknown`), with optional `data` or
 sanitized `code`, `message`, and `hint`. Verify unknown outcomes in Jira before
@@ -944,7 +971,9 @@ retrying; a failed response does not prove that a mutation failed.
 
 Delete first returns a preview containing only action and normalized issue key,
 plus an opaque confirmation token in `data.confirmationToken`. Send the same key
-and token to execute. Tokens live only in server memory, expire after two minutes,
+and token to execute. `gojira_delete_worklog` follows the same two-step flow;
+its preview additionally reveals `worklogId`, and its token is bound to that
+worklog id, so a preview cannot redeem against another worklog or tool. Tokens live only in server memory, expire after two minutes,
 and are consumed atomically once (including a wrong-key attempt). Restarting the
 server invalidates them. No valid token means no deletion. Ticket text remains
 untrusted. The token forces a deliberate second call and prevents a single-call
