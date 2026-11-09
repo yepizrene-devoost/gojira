@@ -3,9 +3,11 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 )
@@ -64,8 +66,9 @@ func TestUpdateCheckNotifiesOnceForANewerRelease(t *testing.T) {
 	if !ok {
 		t.Fatalf("Update returned %T, want Model", updated)
 	}
-	if want := "GoJira v0.6.0 is available — run gojira upgrade"; model.toast != want {
-		t.Fatalf("toast = %q, want %q", model.toast, want)
+	// S6 replaces the passive toast: the message now opens the prompt modal.
+	if plain := ansi.Strip(model.View().Content); !strings.Contains(plain, "gojira v0.5.0 → v0.6.0") {
+		t.Fatalf("updateAvailableMsg did not open the update prompt:\n%s", plain)
 	}
 	if recorded != "v0.6.0" {
 		t.Fatalf("recorded = %q, want the checked release", recorded)
