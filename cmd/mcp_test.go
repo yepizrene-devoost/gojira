@@ -105,7 +105,7 @@ func TestMCPStdioProcess(t *testing.T) {
 		}
 	}()
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil || len(tools.Tools) != 9 {
+	if err != nil || len(tools.Tools) != 10 {
 		t.Fatalf("stdio tools: %v %v", tools, err)
 	}
 	guide, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gojira://guide"})
@@ -139,6 +139,8 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
 		case "/rest/api/3/issue/DEMO-1":
 			_, _ = w.Write([]byte(`{"key":"DEMO-1","fields":{"summary":"Example"}}`))
+		case "/rest/api/3/issue/DEMO-1/comment":
+			_, _ = w.Write([]byte(`{"startAt":0,"maxResults":50,"total":1,"isLast":true,"comments":[{"id":"10001","author":{"displayName":"Person"},"created":"2026-11-09T10:00:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}}]}`))
 		case "/rest/api/3/search/jql":
 			if r.URL.Query().Get("jql") == "truncated" {
 				_, _ = w.Write([]byte(`{"issues":[{"key":"DEMO-1","fields":{"summary":"Example"}}],"isLast":false,"nextPageToken":"next"}`))
@@ -185,7 +187,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]map[string]any{"gojira_context": {}, "gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
+	expected := map[string]map[string]any{"gojira_context": {}, "gojira_projects": {}, "gojira_boards": {}, "gojira_sprints": {"boardId": 1}, "gojira_get": {"key": "DEMO-1"}, "gojira_comments": {"key": "DEMO-1"}, "gojira_search": {"jql": "project = DEMO"}}
 	expected["gojira_export"] = map[string]any{"boardId": 1}
 	expected["gojira_users_search"] = map[string]any{"query": "Person"}
 	expected["gojira_report_time"] = map[string]any{"accountId": "id", "project": "DEMO", "from": "2025-01-01", "to": "2025-01-01", "timezone": "UTC"}
@@ -231,6 +233,8 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 		switch tool.Name {
 		case "gojira_projects":
 			wantData = []any{map[string]any{"key": "DEMO", "name": "Demo"}}
+		case "gojira_comments":
+			wantData = map[string]any{"issueKey": "DEMO-1", "total": float64(1), "comments": []any{map[string]any{"id": "10001", "author": "Person", "body": "hello", "created": "2026-11-09T10:00:00.000+0000"}}}
 		case "gojira_get":
 			var issue jira.Issue
 			_ = json.Unmarshal([]byte(`{"key":"DEMO-1","fields":{"summary":"Example"}}`), &issue)
@@ -238,7 +242,7 @@ func TestMCPReadOnlyProtocol(t *testing.T) {
 			_ = json.Unmarshal(encoded, &wantData)
 		}
 		wantStatus := "unknown"
-		complete := tool.Name == "gojira_search" || tool.Name == "gojira_projects"
+		complete := tool.Name == "gojira_search" || tool.Name == "gojira_projects" || tool.Name == "gojira_comments"
 		if complete {
 			wantStatus = "complete"
 		}

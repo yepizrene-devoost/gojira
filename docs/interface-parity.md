@@ -42,6 +42,10 @@ that opens a gap must mark its row *Partial* or *No* again.
 | Edit description | `update` | `gojira_update` (plain text replaces it) | `e` |
 | Edit due date, components, fix versions, story points | `update` | `gojira_update` | `E` |
 | Comment | `comment` | `gojira_comment` | `m` |
+| List comments (complete, paginated) | `comment --list` (`--json` with `total`) | `gojira_comments` (read) | `C` |
+| Read one comment by id | `comment --id <ID>` (`--json`) | `gojira_comments` (ids in the listing) | `C` |
+| Edit comment body (plain text as ADF; whole body replaced) | `comment --id <ID> --text "..."` | `gojira_update_comment` | `C`, then `e` |
+| Delete comment (destructive, confirmed) | `comment --id <ID> --delete --confirm <ID>` | `gojira_delete_comment` (preview plus single-use token) | `C`, then `d` + `y` |
 | Attach a file | `attach` (several files) | `gojira_attach` (one path per call, any readable path) | `f` (one path) |
 | Log work | `log` | `gojira_log_work` | `w` |
 | Assign | `assign` (by email) | `gojira_assign` (by email or account ID) | `A` (by email) |

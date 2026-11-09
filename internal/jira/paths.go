@@ -28,6 +28,7 @@ const (
 	pathIssueWorklogAll        = "/rest/api/3/issue/%s/worklog?startAt=0&maxResults=1000"
 	pathIssueWorklogEntry      = "/rest/api/3/issue/%s/worklog/%s"
 	pathIssueComment           = "/rest/api/3/issue/%s/comment"
+	pathIssueCommentEntry      = "/rest/api/3/issue/%s/comment/%s"
 	pathIssueAssign            = "/rest/api/3/issue/%s/assignee"
 	pathIssueAttachments       = "/rest/api/3/issue/%s/attachments"
 	pathAttachmentMeta         = "/rest/api/3/attachment/meta"
@@ -80,6 +81,12 @@ func issuePath(path, key string) string {
 // so an id can never alter the path shape.
 func worklogEntryPath(key, worklogID string) string {
 	return fmt.Sprintf(pathIssueWorklogEntry, url.PathEscape(key), url.PathEscape(worklogID))
+}
+
+// commentEntryPath addresses one comment of an issue. Both segments are escaped
+// so an id can never alter the path shape.
+func commentEntryPath(key, commentID string) string {
+	return fmt.Sprintf(pathIssueCommentEntry, url.PathEscape(key), url.PathEscape(commentID))
 }
 
 func pathIssueWithFields(key, fields string) string {

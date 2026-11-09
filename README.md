@@ -237,7 +237,7 @@ setup wizard, or connect to Jira.
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
 | `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment` converted to ADF on create and update, `--show` for history); `--id <ID>` updates that worklog with `--time` and/or `--comment` (still `--json`-capable), or deletes it with `--delete --confirm <ID>`; `--clear-comment` with `--id` removes the comment (alone, or in one request with `--time`); `--comment` does not apply to `--delete`; `--show` cannot be combined with `--id` |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
-| `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
+| `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention); `--list` reads the complete paginated comment history (`--json` with `total`); `--id <ID>` alone reads one comment, with `--text "..."` edits its body (sent as ADF; the whole body is replaced and the replacement is stated on stderr), and with `--delete --confirm <ID>` deletes it (`--json`-capable) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
 | `gojira attach <KEY> <file>...` | Attach local files to an issue, one request per file (`--json`); every path and Jira's size limit are checked before anything is uploaded, and the first failed upload stops the rest |
 | `gojira update <KEY>` | Update `--summary`, `--description`, `--priority`, `--labels`, `--due-date`, `--components`, `--fix-versions`, or paired `--story-points VALUE --story-points-field customfield_N` (`--json`; explicit empty values clear supported fields) |
@@ -416,8 +416,8 @@ object carries `schemaVersion: "v1"`. Human mutation output is unchanged when
 TUI ticket detail shows readable created/updated dates, supplied logged time,
 embedded worklog entries (with a truncation count when a total is supplied), and
 existing comments in Jira order, including an explicit empty state. The existing
-scrolling and navigation keys are unchanged. TUI comment entry is not implemented
-in this slice.
+scrolling and navigation keys are unchanged. Comment entry (`m`) is implemented;
+`C` opens comment management.
 
 Full issue reads request optional `timetracking` and `worklog` fields; board,
 search and export field sets are unchanged. The embedded `fields.worklog` shape
@@ -464,7 +464,7 @@ date formats are preserved verbatim.
 | `timeLogged` | string | Optional `fields.timetracking.timeSpent` from full issue reads (`get` and mutation re-fetch); omitted when absent or empty, never calculated from entries. |
 | `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with optional `id` (additive; omitted when Jira supplies none), string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
 | `worklogsTotal` | integer | Only included when Jira supplies `fields.worklog.total`, including zero. Entries may be truncated; absence is not zero. |
-| `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
+| `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules, plus optional `id` (additive; omitted when Jira supplies none). `comment --list --json` emits `{schemaVersion, issueKey, total, comments}` with the same comment objects from the complete paginated collection. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
 | `sprint` | object | Omitted when absent/null; integer `id`, string `name` and `state` supplied by Agile Jira. |
 | `subtasks` | array of objects | `get`, board/export/TUI children in Jira order, with the same nested fields as `parent`; omitted when absent/null, but an explicit empty list is `[]`. No per-child reads. |
@@ -595,6 +595,7 @@ including the MCP server and per-option gaps, is in
 | Create ticket (optionally in a sprint) | `create` | `n` |
 | Edit fields | `update` | `e` (description), `U` (summary, priority, labels), `E` (other fields) |
 | Add comment | `comment` | `m` |
+| List / read / edit / delete comments | `comment --list`, `--id`, `--id --text`, `--id --delete --confirm` | `C`, then `e` or `d` |
 | Attach a file | `attach` | `f` |
 | Log work / show worklog | `log` (`--show`) | `w` |
 | Update / delete a worklog | `log --id` (`--delete --confirm`) | `W`, then `e` or `d` |
@@ -694,6 +695,16 @@ written with a JSON null comment in the same request as the duration, because an
 empty string is not a worklog body Jira accepts. `--clear-comment` is the CLI
 equivalent. Success returns to the detail modal, refetches the issue, and
 toasts the result.
+Comment management works the same way from `C`: it reads the complete comment
+collection from the comment endpoint (not the page embedded in the ticket read),
+shows `Loading comments...` while it fetches and reports a read error inside the
+list. `↑`/`↓` select a comment, `e` opens an edit form prefilled with the current
+body and saved once with `Ctrl+S`, and `d` opens a deletion that only executes
+after `y` (`Esc` cancels without writing). Editing replaces the whole comment
+body with plain text as ADF — the form states this before saving, and the
+success toast keeps a warning saying which formatting was lost; there is no
+rich-body round trip. Success returns to the list, reloads it and refetches the
+issue.
 Editor's note: clearing a comment sends `"comment": null`; the wire payload is
 pinned by tests, but that removal path has not been verified against a live Jira
 site from this repository.
@@ -755,6 +766,7 @@ falls back to a one-line title on very small terminals.
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
 | `w` | Add worklog: type the time spent, `Tab` moves to an optional comment, `Enter` submits; cancel or success returns to this detail modal |
 | `W` (Shift+W) | Manage worklogs: `↑/↓` select an entry (`k/j` also work), `e` edits it prefilled and saves with `Ctrl+S`, `d` opens a deletion that requires `y`, `Esc` goes back |
+| `C` (Shift+C) | Manage comments: `↑/↓` select one (`k/j` also work), `e` edits the body prefilled (plain text as ADF; the whole body is replaced) and saves with `Ctrl+S`, `d` opens a deletion that requires `y`, `Esc` goes back |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
 | `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |
@@ -927,6 +939,9 @@ all existing read-only tools, instructions and results remain unchanged.
 | --- | --- |
 | `gojira_create` | `project`, `issueType`, `summary`, optional `description`, `parent`, and positive integer `boardId` |
 | `gojira_comment` | `key`, `body` |
+| `gojira_comments` (read) | `key`. Complete paginated comment history with ids, authors and timestamps; unlike `gojira_get`, whose embedded comments may be partial |
+| `gojira_update_comment` | `key`, `commentId`, `text` (plain text converted to ADF). Editing replaces the whole comment body: rich formatting, mentions and visibility restrictions of the previous body are lost |
+| `gojira_delete_comment` | `key`, `commentId`, optional `confirmationToken`: without a token the call returns a preview plus a single-use token that expires after two minutes and performs no request |
 | `gojira_attach` | `key`, `path`. Uploads a local file to the issue. It accepts any path the server process can read, with no allowlist, so a prompt-injected agent could upload sensitive files such as `.env`; only regular files are accepted |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
 | `gojira_update_worklog` | `key`, `worklogId`, one of `timeSpent` or `comment` (both are allowed; omitting both is rejected before any request) |

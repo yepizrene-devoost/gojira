@@ -17,7 +17,7 @@ func TestWriteMissingWriterPreservesToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(map[string]string{"key": "ABC-1", "confirmationToken": token})
-	res, err := (adapter{}).writeCall(writeTools()[6], store)(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: raw}})
+	res, err := (adapter{}).writeCall(writeToolByAction("delete"), store)(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: raw}})
 	if err != nil || !res.IsError {
 		t.Fatalf("%v %v", res, err)
 	}
@@ -26,7 +26,7 @@ func TestWriteMissingWriterPreservesToken(t *testing.T) {
 	}
 }
 func TestWriteDeleteConsentDescription(t *testing.T) {
-	description := writeTools()[6].description
+	description := writeToolByAction("delete").description
 	for _, phrase := range []string{"second call", "single-call accidental delete", "not proof of human approval", "same agent"} {
 		if !strings.Contains(description, phrase) {
 			t.Errorf("description missing %q", phrase)
