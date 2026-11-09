@@ -3515,3 +3515,103 @@ func TestDetailTimeAndComments(t *testing.T) {
  content, _ = m.detailContent()
  if !strings.Contains(content,"No comments") { t.Fatal(content) }
 }
+
+// The worklog form must offer the comment body Jira requires: `w` opens both
+// fields, Tab moves focus to the comment, and confirming sends the typed
+// comment as an ADF document alongside the time spent.
+func TestWorklogFormSendsOptionalADFComment(t *testing.T) {
+	var method, path string
+	var body struct {
+		TimeSpent string          `json:"timeSpent"`
+		Comment   json.RawMessage `json:"comment"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body=%s err=%v", raw, err)
+		}
+		_, _ = io.WriteString(w, `{"id":"1"}`)
+	}))
+	defer srv.Close()
+
+	issue := testIssue("P0")
+	m := New(jira.NewClient(srv.URL, "test", "test"), "")
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 4
+	m.loadedBoardRequest = 4
+
+	m, _ = updateModel(t, m, textKey("w"))
+	if m.view != viewWorklog {
+		t.Fatalf("w did not open the worklog form: view=%v", m.view)
+	}
+	form := ansi.Strip(m.View().Content)
+	if !strings.Contains(form, "Time spent") || !strings.Contains(form, "Comment") {
+		t.Fatalf("worklog form does not offer both fields:\n%s", form)
+	}
+
+	m, _ = updateModel(t, m, textKey("2h"))
+	m, _ = updateModel(t, m, specialKey(tea.KeyTab))
+	m, _ = updateModel(t, m, textKey("Reviewed the API"))
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil {
+		t.Fatal("confirm did not start a worklog request")
+	}
+	cmd()
+
+	if method != http.MethodPost || path != "/rest/api/3/issue/"+issue.Key+"/worklog" {
+		t.Fatalf("request=%s %s", method, path)
+	}
+	if body.TimeSpent != "2h" {
+		t.Fatalf("timeSpent=%q", body.TimeSpent)
+	}
+	if len(body.Comment) == 0 || body.Comment[0] == '"' {
+		t.Fatalf("comment is not an ADF document: %s", body.Comment)
+	}
+	var doc jira.ADFDoc
+	if err := json.Unmarshal(body.Comment, &doc); err != nil {
+		t.Fatalf("comment=%s err=%v", body.Comment, err)
+	}
+	if doc.Flatten() != "Reviewed the API" {
+		t.Fatalf("comment text=%q", doc.Flatten())
+	}
+}
+
+// A worklog without a comment stays valid from the TUI: the empty comment is
+// not sent, so Jira cannot reject it as a null body.
+func TestWorklogFormOmitsBlankComment(t *testing.T) {
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body=%s err=%v", raw, err)
+		}
+		_, _ = io.WriteString(w, `{"id":"1"}`)
+	}))
+	defer srv.Close()
+
+	issue := testIssue("P0")
+	m := New(jira.NewClient(srv.URL, "test", "test"), "")
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 4
+	m.loadedBoardRequest = 4
+
+	m, _ = updateModel(t, m, textKey("w"))
+	m, _ = updateModel(t, m, textKey("30m"))
+	m, cmd := updateModel(t, m, specialKey(tea.KeyEnter))
+	if cmd == nil {
+		t.Fatal("confirm did not start a worklog request")
+	}
+	cmd()
+
+	if string(body["timeSpent"]) != `"30m"` {
+		t.Fatalf("timeSpent=%s", body["timeSpent"])
+	}
+	if _, sent := body["comment"]; sent {
+		t.Fatalf("blank comment was sent: %v", body)
+	}
+}

@@ -110,7 +110,7 @@ func TestWriteMutationRequests(t *testing.T) {
 		{"create", "POST", "/rest/api/3/issue", `{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"Example"}}`, map[string]any{"project": "ABC", "issueType": "Task", "summary": "Example"}},
 		{"create", "POST", "/rest/api/3/issue", `{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"Example","description":` + expectedWriteADF + `}}`, map[string]any{"project": "ABC", "issueType": "Task", "summary": "Example", "description": "Example"}},
 		{"comment", "POST", "/rest/api/3/issue/ABC-1/comment", `{"body":` + expectedWriteADF + `}`, map[string]any{"key": "ABC-1", "body": "Example"}},
-		{"log_work", "POST", "/rest/api/3/issue/ABC-1/worklog", `{"timeSpent":"2h","comment":"Example"}`, map[string]any{"key": "ABC-1", "timeSpent": "2h", "comment": "Example"}},
+		{"log_work", "POST", "/rest/api/3/issue/ABC-1/worklog", `{"timeSpent":"2h","comment":` + expectedWriteADF + `}`, map[string]any{"key": "ABC-1", "timeSpent": "2h", "comment": "Example"}},
 		{"assign", "PUT", "/rest/api/3/issue/ABC-1/assignee", `{"accountId":"account"}`, map[string]any{"key": "ABC-1", "accountId": "account"}},
 		{"move", "POST", "/rest/api/3/issue/ABC-1/transitions", `{"transition":{"id":"chosen"}}`, map[string]any{"key": "ABC-1", "status": "Done"}},
 		{"update", "PUT", "/rest/api/3/issue/ABC-1", `{"fields":{"summary":"Example","priority":{"name":"High"}}}`, map[string]any{"key": "ABC-1", "fields": map[string]any{"summary": "Example", "priority": "High"}}},

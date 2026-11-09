@@ -235,7 +235,7 @@ setup wizard, or connect to Jira.
 | `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
 | `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
-| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment` converted to ADF, `--show` for history) |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
@@ -415,8 +415,9 @@ search and export field sets are unchanged. The embedded `fields.worklog` shape
 and `fields.timetracking.timeSpent` were **not confirmed** in the official
 Atlassian v3 worklog/comment pages consulted: only supplied values are exposed,
 with no inferred total or pagination requests. Those pages document ADF worklog
-comments; `log --show --json` continues to emit flattened string comments and
-also accepts legacy strings or missing comments. No live Jira verification was
+comments; every worklog written by `log`, the MCP `log_work` tool or the TUI
+sends its comment as ADF for that reason. `log --show --json` continues to emit
+flattened string comments and also accepts legacy strings or missing comments. No live Jira verification was
 performed (local tests only).
 
 ### TicketJSON v1 contract
@@ -660,7 +661,11 @@ summary also remains available in the scrollable body. The current column
 and ticket remain selected after closing them. Overlay keys are isolated from
 the board: detail navigation scrolls its content without moving the board cursor.
 Transition, issue creation, and worklog entry remain full-screen flows. The
-transition flow shows bounded progress while loading choices and submitting a
+worklog form collects the time spent and an optional comment: `Tab` moves
+between the two fields and `Enter` submits from either one. The comment is sent
+as an ADF document, because Jira rejects a worklog whose comment is not valid
+ADF; a blank comment is omitted from the request instead of being sent empty.
+The transition flow shows bounded progress while loading choices and submitting a
 move; repeated keys cannot start duplicate requests. `Esc` explicitly dismisses
 pending transition UI and ignores its late reply, but cannot cancel an HTTP
 mutation already in flight, which may still complete in Jira. If a same-board
@@ -716,7 +721,7 @@ falls back to a one-line title on very small terminals.
 | `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `f` | Attach a file: type a local path (a leading `~/` is expanded), `Enter` uploads it; `Esc` cancels before submission, not during an upload |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
-| `w` | Add worklog (cancel or success returns to this detail modal) |
+| `w` | Add worklog: type the time spent, `Tab` moves to an optional comment, `Enter` submits; cancel or success returns to this detail modal |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
 | `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |

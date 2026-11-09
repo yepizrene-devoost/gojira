@@ -280,6 +280,8 @@ type Model struct {
 	transitionSubmitIssue         string
 	transitionResultErrBoardID    int
 	worklogInput                  textinput.Model
+	worklogCommentInput           textinput.Model
+	worklogFocus                  int
 	worklogIssue                  string
 	nextWorklogRequest            uint64
 	activeWorklogRequest          uint64
@@ -2042,6 +2044,11 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			ti.Focus()
 			ti.CharLimit = 20
 			m.worklogInput = ti
+			ci := textinput.New()
+			ci.Placeholder = "optional comment"
+			ci.CharLimit = 500
+			m.worklogCommentInput = ci
+			m.worklogFocus = 0
 			m.worklogIssue = m.detail.Key
 			m.activeWorklogRequest = 0
 			m.err = nil
@@ -2563,17 +2570,32 @@ func (m Model) updateWorklog(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if timeSpent == "" {
 			return m, nil
 		}
+		comment := m.worklogCommentInput.Value()
 		key := m.worklogIssue
 		m.nextWorklogRequest++
 		requestID := m.nextWorklogRequest
 		m.activeWorklogRequest = requestID
 		return m, func() tea.Msg {
-			err := m.client.AddWorklog(key, timeSpent, "")
+			err := m.client.AddWorklog(key, timeSpent, comment)
 			return worklogDoneMsg{requestID: requestID, issueKey: key, err: err}
 		}
+	case "tab", "shift+tab":
+		m.worklogInput.Blur()
+		m.worklogCommentInput.Blur()
+		m.worklogFocus = 1 - m.worklogFocus
+		if m.worklogFocus == 0 {
+			m.worklogInput.Focus()
+		} else {
+			m.worklogCommentInput.Focus()
+		}
+		return m, nil
 	default:
 		var cmd tea.Cmd
-		m.worklogInput, cmd = m.worklogInput.Update(msg)
+		if m.worklogFocus == 1 {
+			m.worklogCommentInput, cmd = m.worklogCommentInput.Update(msg)
+		} else {
+			m.worklogInput, cmd = m.worklogInput.Update(msg)
+		}
 		return m, cmd
 	}
 }
@@ -3204,11 +3226,21 @@ func (m Model) View() tea.View {
 	case viewWorklog:
 		b.WriteString(titleStyle.Render("⏱ Worklog: " + m.worklogIssue))
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("Time spent (e.g. 30m, 2h, 1d):"))
-		b.WriteString("\n")
+		timeMarker, commentMarker := "  ", "  "
+		if m.worklogFocus == 0 {
+			timeMarker = "→ "
+		} else {
+			commentMarker = "→ "
+		}
+		b.WriteString(timeMarker + subStyle.Render("Time spent (e.g. 30m, 2h, 1d):"))
+		b.WriteString("\n  ")
 		b.WriteString(m.worklogInput.View())
 		b.WriteString("\n\n")
-		b.WriteString(subStyle.Render("[Enter] Confirm  [esc] Cancel"))
+		b.WriteString(commentMarker + subStyle.Render("Comment (optional, sent as ADF):"))
+		b.WriteString("\n  ")
+		b.WriteString(m.worklogCommentInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("[Tab] Next  [Enter] Confirm  [esc] Cancel"))
 
 	case viewCreate:
 		b.WriteString(titleStyle.Render("✚ New Issue · " + m.createProject))
