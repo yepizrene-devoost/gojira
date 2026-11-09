@@ -223,7 +223,7 @@ func TestVerifyWorklogUpdateReportsKeptDuration(t *testing.T) {
 	defer srv.Close()
 
 	err := NewClient(srv.URL, "email", "token").VerifyWorklogUpdate("ABC-1", "123", "30m")
-	if err == nil || err.Error() != "Jira reports 15m for worklog 123 (requested 30m)" {
+	if err == nil || err.Error() != "jira reports 15m for worklog 123 (requested 30m)" {
 		t.Fatalf("err=%v", err)
 	}
 }
