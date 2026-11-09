@@ -32,6 +32,28 @@
           "idempotentHint": true,
           "readOnlyHint": true
         },
+        "description": "Read Jira data. Requires key. Complete paginated comment history with ids, authors and timestamps, unlike the partial embedded comments of gojira_get.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "type": "object"
+        },
+        "name": "gojira_comments"
+      },
+      {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "readOnlyHint": true
+        },
         "description": "Read Jira data. No arguments. Resolve project from the server process's working directory and environment and read authenticated identity. If needsProject=true, ask the human.",
         "inputSchema": {
           "additionalProperties": false,

@@ -96,6 +96,37 @@ func (a adapter) tools() []tool {
 			},
 		},
 		{
+			name:        "gojira_comments",
+			description: "Requires key. Complete paginated comment history with ids, authors and timestamps, unlike the partial embedded comments of gojira_get.",
+			schema:      objectSchema(map[string]any{"key": map[string]any{"type": "string", "minLength": 1}}, "key"), annotations: annotations,
+			validate: func(in *input, _ map[string]json.RawMessage) string {
+				if strings.TrimSpace(in.Key) == "" {
+					return "key is required"
+				}
+				return ""
+			},
+			handle: func(in input) (any, error) {
+				lister, ok := a.Client.(interface {
+					ListComments(string) ([]jira.Comment, int, error)
+				})
+				if !ok {
+					return nil, errors.New("comment listing unavailable")
+				}
+				comments, total, err := lister.ListComments(in.Key)
+				if err != nil {
+					return nil, err
+				}
+				if comments == nil {
+					comments = []jira.Comment{}
+				}
+				docs := make([]jira.CommentJSON, len(comments))
+				for i, c := range comments {
+					docs[i] = jira.CommentJSON{ID: c.ID, Author: c.Author.DisplayName, Body: c.Body.Flatten(), Created: c.Created}
+				}
+				return output{SchemaVersion: a.SchemaVersion, Data: map[string]any{"issueKey": in.Key, "total": total, "comments": docs}, Complete: true, Completeness: "complete"}, nil
+			},
+		},
+		{
 			name:        "gojira_export",
 			description: "Export board or sprint tickets like the CLI. Defaults to the first board and first active sprint; without an active sprint exports the board. Completeness is unknown because the issue reader has a safety cap.",
 			schema:      objectSchema(map[string]any{"boardId": map[string]any{"type": "integer", "minimum": 0}, "sprintId": map[string]any{"type": "integer", "minimum": 0}}), annotations: annotations,

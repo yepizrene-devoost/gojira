@@ -155,6 +155,17 @@ func validateWrite(entry writeTool, raw json.RawMessage) (*writeRequest, string)
 	if id, ok := values["worklogId"]; ok && strings.TrimSpace(id) != id {
 		return nil, "worklogId must be trimmed"
 	}
+	if id, ok := values["commentId"]; ok {
+		if strings.TrimSpace(id) != id {
+			return nil, "commentId must be trimmed"
+		}
+		if strings.TrimSpace(id) == "" {
+			return nil, "commentId must not be empty"
+		}
+	}
+	if text, ok := values["text"]; ok && strings.TrimSpace(text) == "" && entry.action == "update_comment" {
+		return nil, "text must not be empty"
+	}
 	if spent, ok := values["timeSpent"]; ok && !writeTimePattern.MatchString(spent) {
 		return nil, "invalid timeSpent; use positive Jira durations such as 2h 30m"
 	}

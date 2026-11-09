@@ -27,13 +27,15 @@ func TestWriteEnabledSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"gojira_boards", "gojira_context", "gojira_export", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete", "gojira_sprint_move", "gojira_backlog", "gojira_close", "gojira_reopen", "gojira_attach", "gojira_update_worklog", "gojira_delete_worklog"}
+	names := []string{"gojira_boards", "gojira_comments", "gojira_context", "gojira_export", "gojira_get", "gojira_projects", "gojira_report_time", "gojira_search", "gojira_sprints", "gojira_users_search", "gojira_create", "gojira_comment", "gojira_update_comment", "gojira_delete_comment", "gojira_log_work", "gojira_assign", "gojira_move", "gojira_update", "gojira_delete", "gojira_sprint_move", "gojira_backlog", "gojira_close", "gojira_reopen", "gojira_attach", "gojira_update_worklog", "gojira_delete_worklog"}
 	if len(list.Tools) != len(names) {
 		t.Fatalf("tools=%d", len(list.Tools))
 	}
 	schemas := []string{
 		`{"type":"object","properties":{"project":{"type":"string"},"issueType":{"type":"string"},"summary":{"type":"string"},"description":{"type":"string"},"parent":{"type":"string"},"boardId":{"type":"integer","minimum":1}},"required":["project","issueType","summary"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"body":{"type":"string"}},"required":["key","body"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"},"commentId":{"type":"string"},"text":{"type":"string"}},"required":["key","commentId","text"],"additionalProperties":false}`,
+		`{"type":"object","properties":{"key":{"type":"string"},"commentId":{"type":"string"},"confirmationToken":{"type":"string"}},"required":["key","commentId"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"timeSpent":{"type":"string"},"comment":{"type":"string"}},"required":["key","timeSpent"],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"accountId":{"type":"string"},"email":{"type":"string"}},"required":["key"],"oneOf":[{"required":["accountId"]},{"required":["email"]}],"additionalProperties":false}`,
 		`{"type":"object","properties":{"key":{"type":"string"},"status":{"type":"string"}},"required":["key","status"],"additionalProperties":false}`,
@@ -52,7 +54,7 @@ func TestWriteEnabledSurface(t *testing.T) {
 			t.Errorf("tool[%d]=%s want %s", i, tool.Name, names[i])
 			continue
 		}
-		if i < 9 {
+		if i < 10 {
 			continue
 		}
 		if tool.Name == "gojira_update" {
@@ -62,18 +64,18 @@ func TestWriteEnabledSurface(t *testing.T) {
 				}
 			}
 		}
-		if i >= 16 && tool.Name != "gojira_delete_worklog" && !strings.Contains(tool.Description, "never retry automatically") {
+		if i >= 19 && tool.Name != "gojira_delete_worklog" && !strings.Contains(tool.Description, "never retry automatically") {
 			t.Errorf("%s description must say that it never retries automatically: %q", tool.Name, tool.Description)
 		}
 		raw, _ := json.Marshal(tool.InputSchema)
 		var got, want any
 		_ = json.Unmarshal(raw, &got)
-		_ = json.Unmarshal([]byte(schemas[i-9]), &want)
+		_ = json.Unmarshal([]byte(schemas[i-10]), &want)
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("%s schema=%s want %s", tool.Name, raw, schemas[i-9])
+			t.Errorf("%s schema=%s want %s", tool.Name, raw, schemas[i-10])
 		}
-		destructive := i == 15 || i == 22
-		expected := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: i == 12 || i == 14 || i == 16 || i == 17}
+		destructive := i == 13 || i == 18 || i == 25
+		expected := &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: i == 15 || i == 17 || i == 19 || i == 20}
 		if !reflect.DeepEqual(tool.Annotations, expected) {
 			t.Errorf("%s annotations=%+v want %+v", tool.Name, tool.Annotations, expected)
 		}
