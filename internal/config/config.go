@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zalando/go-keyring"
@@ -41,6 +42,8 @@ type Config struct {
 	UpdateCheck         *bool  `yaml:"update_check,omitempty"`          // nil defaults to enabled
 	UpdateLastCheck     string `yaml:"update_last_check,omitempty"`     // RFC3339, written by the binary
 	UpdateLatestVersion string `yaml:"update_latest_version,omitempty"` // release tag, written by the binary
+	UpdateETag          string `yaml:"update_etag,omitempty"`           // response ETag of the last 200 check
+	UpdateCheckInterval string `yaml:"update_check_interval,omitempty"` // duration such as "6h"; "" or "0" checks every start
 }
 
 // UpdateCheckEnabled reports whether the automatic release check is enabled.
@@ -63,12 +66,37 @@ func (c *Config) UpdateCheckDue(now time.Time, interval time.Duration) bool {
 	return !now.Before(last.Add(interval))
 }
 
+// UpdateCheckIntervalDuration parses update_check_interval into a duration.
+// It fails safe: an absent, zero, unparsable or negative value behaves like 0,
+// which means a check on every start — it never behaves like "never check".
+func (c *Config) UpdateCheckIntervalDuration() time.Duration {
+	raw := strings.TrimSpace(c.UpdateCheckInterval)
+	if raw == "" {
+		return 0
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < 0 {
+		return 0
+	}
+	return interval
+}
+
 // RecordUpdateCheck stores the moment of the last release check as a UTC
 // RFC3339 timestamp together with the latest release tag. It stores nothing
 // else — no credentials ever go into these fields.
 func (c *Config) RecordUpdateCheck(at time.Time, latestVersion string) {
 	c.UpdateLastCheck = at.UTC().Format(time.RFC3339)
 	c.UpdateLatestVersion = latestVersion
+}
+
+// RecordUpdateCheckResult stores everything a conditional start-up check
+// produced: the moment of the check, the latest release tag and the response
+// ETag the next request must send as If-None-Match. RecordUpdateCheck remains
+// the ETag-neutral variant for callers that do not manage conditional
+// requests; this method keeps its behaviour and adds the ETag on top.
+func (c *Config) RecordUpdateCheckResult(at time.Time, latestVersion, etag string) {
+	c.RecordUpdateCheck(at, latestVersion)
+	c.UpdateETag = etag
 }
 
 // ConfigPath returns the full path to config.yaml.

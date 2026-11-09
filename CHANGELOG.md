@@ -4,6 +4,30 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.8.0 – Update prompt
+
+### Update prompt
+
+- The TUI now checks for a newer release on every start instead of once a day.
+  The check sends the stored `ETag` as `If-None-Match`, so an unchanged release
+  answers `304` and does not consume GitHub's rate limit; releases published the
+  same day are no longer invisible. `update_check_interval` (a duration; absent
+  or `0` means every start) spaces checks out when wanted, `update_check false`
+  disables them, and offline use, failures and development builds stay silent.
+- When a newer release exists, a centred modal offers **Update now**, **View
+  changes** and **Keep current version**, with the cursor starting on Keep.
+  `u`, `v` and `c` are direct shortcuts, and a dismissed or viewed version never
+  prompts again. A status line in the boards header stays until the running
+  version is current.
+- **Update now installs from the TUI**: the same verified installer the CLI uses
+  — ownership is checked before any network access, the download is verified
+  against the release checksums, and placement stays atomic. Progress and every
+  refusal render inside the modal, and an installation in flight cannot be
+  cancelled. The running session keeps the old binary until it is restarted.
+- This reverses the v0.6.0 statement that the TUI never installs anything. The
+  decision was taken deliberately for convenience; every installer guard is
+  unchanged.
+
 ## 📦 v0.7.0 – Worklog management
 
 ### Worklog management
@@ -82,12 +106,32 @@ publishing.
   verify. An exclusive lock prevents concurrent upgrades, and nothing is retried
   automatically.
 
+### Update prompt
+
+- The TUI checks on every start for a newer release using a conditional request
+  (`If-None-Match`): an unchanged release answers `304` without consuming rate
+  limit, and `update_check_interval` can still space checks out (`0` or absent
+  means every start). A centred modal offers Update now, View changes, and Keep
+  current version, with the cursor on Keep.
+- Update now runs the same verified installer path as the CLI — ownership first,
+  then the checksum-verified download and atomic placement — and shows progress
+  and every refusal inside the modal. The running session keeps the old binary
+  until it is restarted. This reverses the v0.6.0 statement that the TUI never
+  installs anything; that decision was taken deliberately for convenience, and
+  every installer guard is unchanged.
+
 ### Update notification
 
-- The TUI checks once at startup for a newer published release, at most once per
-  24 hours, with a four second timeout, and shows a single line when one is
-  available. Failures, offline use and development builds stay silent, and the
-  TUI never installs anything.
+- The TUI checks on every start for a newer published release with a four second
+  timeout, using a conditional request (`If-None-Match`) so an unchanged release
+  does not consume rate limit; `update_check_interval` spaces checks out when
+  configured, and failures, offline use and development builds stay silent. When
+  a newer release exists, a centred modal offers Update now, View changes, and
+  Keep current version. Update now runs the same installer the CLI uses, with
+  every guard intact, and reports refusals inside the modal; the running session
+  keeps the old version until it is restarted. (Since v0.7.0 the TUI can install
+  updates; the earlier statement that it never installs anything no longer
+  holds.)
 - The check is controlled with `gojira config set update_check false` and read
   with `gojira config get update_check`.
 

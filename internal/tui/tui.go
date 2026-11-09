@@ -128,8 +128,13 @@ func truncateRunes(s string, max int) string {
 }
 
 func openBrowser(key, domain string) tea.Cmd {
+	return openURL("https://" + domain + "/browse/" + key)
+}
+
+// openURL opens an absolute URL through the platform browser helper. It is
+// shared by issue links and the update prompt's release URL.
+func openURL(url string) tea.Cmd {
 	return func() tea.Msg {
-		url := "https://" + domain + "/browse/" + key
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
@@ -333,7 +338,19 @@ type Model struct {
 	spin                spinner.Model
 	version             string
 	updateChecker       func(context.Context) (string, error)
+	updateCheck         func(context.Context) upgrade.CheckResult
 	updateRecorder      func(string)
+	releaseBrowser      func(url string) tea.Cmd
+	updatePromptOpen    bool
+	updatePromptCur     int
+	updatePromptLatest  string
+	updateDismissed     string
+	updateAvailable     string
+	updateUpgrading     bool
+	updateStage         string
+	updateUpgradeErr    string
+	nextUpdateRequest   uint64
+	activeUpdateRequest uint64
 	searchInput         textinput.Model
 	searchLimitInput    textinput.Model
 	searchLimitEditing  bool
@@ -426,6 +443,44 @@ type clipboardMsg struct {
 }
 type toastMsg struct{ text string }
 type updateAvailableMsg struct{ latest string }
+
+// updateReleaseMsg is the first S8 pipeline step: ownership, the dev-build
+// refusal and release/asset resolution, all decided before any download.
+type updateReleaseMsg struct {
+	requestID uint64
+	target    upgrade.Target
+	asset     upgrade.Asset
+	checksums upgrade.Asset
+	err       error
+}
+
+// updateChecksumMsg carries the held upgrade lock and the resolved digest.
+type updateChecksumMsg struct {
+	requestID uint64
+	target    upgrade.Target
+	asset     upgrade.Asset
+	digest    string
+	lock      *upgrade.Lock
+	err       error
+}
+
+// updateStagedMsg carries a verified staged binary awaiting placement.
+type updateStagedMsg struct {
+	requestID uint64
+	target    upgrade.Target
+	lock      *upgrade.Lock
+	staged    string
+	err       error
+}
+
+// updateInstalledMsg terminates the S8 pipeline: err carries the installer's
+// refusal or failure, nil after a successful placement.
+type updateInstalledMsg struct {
+	requestID uint64
+	lock      *upgrade.Lock
+	err       error
+}
+
 type transitionsMsg struct {
 	requestID    uint64
 	transitions  []jira.Transition
@@ -527,10 +582,31 @@ func New(client *jira.Client, domain string) Model {
 // updateCheckTimeout bounds the one-shot release check started at TUI startup.
 const updateCheckTimeout = 4 * time.Second
 
+// Update-prompt option indices (S7). The cursor starts on Keep.
+const (
+	updatePromptUpdate = iota
+	updatePromptView
+	updatePromptKeep
+)
+
 // checkForUpdate runs the configured release check under a bounded timeout. A
 // failed check is silent and unrecorded; a successful check is recorded once,
-// and only a genuinely newer release yields an updateAvailableMsg.
+// and only a genuinely newer release yields an updateAvailableMsg. The
+// provenance-aware check takes precedence over the string checker: Skipped and
+// Unsuccessful outcomes never assert freshness, so they never open the prompt.
 func (m Model) checkForUpdate() tea.Msg {
+	if m.updateCheck != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+		defer cancel()
+		result := m.updateCheck(ctx)
+		if result.State != upgrade.Completed {
+			return nil
+		}
+		if m.updateRecorder != nil {
+			m.updateRecorder(result.LatestVersion)
+		}
+		return m.updateAvailableMessage(result.LatestVersion)
+	}
 	if m.updateChecker == nil {
 		return nil
 	}
@@ -543,6 +619,12 @@ func (m Model) checkForUpdate() tea.Msg {
 	if m.updateRecorder != nil {
 		m.updateRecorder(latest)
 	}
+	return m.updateAvailableMessage(latest)
+}
+
+// updateAvailableMessage maps a checked release to the one message that may
+// open the update prompt: only a version newer than the running build.
+func (m Model) updateAvailableMessage(latest string) tea.Msg {
 	newer, err := upgrade.NewerThan(m.version, latest)
 	if err != nil || !newer {
 		return nil
@@ -981,8 +1063,63 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case updateAvailableMsg:
-		m.toast = "GoJira " + msg.latest + " is available — run gojira upgrade"
-		return m, clearToastAfter(8 * time.Second)
+		m.updateAvailable = msg.latest
+		// S5: a version the user dismissed or viewed, or a prompt already on
+		// screen, never reopens the prompt; the status line stays either way.
+		if m.updatePromptOpen || msg.latest == m.updateDismissed {
+			return m, nil
+		}
+		m.updatePromptLatest = msg.latest
+		m.updatePromptCur = updatePromptKeep
+		m.updatePromptOpen = true
+		return m, nil
+
+	case updateReleaseMsg:
+		// S8: every pipeline step is guarded by the request id, so a late
+		// message from an abandoned attempt can never touch the model.
+		if !m.updateUpgrading || msg.requestID == 0 || msg.requestID != m.activeUpdateRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m.failUpdate(msg.err), nil
+		}
+		m.updateStage = updateStageDownloading
+		request, target, asset, checksums := msg.requestID, msg.target, msg.asset, msg.checksums
+		return m, func() tea.Msg { return runUpdateChecksum(request, target, asset, checksums) }
+
+	case updateChecksumMsg:
+		if !m.updateUpgrading || msg.requestID == 0 || msg.requestID != m.activeUpdateRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			releaseUpdateLock(msg.lock)
+			return m.failUpdate(msg.err), nil
+		}
+		m.updateStage = updateStageVerifying
+		request, lock, target, asset, digest := msg.requestID, msg.lock, msg.target, msg.asset, msg.digest
+		return m, func() tea.Msg { return runUpdateDownload(request, lock, target, asset, digest) }
+
+	case updateStagedMsg:
+		if !m.updateUpgrading || msg.requestID == 0 || msg.requestID != m.activeUpdateRequest {
+			return m, nil
+		}
+		if msg.err != nil {
+			releaseUpdateLock(msg.lock)
+			return m.failUpdate(msg.err), nil
+		}
+		m.updateStage = updateStageInstalling
+		request, lock, target, staged := msg.requestID, msg.lock, msg.target, msg.staged
+		return m, func() tea.Msg { return runUpdatePlace(request, lock, target, staged) }
+
+	case updateInstalledMsg:
+		if !m.updateUpgrading || msg.requestID == 0 || msg.requestID != m.activeUpdateRequest {
+			return m, nil
+		}
+		releaseUpdateLock(msg.lock)
+		if msg.err != nil {
+			return m.failUpdate(msg.err), nil
+		}
+		return m.finishUpdate(), nil
 
 	case transitionsMsg:
 		if m.view != viewKanban || m.boardLoading || !m.transitionLoading ||
@@ -1300,6 +1437,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// S6/S7: while the update prompt is open it owns every key, on top of
+		// whichever view is behind it.
+		if m.updatePromptOpen {
+			return m.updateUpdatePrompt(msg)
+		}
 		switch m.view {
 		case viewExport:
 			if msg.String() == "ctrl+c" {
@@ -3383,6 +3525,13 @@ func (m Model) View() tea.View {
 		header, indent := m.boardsHeader()
 		pad := strings.Repeat(" ", indent)
 		b.WriteString(header)
+		b.WriteString("\n")
+		if status := m.updateStatusLine(); status != "" {
+			if m.width > 0 {
+				status = ansi.Truncate(status, max(m.width-indent, 1), "…")
+			}
+			b.WriteString(pad + subStyle.Render(status))
+		}
 		b.WriteString("\n\n")
 		if m.err != nil {
 			b.WriteString(pad + errStyle.Render("Error: "+m.err.Error()))
@@ -3390,7 +3539,7 @@ func (m Model) View() tea.View {
 		}
 		if len(m.boards) == 0 {
 			b.WriteString(pad + subStyle.Render(m.spinnerPrefix()+"Loading boards...\n[r] Time report"))
-			return altScreenView(b.String())
+			break
 		}
 		for i, board := range m.boards {
 			icon := "📋"
@@ -3699,6 +3848,9 @@ func (m Model) View() tea.View {
 	}
 
 	content := b.String()
+	if m.updatePromptOpen {
+		content = m.composeOverlay(content, m.renderUpdatePrompt())
+	}
 	if m.view == viewTransition && m.width > 0 && m.contentHeight() > 0 {
 		content = fitToBounds(content, m.width, m.contentHeight())
 	}
@@ -3984,6 +4136,279 @@ func (m Model) modalWidth() int {
 	return max(min(m.width-8, 94), 1)
 }
 
+// updateReleaseURL is the public release page for a version tag.
+func updateReleaseURL(version string) string {
+	return "https://github.com/yepizrene-devoost/gojira/releases/tag/" + version
+}
+
+// renderUpdatePrompt builds the S7 prompt content — installed → latest, the
+// release URL and the three options — framed by the shared modal style so it
+// inherits the established frame, centring and wrapping (S6).
+func (m Model) renderUpdatePrompt() string {
+	var b strings.Builder
+	b.WriteString("⬆ Update available\n")
+	fmt.Fprintf(&b, "gojira %s → %s\n\n", m.version, m.updatePromptLatest)
+	b.WriteString(updateReleaseURL(m.updatePromptLatest))
+	b.WriteString("\n\n")
+	if m.updateUpgrading {
+		fmt.Fprintf(&b, "%s\n\n", m.updateStage)
+		b.WriteString("esc hides this dialog, but an installation already in progress cannot be cancelled.\n")
+		return m.renderModal(b.String(), "[esc] Hide — the installation keeps running", 0)
+	}
+	if m.updateUpgradeErr != "" {
+		fmt.Fprintf(&b, "✖ %s\n\n", m.updateUpgradeErr)
+	}
+	for i, option := range [...]string{"Update now", "View changes", "Keep current version"} {
+		marker := "  "
+		if i == m.updatePromptCur {
+			marker = "→ "
+		}
+		b.WriteString(marker + option + "\n")
+	}
+	return m.renderModal(b.String(), "[↑↓] Move  [Enter] Confirm  [esc] Keep  [u/v/c] Shortcuts", 0)
+}
+
+// updateUpdatePrompt routes every key while the prompt is open (S7): arrows
+// move the cursor, enter confirms it, esc keeps, and u/v/c act directly.
+// While the install runs only esc and ctrl+c act: submissions are no-ops so
+// the pipeline cannot be started twice, and esc dismisses the dialog without
+// claiming to cancel an installation already in flight (S8).
+func (m Model) updateUpdatePrompt(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.updateUpgrading && msg.String() != "esc" && msg.String() != "ctrl+c" {
+		return m, nil
+	}
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "up":
+		m.updatePromptCur = max(m.updatePromptCur-1, updatePromptUpdate)
+	case "down":
+		m.updatePromptCur = min(m.updatePromptCur+1, updatePromptKeep)
+	case "esc":
+		return m.keepUpdatePrompt()
+	case "enter":
+		return m.confirmUpdatePrompt()
+	case "u":
+		m.updatePromptCur = updatePromptUpdate
+		return m.confirmUpdatePrompt()
+	case "v":
+		m.updatePromptCur = updatePromptView
+		return m.viewUpdateChanges()
+	case "c":
+		m.updatePromptCur = updatePromptKeep
+		return m.keepUpdatePrompt()
+	}
+	return m, nil
+}
+
+// confirmUpdatePrompt dispatches the highlighted option.
+func (m Model) confirmUpdatePrompt() (Model, tea.Cmd) {
+	switch m.updatePromptCur {
+	case updatePromptUpdate:
+		return m.startUpdate()
+	case updatePromptView:
+		return m.viewUpdateChanges()
+	default:
+		return m.keepUpdatePrompt()
+	}
+}
+
+// keepUpdatePrompt closes the prompt on Keep current version. The boards
+// status line keeps showing the newer release until it is resolved, and the
+// dismissal is persisted through the config recorder so S5 holds across starts.
+func (m Model) keepUpdatePrompt() (Model, tea.Cmd) {
+	m.updatePromptOpen = false
+	m = m.dismissUpdatePrompt()
+	return m, nil
+}
+
+// dismissUpdatePrompt records the offered version as handled: the model never
+// re-prompts it (S5), and the recorder persists it through T1's config surface.
+func (m Model) dismissUpdatePrompt() Model {
+	m.updateDismissed = m.updatePromptLatest
+	if m.updateRecorder != nil && m.updatePromptLatest != "" {
+		m.updateRecorder(m.updatePromptLatest)
+	}
+	return m
+}
+
+// S8 install seams, swappable like cmd/upgrade.go's upgradeInstaller-style
+// variables so tests can fake ownership, lock, download and placement without
+// touching the network or the real binary.
+var (
+	upgradeInstaller    = func() *upgrade.Installer { return upgrade.NewInstaller(upgrade.OSSystem()) }
+	upgradeFetcher      = func() *upgrade.Fetcher { return upgrade.NewFetcher(nil) }
+	upgradeBaseURL      = ""
+	upgradeArtifactName = upgrade.CurrentArtifactName
+)
+
+// Progress stages the busy modal reports while the install pipeline runs.
+const (
+	updateStageChecking    = "Checking for updates…"
+	updateStageDownloading = "Downloading…"
+	updateStageVerifying   = "Verifying…"
+	updateStageInstalling  = "Installing…"
+)
+
+// startUpdate is the single dispatch path for “Update now” (enter on the
+// option or the `u` shortcut). It starts the existing install pipeline — the
+// same stages cmd/upgrade.go runs — as an asynchronous message chain, so the
+// UI never blocks: the modal stays open reporting progress, refusals render
+// inside it, and a submission while the pipeline runs is a no-op.
+func (m Model) startUpdate() (Model, tea.Cmd) {
+	if m.updateUpgrading {
+		return m, nil
+	}
+	m.updateUpgrading = true
+	m.updateUpgradeErr = ""
+	m.updateStage = updateStageChecking
+	m.activeUpdateRequest = m.nextUpdateRequest + 1
+	m.nextUpdateRequest = m.activeUpdateRequest
+	request, version, latest := m.activeUpdateRequest, m.version, m.updatePromptLatest
+	return m, func() tea.Msg { return runUpdateRelease(request, version, latest) }
+}
+
+// runUpdateRelease is the first pipeline step: ownership and the dev-build
+// refusal are decided before any network access, exactly like cmd/upgrade.go,
+// then the release and both assets are resolved.
+func runUpdateRelease(request uint64, version, latest string) tea.Msg {
+	msg := updateReleaseMsg{requestID: request}
+	target, err := upgradeInstaller().Target()
+	if err != nil {
+		msg.err = err
+		return msg
+	}
+	msg.target = target
+	newer, err := upgrade.NewerThan(version, latest)
+	if err != nil {
+		msg.err = fmt.Errorf("%s is a development build (version %q); install a published release with scripts/install.sh or scripts/install.ps1", target.Path, version)
+		return msg
+	}
+	if !newer {
+		msg.err = fmt.Errorf("gojira %s is already the running release; nothing was changed", version)
+		return msg
+	}
+	release, err := upgrade.NewClient(upgradeBaseURL, nil).LatestRelease(context.Background())
+	if err != nil {
+		msg.err = fmt.Errorf("release check failed: %v; nothing was changed", err)
+		return msg
+	}
+	assetName, err := upgradeArtifactName()
+	if err != nil {
+		msg.err = err
+		return msg
+	}
+	asset := release.Asset(assetName)
+	if asset == nil {
+		msg.err = fmt.Errorf("release %s has no asset named %s", release.TagName, assetName)
+		return msg
+	}
+	checksums := release.Asset("checksums.txt")
+	if checksums == nil {
+		msg.err = fmt.Errorf("release %s has no checksums file", release.TagName)
+		return msg
+	}
+	msg.asset, msg.checksums = *asset, *checksums
+	return msg
+}
+
+// runUpdateChecksum takes the exclusive upgrade lock and resolves the release
+// checksum. The lock travels through the pipeline messages and is released by
+// the terminal handler, so one install never interleaves with another.
+func runUpdateChecksum(request uint64, target upgrade.Target, asset, checksums upgrade.Asset) tea.Msg {
+	msg := updateChecksumMsg{requestID: request, target: target, asset: asset}
+	lock, err := upgradeInstaller().Lock(target.Dir)
+	if err != nil {
+		msg.err = err
+		return msg
+	}
+	msg.lock = lock
+	upgradeInstaller().CleanLeftovers(target.Path)
+	digest, err := upgradeFetcher().FetchChecksum(context.Background(), checksums.URL, asset.Name)
+	if err != nil {
+		msg.err = fmt.Errorf("download failed: %v; nothing was changed", err)
+	}
+	msg.digest = digest
+	return msg
+}
+
+// runUpdateDownload fetches the release archive and verifies it against the
+// resolved checksum before anything is staged.
+func runUpdateDownload(request uint64, lock *upgrade.Lock, target upgrade.Target, asset upgrade.Asset, digest string) tea.Msg {
+	msg := updateStagedMsg{requestID: request, target: target, lock: lock}
+	staged, err := upgradeFetcher().DownloadVerified(context.Background(), asset.URL, asset.Name, digest, target.Dir)
+	if err != nil {
+		msg.err = fmt.Errorf("download failed: %v; nothing was changed", err)
+		return msg
+	}
+	msg.staged = staged
+	return msg
+}
+
+// runUpdatePlace performs the final placement. An uncertain outcome keeps the
+// mutation-unknown honesty instead of implying either result.
+func runUpdatePlace(request uint64, lock *upgrade.Lock, target upgrade.Target, staged string) tea.Msg {
+	msg := updateInstalledMsg{requestID: request, lock: lock}
+	placement, err := upgradeInstaller().Place(target, staged)
+	if err != nil {
+		if placement.Outcome == upgrade.OutcomeUnknown {
+			msg.err = fmt.Errorf("%w — the change may have been applied; check before retrying", err)
+		} else {
+			msg.err = err
+		}
+	}
+	return msg
+}
+
+// releaseUpdateLock drops the upgrade lock carried by a pipeline message; a
+// nil lock means the refusal happened before one was acquired.
+func releaseUpdateLock(lock *upgrade.Lock) {
+	if lock != nil {
+		_ = lock.Release()
+	}
+}
+
+// failUpdate ends the pipeline on a refusal or failure: the busy state drops
+// and the installer's exact text renders inside the modal — or on the global
+// error surface when esc already dismissed the dialog meanwhile.
+func (m Model) failUpdate(err error) Model {
+	m.updateUpgrading = false
+	m.updateStage = ""
+	if m.updatePromptOpen {
+		m.updateUpgradeErr = err.Error()
+		return m
+	}
+	m.err = err
+	return m
+}
+
+// finishUpdate reports a completed install: the S10 status line resolves, the
+// version is persisted through the config recorder so S5 holds, and the modal
+// closes. The binary on disk changed but this session still runs the old one,
+// so the toast says plainly that a restart is needed.
+func (m Model) finishUpdate() Model {
+	m.updateUpgrading = false
+	m.updateStage = ""
+	m.updateUpgradeErr = ""
+	m.updatePromptOpen = false
+	m = m.dismissUpdatePrompt()
+	m.updateAvailable = ""
+	m.toast = fmt.Sprintf("Installed gojira %s → %s — restart the TUI to start using it (this session keeps %s)", m.version, m.updatePromptLatest, m.version)
+	return m
+}
+
+// viewUpdateChanges opens the release URL in the browser through the shared
+// helper and leaves the prompt open (S9). The version counts as viewed for S5
+// and is persisted through the config recorder, so it never re-prompts either.
+func (m Model) viewUpdateChanges() (Model, tea.Cmd) {
+	m = m.dismissUpdatePrompt()
+	open := m.releaseBrowser
+	if open == nil {
+		open = openURL
+	}
+	return m, open(updateReleaseURL(m.updatePromptLatest))
+}
+
 func (m Model) modalHeight() int {
 	if m.contentHeight() <= 0 {
 		return 35
@@ -4160,6 +4585,20 @@ func (m Model) renderColumn(col column, isActive bool, cw int, colH int, slots i
 
 const boardsFrameMaxWidth = 44
 
+// updateStatusLine is the S10 boards-header line: while a newer release is
+// known and unresolved it keeps the update visible after the prompt closes. It
+// disappears once the running version is current or the user has updated.
+func (m Model) updateStatusLine() string {
+	if m.updateAvailable == "" {
+		return ""
+	}
+	newer, err := upgrade.NewerThan(m.version, m.updateAvailable)
+	if err != nil || !newer {
+		return ""
+	}
+	return "⬆ GoJira " + m.updateAvailable + " is available"
+}
+
 // WithVersion returns the model showing the build version in the board list's
 // frame. A bare number gets a "v" prefix; "dev" and tagged versions show as is.
 func (m Model) WithVersion(version string) Model {
@@ -4176,6 +4615,18 @@ func (m Model) WithVersion(version string) Model {
 // available. A nil checker leaves the check disabled.
 func (m Model) WithUpdateCheck(checker func(context.Context) (string, error), recorder func(latest string)) Model {
 	m.updateChecker = checker
+	m.updateRecorder = recorder
+	return m
+}
+
+// WithUpdateCheckResult extends WithUpdateCheck with T1's provenance-aware
+// check: the function receives the start-up context (bounded by the update
+// check timeout) and returns the upgrade.CheckResult. It takes precedence over
+// the string checker when both are configured, so Skipped and Unsuccessful
+// outcomes are observable and can never open the prompt. A nil check leaves
+// the string checker in charge.
+func (m Model) WithUpdateCheckResult(check func(context.Context) upgrade.CheckResult, recorder func(latest string)) Model {
+	m.updateCheck = check
 	m.updateRecorder = recorder
 	return m
 }
