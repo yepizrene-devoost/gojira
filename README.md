@@ -8,6 +8,8 @@
   <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
   <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
+  <a href="https://pkg.go.dev/github.com/yepizrene-devoost/gojira"><img src="https://pkg.go.dev/badge/github.com/yepizrene-devoost/gojira.svg" alt="Go reference"/></a>
+  <a href="https://github.com/yepizrene-devoost/gojira/releases"><img src="https://img.shields.io/github/v/release/yepizrene-devoost/gojira?sort=semver" alt="Latest release"/></a>
 </p>
 
 <p align="center">
@@ -39,10 +41,12 @@
 
 GoJira publishes release archives for Linux, macOS, and Windows on amd64 and
 arm64, with a `checksums.txt` and installer scripts, on the
-[releases page](https://github.com/yepizrene-devoost/gojira/releases). The first
-public release is `v0.1.0`. No Go toolchain or repository checkout is needed.
+[releases page](https://github.com/yepizrene-devoost/gojira/releases). No Go
+toolchain or repository checkout is needed.
 
-Linux and macOS users can install with:
+### 1. One-line installer
+
+Linux and macOS:
 
 ```bash
 curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh | sh
@@ -50,33 +54,92 @@ curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/
 
 The default destination is `$HOME/.local/bin`. The installer does not modify
 `PATH`; if that directory is absent from `PATH`, it prints the shell-profile
-entry to add. Put overrides on the `sh` side of the pipeline to pin a release or
-choose another destination:
+entry to add.
 
-```bash
-curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
-  | GOJIRA_VERSION=v0.1.0 GOJIRA_INSTALL_DIR="$HOME/bin" sh
-```
-
-Windows users can run this in PowerShell:
+Windows, in PowerShell:
 
 ```powershell
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
 ```
 
 The Windows installer defaults to `%LOCALAPPDATA%\Programs\gojira` and adds that
-directory to the user `PATH`; open a new terminal afterward. Set overrides in
-the same PowerShell session before running the one-liner:
+directory to the user `PATH`; open a new terminal afterward.
+
+#### Installer options
+
+| Variable | Installer | Effect |
+| --- | --- | --- |
+| `GOJIRA_VERSION` | both | Release to install instead of the latest one. Both `0.6.0` and `v0.6.0` are accepted. |
+| `GOJIRA_INSTALL_DIR` | both | Destination directory. Defaults to `$HOME/.local/bin` on Linux and macOS, `%LOCALAPPDATA%\Programs\gojira` on Windows. |
+| `GOJIRA_SKIP_PATH_UPDATE` | Windows | Set to `1` to leave the user `PATH` untouched. |
+
+Put overrides on the `sh` side of the pipeline, or set them in the same
+PowerShell session before running the one-liner:
+
+```bash
+curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
+  | GOJIRA_VERSION=v0.6.0 GOJIRA_INSTALL_DIR="$HOME/bin" sh
+```
 
 ```powershell
-$env:GOJIRA_VERSION = 'v0.1.0'
+$env:GOJIRA_VERSION = 'v0.6.0'
 $env:GOJIRA_INSTALL_DIR = "$HOME\bin"
 $env:GOJIRA_SKIP_PATH_UPDATE = '1'
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
 ```
 
 Omit `GOJIRA_VERSION` to select the latest published release. Remove the override
-environment variables afterward if you do not want them to affect later runs.
+environment variables afterward if you do not want them to affect later runs. The
+shell installer prints its own usage with `install.sh --help`.
+
+### 2. Manual download
+
+Each archive is published under its release tag and listed in that release's
+`checksums.txt`:
+
+| Platform | Asset |
+| --- | --- |
+| Linux amd64 | `gojira_Linux_x86_64.tar.gz` |
+| Linux arm64 | `gojira_Linux_arm64.tar.gz` |
+| macOS Intel | `gojira_Darwin_x86_64.tar.gz` |
+| macOS Apple Silicon | `gojira_Darwin_arm64.tar.gz` |
+| Windows amd64 | `gojira_Windows_x86_64.zip` |
+| Windows arm64 | `gojira_Windows_arm64.zip` |
+
+Replace `latest` with a tag such as `v0.6.0` to fetch a specific release:
+
+```bash
+curl -LO https://github.com/yepizrene-devoost/gojira/releases/latest/download/gojira_Darwin_arm64.tar.gz
+tar -xzf gojira_Darwin_arm64.tar.gz
+install -m 755 gojira "$HOME/.local/bin/"
+```
+
+### 3. Build from source
+
+Requires the Go toolchain:
+
+```bash
+go install github.com/yepizrene-devoost/gojira@latest
+```
+
+A plain `go install` produces a `dev` version marker, and `gojira upgrade`
+refuses to replace a development build. To self-upgrade, install a published
+release with the installer scripts. A checkout of this repository can inject the
+tag locally instead:
+
+```bash
+make build VERSION=v0.6.0
+```
+
+### Versions and tags
+
+Releases are annotated, signed tags named `vMAJOR.MINOR.PATCH`; the badge at the
+top of this file and the releases page always show the current one, so the
+versions in the examples above are snapshots of the tag format rather than a
+requirement. `gojira version` prints the marker and the commit the binary was
+built from, `gojira version --json` returns `version`, `revision` and `dirty`
+for automation, and `gojira upgrade --check` reports the latest published tag
+without installing anything.
 
 ### Installer trust and integrity
 
