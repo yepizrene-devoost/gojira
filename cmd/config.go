@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,43 +17,69 @@ var configCmd = &cobra.Command{
 	Long:  "Initialize, read, or update your GoJira configuration (~/.config/gojira/config.yaml).",
 }
 
+// saveToken stores the API token; it is swappable so tests never reach the OS
+// keychain.
+var saveToken = config.SaveToken
+
 // ─── config set ────────────────────────────────────────────────────────
 
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a configuration value",
-	Long:  "Keys: domain, email, board, project, token, people.<alias>",
+	Long:  "Keys: domain, email, board, project, token, update_check, people.<alias>",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
 
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-
-		switch {
-		case key == "domain":
-			cfg.Domain = value
-		case key == "email":
-			cfg.Email = value
-		case key == "board":
-			cfg.Board = value
-		case key == "project":
-			cfg.Project = value
-		case key == "token":
-			return config.SaveToken(value)
-		case strings.HasPrefix(key, "people."):
-			alias := strings.TrimPrefix(key, "people.")
-			if cfg.People == nil {
-				cfg.People = make(map[string]string)
+		// Validate the key before touching disk so an unknown key fails
+		// without creating or modifying anything.
+		switch key {
+		case "domain", "email", "board", "project", "update_check":
+		case "token":
+			// A corrupt configuration is reported before anything is stored, so a
+			// broken file never looks like a successful token update.
+			if _, err := config.Load(); err != nil {
+				return err
 			}
-			cfg.People[alias] = value
+			return saveToken(value)
 		default:
-			return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, people.<alias>)", key)
+			if !strings.HasPrefix(key, "people.") {
+				return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, update_check, people.<alias>)", key)
+			}
 		}
 
-		return cfg.Save()
+		var parsedUpdateCheck *bool
+		if key == "update_check" {
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("invalid value %q for update_check (use true or false)", value)
+			}
+			parsedUpdateCheck = &parsed
+		}
+
+		// Every writer goes through config.Update so concurrent writers
+		// serialize on one lock instead of racing read-modify-write.
+		return config.Update(func(cfg *config.Config) error {
+			switch {
+			case key == "domain":
+				cfg.Domain = value
+			case key == "email":
+				cfg.Email = value
+			case key == "board":
+				cfg.Board = value
+			case key == "project":
+				cfg.Project = value
+			case key == "update_check":
+				cfg.UpdateCheck = parsedUpdateCheck
+			case strings.HasPrefix(key, "people."):
+				alias := strings.TrimPrefix(key, "people.")
+				if cfg.People == nil {
+					cfg.People = make(map[string]string)
+				}
+				cfg.People[alias] = value
+			}
+			return nil
+		})
 	},
 }
 
@@ -89,6 +116,8 @@ var configGetCmd = &cobra.Command{
 			} else {
 				fmt.Println("****")
 			}
+		case key == "update_check":
+			fmt.Println(cfg.UpdateCheckEnabled())
 		case strings.HasPrefix(key, "people."):
 			alias := strings.TrimPrefix(key, "people.")
 			if cfg.People != nil {
@@ -99,7 +128,7 @@ var configGetCmd = &cobra.Command{
 			}
 			return fmt.Errorf("alias %q not found", alias)
 		default:
-			return fmt.Errorf("unknown key %q", key)
+			return fmt.Errorf("unknown key %q (valid: domain, email, board, project, token, update_check, people.<alias>)", key)
 		}
 		return nil
 	},

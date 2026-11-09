@@ -4,6 +4,46 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.6.0 – Safe self-upgrade
+
+### Upgrade command
+
+- `gojira upgrade` replaces an installer-owned binary with the latest published
+  release. `--check` reports without installing, `--json` emits one `v1`
+  document on stdout, and `--yes` is required when no terminal is attached.
+  `gojira update` still updates a Jira issue and is unchanged.
+- Only `$GOJIRA_INSTALL_DIR`, `~/.local/bin`, and on Windows
+  `%LOCALAPPDATA%\Programs\gojira` are replaced. Package-manager paths,
+  `go install` locations, symlinked executables or install directories, and
+  development builds are refused with instructions instead of being overwritten.
+- The archive is verified against `checksums.txt` from the same release before
+  anything is staged, with size caps on the download and on the extracted binary,
+  and rejection of traversal paths, absolute paths, drive letters, symlinks,
+  hardlinks and duplicate binaries. A matching checksum proves transfer integrity
+  only: it is published next to the artifact, so it does not authenticate the
+  publisher.
+- Replacement is staged at mode 0755 and moved atomically on Unix. On Windows the
+  previous binary is moved aside so it is never lost, a failed placement is rolled
+  back, and a blocked double rename reports `unknown` with the leftover path to
+  verify. An exclusive lock prevents concurrent upgrades, and nothing is retried
+  automatically.
+
+### Update notification
+
+- The TUI checks once at startup for a newer published release, at most once per
+  24 hours, with a four second timeout, and shows a single line when one is
+  available. Failures, offline use and development builds stay silent, and the
+  TUI never installs anything.
+- The check is controlled with `gojira config set update_check false` and read
+  with `gojira config get update_check`.
+
+### Notes
+
+- A development build refuses to replace itself; install a published release with
+  the installer scripts first.
+- Windows replacement was verified through an injected platform seam on Linux,
+  not on a Windows host.
+
 ## 📦 v0.5.0 – Attachments and interface parity
 
 ### Attachments

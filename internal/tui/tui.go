@@ -28,6 +28,7 @@ import (
 	"github.com/yepizrene-devoost/gojira/internal/attachments"
 	"github.com/yepizrene-devoost/gojira/internal/jira"
 	"github.com/yepizrene-devoost/gojira/internal/reporting"
+	"github.com/yepizrene-devoost/gojira/internal/upgrade"
 )
 
 // ─── Palette ───────────────────────────────────────────────────────────
@@ -314,6 +315,8 @@ type Model struct {
 
 	spin                spinner.Model
 	version             string
+	updateChecker       func(context.Context) (string, error)
+	updateRecorder      func(string)
 	searchInput         textinput.Model
 	searchLimitInput    textinput.Model
 	searchLimitEditing  bool
@@ -405,6 +408,7 @@ type clipboardMsg struct {
 	err  error
 }
 type toastMsg struct{ text string }
+type updateAvailableMsg struct{ latest string }
 type transitionsMsg struct {
 	requestID    uint64
 	transitions  []jira.Transition
@@ -484,8 +488,38 @@ func New(client *jira.Client, domain string) Model {
 
 // ─── Init ──────────────────────────────────────────────────────────────
 
+// updateCheckTimeout bounds the one-shot release check started at TUI startup.
+const updateCheckTimeout = 4 * time.Second
+
+// checkForUpdate runs the configured release check under a bounded timeout. A
+// failed check is silent and unrecorded; a successful check is recorded once,
+// and only a genuinely newer release yields an updateAvailableMsg.
+func (m Model) checkForUpdate() tea.Msg {
+	if m.updateChecker == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+	defer cancel()
+	latest, err := m.updateChecker(ctx)
+	if err != nil {
+		return nil
+	}
+	if m.updateRecorder != nil {
+		m.updateRecorder(latest)
+	}
+	newer, err := upgrade.NewerThan(m.version, latest)
+	if err != nil || !newer {
+		return nil
+	}
+	return updateAvailableMsg{latest: latest}
+}
+
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadBoards, m.spin.Tick)
+	cmds := []tea.Cmd{m.loadBoards, m.spin.Tick}
+	if m.updateChecker != nil {
+		cmds = append(cmds, m.checkForUpdate)
+	}
+	return tea.Batch(cmds...)
 }
 
 // loading reports whether any indeterminate wait is on screen, which is when
@@ -905,6 +939,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toastMsg:
 		m.toast = msg.text
 		return m, nil
+
+	case updateAvailableMsg:
+		m.toast = "GoJira " + msg.latest + " is available — run gojira upgrade"
+		return m, clearToastAfter(8 * time.Second)
 
 	case transitionsMsg:
 		if m.view != viewKanban || m.boardLoading || !m.transitionLoading ||
@@ -3742,6 +3780,15 @@ func (m Model) WithVersion(version string) Model {
 		version = "v" + version
 	}
 	m.version = version
+	return m
+}
+
+// WithUpdateCheck configures the one-shot, non-blocking startup notification:
+// Init asynchronously checks for a newer release and shows a toast when one is
+// available. A nil checker leaves the check disabled.
+func (m Model) WithUpdateCheck(checker func(context.Context) (string, error), recorder func(latest string)) Model {
+	m.updateChecker = checker
+	m.updateRecorder = recorder
 	return m
 }
 

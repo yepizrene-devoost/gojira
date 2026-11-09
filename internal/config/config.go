@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
@@ -17,6 +18,10 @@ const (
 	keyringService = "gojira"
 	keyringUser    = "api-token"
 )
+
+// UpdateCheckInterval is the minimum age of the last recorded release check
+// before the TUI checks for a newer release again.
+const UpdateCheckInterval = 24 * time.Hour
 
 var (
 	keyringSet = keyring.Set
@@ -32,6 +37,38 @@ type Config struct {
 	Project string            `yaml:"default_project,omitempty"`
 	People  map[string]string `yaml:"people,omitempty"` // alias → email
 	Token   string            `yaml:"token,omitempty"`  // only when keychain unavailable
+
+	UpdateCheck         *bool  `yaml:"update_check,omitempty"`          // nil defaults to enabled
+	UpdateLastCheck     string `yaml:"update_last_check,omitempty"`     // RFC3339, written by the binary
+	UpdateLatestVersion string `yaml:"update_latest_version,omitempty"` // release tag, written by the binary
+}
+
+// UpdateCheckEnabled reports whether the automatic release check is enabled.
+// It is true unless update_check is explicitly set to false.
+func (c *Config) UpdateCheckEnabled() bool {
+	return c.UpdateCheck == nil || *c.UpdateCheck
+}
+
+// UpdateCheckDue reports whether a new release check should run at now. The
+// check is due when nothing was recorded yet, when the recorded timestamp is
+// not valid RFC3339, or when the last check is at least interval old.
+func (c *Config) UpdateCheckDue(now time.Time, interval time.Duration) bool {
+	if c.UpdateLastCheck == "" {
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, c.UpdateLastCheck)
+	if err != nil {
+		return true
+	}
+	return !now.Before(last.Add(interval))
+}
+
+// RecordUpdateCheck stores the moment of the last release check as a UTC
+// RFC3339 timestamp together with the latest release tag. It stores nothing
+// else — no credentials ever go into these fields.
+func (c *Config) RecordUpdateCheck(at time.Time, latestVersion string) {
+	c.UpdateLastCheck = at.UTC().Format(time.RFC3339)
+	c.UpdateLatestVersion = latestVersion
 }
 
 // ConfigPath returns the full path to config.yaml.
