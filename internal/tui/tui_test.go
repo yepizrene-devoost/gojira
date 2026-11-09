@@ -3615,3 +3615,568 @@ func TestWorklogFormOmitsBlankComment(t *testing.T) {
 		t.Fatalf("blank comment was sent: %v", body)
 	}
 }
+
+// ─── Worklog management (issue 44) ─────────────────────────────────────
+
+func manageWorklogModel(worklogs []jira.Worklog) Model {
+	issue := testIssue("P0")
+	issue.Fields.Worklog = &jira.WorklogField{Worklogs: worklogs}
+	m := makeTestModel(1, 1)
+	m.view = viewDetail
+	m.detail = &issue
+	m.detailIssueKey = issue.Key
+	m.detailBoardRequest = 4
+	m.loadedBoardRequest = 4
+	return m
+}
+
+func twoWorklogs() []jira.Worklog {
+	var first, second jira.Worklog
+	first.ID, first.TimeSpent, first.Comment = "123", "2h", "Reviewed the API"
+	first.Author.DisplayName = "Ada"
+	second.ID, second.TimeSpent = "456", "30m"
+	second.Author.DisplayName = "Bob"
+	return []jira.Worklog{first, second}
+}
+
+// openWorklogList presses `W` and delivers the S15 collection reply the way the
+// runtime does: the model starts one scoped read, and the reply carries that
+// request id. The reply is fed explicitly so the mutation servers of the
+// surrounding tests never see an extra GET; the read itself is pinned by
+// TestWorklogListReadsFullCollectionOnce.
+func openWorklogList(t *testing.T, m Model, worklogs []jira.Worklog) Model {
+	t.Helper()
+	m, cmd := updateModel(t, m, textKey("W"))
+	if m.view != viewWorklogList {
+		t.Fatalf("W did not open the worklog list: view=%v", m.view)
+	}
+	if cmd == nil {
+		t.Fatal("W did not start a worklog collection read")
+	}
+	m, _ = updateModel(t, m, worklogListMsg{
+		request:  m.activeWorklogListRequest,
+		issueKey: m.worklogIssue,
+		worklogs: worklogs,
+	})
+	if m.worklogListLoading {
+		t.Fatal("collection reply did not finish the load")
+	}
+	return m
+}
+
+// S8 — `W` opens a selectable list of the issue's worklogs.
+func TestWorklogListShowsEntriesAndMovesSelection(t *testing.T) {
+	m := openWorklogList(t, manageWorklogModel(twoWorklogs()), twoWorklogs())
+	if m.view != viewWorklogList {
+		t.Fatalf("W did not open the worklog list: view=%v", m.view)
+	}
+	out := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Worklogs: P0", "#123", "2h", "Ada", "Reviewed the API", "#456", "30m", "Bob", "[↑↓] Select  [e] Edit  [d] Delete  [esc] Back"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list is missing %q:\n%s", want, out)
+		}
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	if m.worklogCur != 1 {
+		t.Fatalf("down did not move the selection: %d", m.worklogCur)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyUp))
+	m, _ = updateModel(t, m, specialKey(tea.KeyUp))
+	if m.worklogCur != 0 {
+		t.Fatalf("up moved past the first entry: %d", m.worklogCur)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewDetail {
+		t.Fatalf("esc did not return to detail: view=%v", m.view)
+	}
+}
+
+// S8 — an issue without worklogs says so instead of showing an empty box.
+func TestWorklogListEmptyState(t *testing.T) {
+	m := openWorklogList(t, manageWorklogModel(nil), nil)
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "No worklogs to manage") {
+		t.Fatalf("missing empty state:\n%s", out)
+	}
+	m, _ = updateModel(t, m, textKey("e"))
+	m, _ = updateModel(t, m, textKey("d"))
+	if m.view != viewWorklogList {
+		t.Fatalf("empty list opened a mutation flow: view=%v", m.view)
+	}
+}
+
+// S15 — `W` shows the loading state before the collection read returns, so an
+// empty embedded page can never be mistaken for "no worklogs".
+func TestWorklogListShowsLoadingBeforeCollectionRead(t *testing.T) {
+	m := manageWorklogModel(nil)
+	m, _ = updateModel(t, m, textKey("W"))
+	if m.view != viewWorklogList {
+		t.Fatalf("W did not open the worklog list: view=%v", m.view)
+	}
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "Loading worklogs...") {
+		t.Fatalf("list does not show the loading state:\n%s", out)
+	}
+}
+
+// S15 — `W` issues exactly one full-collection read (startAt=0, maxResults=1000)
+// and the reply populates the list in Jira's order, selectable, with the count.
+func TestWorklogListReadsFullCollectionOnce(t *testing.T) {
+	var method, rawQuery string
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		method, rawQuery = r.Method, r.URL.RawQuery
+		// Jira returns newest first; sorting by id would put 12 before 999.
+		_, _ = io.WriteString(w, `{"startAt":0,"maxResults":1000,"total":2,"worklogs":[`+
+			`{"id":"999","timeSpent":"2h","author":{"displayName":"Ada"},"comment":"Older"},`+
+			`{"id":"12","timeSpent":"30m","author":{"displayName":"Bob"}}]}`)
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(nil)
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m, cmd := updateModel(t, m, textKey("W"))
+	if cmd == nil {
+		t.Fatal("W did not start a worklog collection read")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if requests != 1 || method != http.MethodGet || rawQuery != "startAt=0&maxResults=1000" {
+		t.Fatalf("read=%d %s?%s, want exactly one GET with startAt=0&maxResults=1000", requests, method, rawQuery)
+	}
+	out := ansi.Strip(m.View().Content)
+	for _, want := range []string{"#999", "2h", "Ada", "Older", "#12", "30m", "Bob", "2 worklogs", "[↑↓] Select  [e] Edit  [d] Delete  [esc] Back"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list is missing %q:\n%s", want, out)
+		}
+	}
+	if before, after := strings.Index(out, "#999"), strings.Index(out, "#12"); before < 0 || before > after {
+		t.Fatalf("Jira order was not preserved:\n%s", out)
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	if m.worklogCur != 1 {
+		t.Fatalf("loaded entries are not selectable: cur=%d", m.worklogCur)
+	}
+}
+
+// S15 — a full page states the bound instead of pretending it is the whole
+// history: at the maxResults cap the list marks "first 1000 of possibly more".
+func TestWorklogListMarksThousandEntryBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		b.WriteString(`{"startAt":0,"maxResults":1000,"total":1400,"worklogs":[`)
+		for i := 0; i < 1000; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"id":"%d","timeSpent":"%dm","author":{"displayName":"User"}}`, i+1, i+1)
+		}
+		b.WriteString(`]}`)
+		_, _ = io.WriteString(w, b.String())
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(nil)
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m, cmd := updateModel(t, m, textKey("W"))
+	if cmd == nil {
+		t.Fatal("W did not start a worklog collection read")
+	}
+	m, _ = updateModel(t, m, cmd())
+	out := ansi.Strip(m.View().Content)
+	for _, want := range []string{"1000 worklogs", "first 1000 of possibly more"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("bound line is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// S15 — a failed read surfaces inside the list: the view stays open and the
+// stale embedded page is never shown as if it were current.
+func TestWorklogListReadErrorStaysInsideList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"errorMessages":["boom"]}`)
+	}))
+	defer srv.Close()
+
+	// The embedded page holds entries; after a failed read only the error may show.
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m, cmd := updateModel(t, m, textKey("W"))
+	if cmd == nil {
+		t.Fatal("W did not start a worklog collection read")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if m.view != viewWorklogList {
+		t.Fatalf("read error closed the list: view=%v", m.view)
+	}
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "Error:") {
+		t.Fatalf("read error is not visible inside the list:\n%s", out)
+	}
+	if strings.Contains(out, "#123") {
+		t.Fatalf("failed read fell back to the stale embedded page:\n%s", out)
+	}
+}
+
+// S15 — `esc` returns to the detail modal and drops the pending reply; a reply
+// for an older request can never populate a newer load.
+func TestWorklogListEscDropsLateReply(t *testing.T) {
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient("http://127.0.0.1:1", "test", "test")
+
+	m, firstCmd := updateModel(t, m, textKey("W"))
+	if firstCmd == nil {
+		t.Fatal("W did not start a worklog collection read")
+	}
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	if m.view != viewDetail {
+		t.Fatalf("esc did not return to the detail modal: view=%v", m.view)
+	}
+	m, _ = updateModel(t, m, firstCmd())
+	if m.view != viewDetail || len(m.worklogList) != 0 {
+		t.Fatalf("late reply survived esc: view=%v list=%d", m.view, len(m.worklogList))
+	}
+
+	// Re-open: the fresh request id must reject the stale reply outright.
+	m, _ = updateModel(t, m, textKey("W"))
+	m, _ = updateModel(t, m, firstCmd())
+	out := ansi.Strip(m.View().Content)
+	if m.err != nil || len(m.worklogList) != 0 || !strings.Contains(out, "Loading worklogs...") {
+		t.Fatalf("stale reply violated the request scope: err=%v list=%d\n%s", m.err, len(m.worklogList), out)
+	}
+}
+
+// S9 — the edit form is prefilled from the selected entry and saves through
+// PUT with the typed values.
+func TestWorklogEditSubmitsPrefilledForm(t *testing.T) {
+	var method, path string
+	var body map[string]json.RawMessage
+	verifies := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/issue/P0/worklog" {
+			// S12 re-read: Jira kept 3h, so the update ends without a warning.
+			verifies++
+			_, _ = io.WriteString(w, `{"total":1,"worklogs":[{"id":"123","timeSpent":"3h"}]}`)
+			return
+		}
+		method, path = r.Method, r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body=%s err=%v", raw, err)
+		}
+		_, _ = io.WriteString(w, `{"id":"123"}`)
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m = openWorklogList(t, m, twoWorklogs())
+	m, _ = updateModel(t, m, textKey("e"))
+	if m.view != viewWorklogEdit {
+		t.Fatalf("e did not open the edit form: view=%v", m.view)
+	}
+	out := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Worklog: P0 #123", "2h", "Reviewed the API", "[Tab] Next  [ctrl+s] Save  [esc] Cancel"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("edit form is missing %q:\n%s", want, out)
+		}
+	}
+
+	m.worklogEditInputs[0].SetValue("3h")
+	m, _ = updateModel(t, m, specialKey(tea.KeyTab))
+	if m.worklogEditFocus != 1 {
+		t.Fatalf("tab did not move focus: %d", m.worklogEditFocus)
+	}
+	m.worklogEditInputs[1].SetValue("Corrected duration")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+s did not submit the worklog update")
+	}
+	m, _ = updateModel(t, m, cmd())
+
+	if method != http.MethodPut || path != "/rest/api/3/issue/P0/worklog/123" {
+		t.Fatalf("request=%s %s", method, path)
+	}
+	if string(body["timeSpent"]) != `"3h"` {
+		t.Fatalf("timeSpent=%s", body["timeSpent"])
+	}
+	raw := body["comment"]
+	if len(raw) == 0 || raw[0] == '"' {
+		t.Fatalf("comment is not ADF: %s", raw)
+	}
+	var doc jira.ADFDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Flatten() != "Corrected duration" {
+		t.Fatalf("comment=%q", doc.Flatten())
+	}
+	if m.view != viewDetail || m.toast != "Worklog updated" {
+		t.Fatalf("success did not return to detail: view=%v toast=%q", m.view, m.toast)
+	}
+	if verifies != 1 {
+		t.Fatalf("verification reads=%d, want the S12 re-read after the update", verifies)
+	}
+	if m.err != nil {
+		t.Fatalf("kept duration must leave no warning: err=%v", m.err)
+	}
+	if !m.detailLoading || m.activeDetailRequest == 0 {
+		t.Fatalf("success did not start a detail refetch: loading=%v request=%d", m.detailLoading, m.activeDetailRequest)
+	}
+	// The refetch must land in the model, not be silently dropped: the modal has
+	// to show the value Jira now holds, not the one it held before the mutation.
+	refreshed := testIssue("P0")
+	refreshed.Fields.Summary = "Refetched after worklog update"
+	m, _ = updateModel(t, m, detailMsg{issue: &refreshed, issueKey: "P0", boardRequest: m.detailBoardRequest, detailRequest: m.activeDetailRequest})
+	if m.detail == nil || m.detail.Fields.Summary != "Refetched after worklog update" || m.detailLoading {
+		t.Fatalf("detail refetch was not applied: detail=%+v loading=%v", m.detail, m.detailLoading)
+	}
+	if m.err != nil {
+		t.Fatalf("match must stay warning-free after the refetch: err=%v", m.err)
+	}
+}
+
+// S12 — a duration Jira did not keep keeps the success toast and the detail
+// modal, but surfaces the warning as the modal error, even across the refetch.
+func TestWorklogEditMismatchKeepsSuccessAndWarns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/api/3/issue/P0/worklog/123":
+			_, _ = io.WriteString(w, `{"id":"123"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/issue/P0/worklog":
+			_, _ = io.WriteString(w, `{"total":1,"worklogs":[{"id":"123","timeSpent":"15m"}]}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m = openWorklogList(t, m, twoWorklogs())
+	m, _ = updateModel(t, m, textKey("e"))
+	m.worklogEditInputs[0].SetValue("3h")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+s did not start the update")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if m.view != viewDetail || m.toast != "Worklog updated" {
+		t.Fatalf("mismatch lost the success flow: view=%v toast=%q", m.view, m.toast)
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "Jira reports 15m for worklog 123 (requested 3h)") {
+		t.Fatalf("warning not surfaced as modal error: err=%v", m.err)
+	}
+	// The detail refetch must not swallow the warning before it can be read.
+	refreshed := testIssue("P0")
+	m, _ = updateModel(t, m, detailMsg{issue: &refreshed, issueKey: "P0", boardRequest: m.detailBoardRequest, detailRequest: m.activeDetailRequest})
+	if m.detail == nil || m.detailLoading {
+		t.Fatalf("detail refetch was not applied: detail=%v loading=%v", m.detail, m.detailLoading)
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "Jira reports 15m") {
+		t.Fatalf("warning lost after the refetch: err=%v", m.err)
+	}
+}
+
+// S9 — a blank duration is rejected locally and sends nothing.
+func TestWorklogEditRejectsBlankDuration(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m = openWorklogList(t, m, twoWorklogs())
+	m, _ = updateModel(t, m, textKey("e"))
+	m.worklogEditInputs[0].SetValue("   ")
+	_, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatal("blank duration started a request")
+	}
+	if calls != 0 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+// S14 — the prefilled comment is emptied on purpose: exactly one PUT clears it
+// with JSON null instead of an update that silently keeps the old comment.
+func TestWorklogEditEmptiedCommentClearsWithNullComment(t *testing.T) {
+	puts := 0
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/api/3/issue/P0/worklog/123":
+			puts++
+			raw, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("body=%s err=%v", raw, err)
+			}
+			_, _ = io.WriteString(w, `{"id":"123"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/issue/P0/worklog":
+			// S12 re-read: Jira reports the requested duration.
+			_, _ = io.WriteString(w, `{"worklogs":[{"id":"123","timeSpent":"2h"}]}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	// Focus on the edit flow itself; the S15 load is covered by its own tests.
+	m.view = viewWorklogList
+	m.worklogList = twoWorklogs()
+	m.worklogIssue = m.detail.Key
+	m, _ = updateModel(t, m, textKey("e"))
+	if m.view != viewWorklogEdit {
+		t.Fatalf("e did not open the edit form: view=%v", m.view)
+	}
+	m.worklogEditInputs[1].SetValue("") // the prefilled comment was emptied
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("submit did not start the save")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if puts != 1 {
+		t.Fatalf("puts=%d, want exactly one mutation for one save", puts)
+	}
+	if string(body["comment"]) != "null" {
+		t.Fatalf("comment=%s, want null so the comment is cleared", body["comment"])
+	}
+	if m.view != viewDetail || m.toast != "Worklog updated" {
+		t.Fatalf("clear did not finish the edit flow: view=%v toast=%q", m.view, m.toast)
+	}
+	if m.err != nil {
+		t.Fatalf("clear must keep the S12 flow warning-free: err=%v", m.err)
+	}
+}
+
+// S14 negative — a worklog that never had a comment keeps the plain update:
+// emptying an already-empty field must not invent a null clear.
+func TestWorklogEditWithoutCommentKeepsPlainUpdate(t *testing.T) {
+	puts := 0
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/api/3/issue/P0/worklog/456":
+			puts++
+			raw, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("body=%s err=%v", raw, err)
+			}
+			_, _ = io.WriteString(w, `{"id":"456"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/issue/P0/worklog":
+			_, _ = io.WriteString(w, `{"worklogs":[{"id":"456","timeSpent":"1h"}]}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs()) // #456 has no comment
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m.view = viewWorklogList
+	m.worklogList = twoWorklogs()
+	m.worklogIssue = m.detail.Key
+	m, _ = updateModel(t, m, specialKey(tea.KeyDown))
+	m, _ = updateModel(t, m, textKey("e"))
+	if m.view != viewWorklogEdit {
+		t.Fatalf("e did not open the edit form: view=%v", m.view)
+	}
+	m.worklogEditInputs[0].SetValue("1h")
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("submit did not start the save")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if puts != 1 {
+		t.Fatalf("puts=%d, want exactly one mutation", puts)
+	}
+	if string(body["timeSpent"]) != `"1h"` {
+		t.Fatalf("timeSpent=%s", body["timeSpent"])
+	}
+	if _, sent := body["comment"]; sent {
+		t.Fatalf("invented a comment clear for a worklog without one: %v", body)
+	}
+}
+
+// S9 — cancelling never applies a late reply.
+func TestWorklogEditCancelIgnoresLateReply(t *testing.T) {
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient("http://127.0.0.1:1", "test", "test")
+	m = openWorklogList(t, m, twoWorklogs())
+	m, _ = updateModel(t, m, textKey("e"))
+	m, cmd := updateModel(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("submit did not start")
+	}
+	request := m.activeWorklogMutationRequest
+	m, _ = updateModel(t, m, specialKey(tea.KeyEsc))
+	m, _ = updateModel(t, m, worklogMutationDoneMsg{request: request, issueKey: "P0", worklogID: "123", action: "update"})
+	if m.view == viewDetail || m.toast == "Worklog updated" || m.err != nil {
+		t.Fatalf("late reply changed state: view=%v toast=%q err=%v", m.view, m.toast, m.err)
+	}
+}
+
+// S10 — delete requires the explicit `y` confirmation and sends DELETE.
+func TestWorklogDeleteConfirmsAndSends(t *testing.T) {
+	var method, path string
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	m := manageWorklogModel(twoWorklogs())
+	m.client = jira.NewClient(srv.URL, "test", "test")
+	m = openWorklogList(t, m, twoWorklogs())
+	m, _ = updateModel(t, m, textKey("d"))
+	if m.view != viewWorklogDelete {
+		t.Fatalf("d did not open the confirmation: view=%v", m.view)
+	}
+	out := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Delete worklog P0 #123", "Time spent: 2h", "[y] Delete  [esc] Cancel"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("confirmation is missing %q:\n%s", want, out)
+		}
+	}
+	m, cmd := updateModel(t, m, textKey("x"))
+	if cmd != nil {
+		t.Fatal("an unconfirmed key started a delete")
+	}
+	m, cmd = updateModel(t, m, textKey("y"))
+	if cmd == nil {
+		t.Fatal("y did not submit the delete")
+	}
+	m, _ = updateModel(t, m, cmd())
+	if method != http.MethodDelete || path != "/rest/api/3/issue/P0/worklog/123" {
+		t.Fatalf("request=%s %s", method, path)
+	}
+	if len(body) != 0 {
+		t.Fatalf("body=%s", body)
+	}
+	if m.view != viewDetail || m.toast != "Worklog deleted" {
+		t.Fatalf("success did not return to detail: view=%v toast=%q", m.view, m.toast)
+	}
+}
+
+// S8 — the detail footer must advertise the worklog management entry, or no
+// one can find the flow.
+func TestDetailFooterAdvertisesWorklogManagement(t *testing.T) {
+	m := manageWorklogModel(twoWorklogs())
+	m.view = viewDetail
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "[W] Manage") {
+		t.Fatalf("detail footer does not advertise worklog management:\n%s", out)
+	}
+}
