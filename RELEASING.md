@@ -12,6 +12,7 @@ Every merge, tag, push, and publication remains a separate maintainer decision.
 4. Extract and inspect the curated notes with `make release-notes`.
 5. Push the tag only after separately confirming that external action.
 6. Publish with `make release` only after a separate explicit approval.
+7. Verify the published release, fast-forward `develop` to the released merge commit, and delete the release branch.
 
 ## Prerequisites
 
@@ -66,10 +67,16 @@ dflow finish --dry-run
 ```
 
 `main` is both GitHub's default branch and dflow's manual release target.
-`develop` remains dflow's automatic integration target. Push the release branch
-and open a pull request to `main`; do not use `dflow finish` to merge that
-target. Handle the separate `develop` target according to the reported dflow
-plan.
+`develop` remains dflow's automatic integration target. The dry run above is
+informational: it reports which targets exist and which one needs a pull
+request. It is not an instruction to finish the release branch.
+
+Push the release branch and open a pull request to `main`. **Never run
+`dflow finish` on a `release/vX.Y.Z` branch.** Finishing it merges the release
+branch into `develop`, which creates a merge commit that contributes no files
+and leaves `develop` and `main` on different commits. After the merge,
+`develop` must reach the released commit by fast-forward, as described in
+[step 4](#4-sync-develop-and-delete-the-release-branch).
 
 ### Choose the issue reference before merging
 
@@ -142,6 +149,42 @@ publishing action: it creates or replaces the GitHub release and its assets.
   `main` commit: `git ls-remote --tags origin vX.Y.Z`.
 - Verify downloaded archives against `checksums.txt`.
 - Run `gojira version --json` from an archive and confirm the release version.
+
+## 4. Sync develop and delete the release branch
+
+`develop` must end on the same commit as `main`. Advance it with a real
+fast-forward from a clean local `develop`:
+
+```bash
+git switch develop
+git pull --ff-only
+git merge --ff-only main
+git push origin develop
+```
+
+Then confirm all three agree:
+
+```bash
+git rev-parse --short develop
+git rev-parse --short main
+git log --no-merges --oneline main..develop   # must print nothing
+```
+
+If `git merge --ff-only` refuses, `develop` already moved past `main` — most
+often because `dflow finish` was run on the release branch. Stop there: do not
+accept a merge commit as a substitute and do not continue with further writes.
+Undoing that divergence rewrites a published branch, so it is a maintainer
+action: create a safety branch first (`git branch safety/develop-pre-sync
+develop`), confirm `git log --no-merges --oneline main..develop` is empty and
+`git diff --quiet main develop` succeeds, then have the maintainer run
+`git reset --hard main` followed by `git push --force-with-lease origin develop`.
+
+The pull request does not delete the release branch. Once `main`, the tag and
+`develop` are correct, remove it locally and remotely:
+
+```bash
+dflow delete release/vX.Y.Z --yes
+```
 
 ## Safe reruns and tag corrections
 
