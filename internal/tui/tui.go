@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/color"
 	"math/big"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -350,42 +352,43 @@ type Model struct {
 	filterInput  textinput.Model
 	filterActive bool
 
-	spin                spinner.Model
-	version             string
-	updateChecker       func(context.Context) (string, error)
-	updateCheck         func(context.Context) upgrade.CheckResult
-	updateRecorder      func(string)
-	releaseBrowser      func(url string) tea.Cmd
-	updatePromptOpen    bool
-	updatePromptCur     int
-	updatePromptLatest  string
-	updateDismissed     string
-	updateAvailable     string
-	updateUpgrading     bool
-	updateStage         string
-	updateUpgradeErr    string
-	nextUpdateRequest   uint64
-	activeUpdateRequest uint64
-	searchInput         textinput.Model
-	searchLimitInput    textinput.Model
-	searchLimitEditing  bool
-	searchLimitErr      string
-	searchLimit         int
-	searchLimitAll      bool
-	searchJQL           bool
-	searchResultJQL     bool
-	searchQuery         string
-	searchEditing       bool
-	searchResults       []jira.Issue
-	searchCur           int
-	searchTruncated     bool
-	searchEstimated     *int
-	searchLoading       bool
-	searchCompleted     bool
-	searchErr           error
-	searchReturn        view
-	nextSearchRequest   uint64
-	activeSearchRequest uint64
+	spin                  spinner.Model
+	version               string
+	updateChecker         func(context.Context) (string, error)
+	updateCheck           func(context.Context) upgrade.CheckResult
+	updateRecorder        func(string)
+	releaseBrowser        func(url string) tea.Cmd
+	updatePromptOpen      bool
+	updatePromptCur       int
+	updatePromptLatest    string
+	updateDismissed       string
+	updateAvailable       string
+	updateUpgrading       bool
+	updateStage           string
+	updateUpgradeErr      string
+	updateRelaunchOffered bool
+	nextUpdateRequest     uint64
+	activeUpdateRequest   uint64
+	searchInput           textinput.Model
+	searchLimitInput      textinput.Model
+	searchLimitEditing    bool
+	searchLimitErr        string
+	searchLimit           int
+	searchLimitAll        bool
+	searchJQL             bool
+	searchResultJQL       bool
+	searchQuery           string
+	searchEditing         bool
+	searchResults         []jira.Issue
+	searchCur             int
+	searchTruncated       bool
+	searchEstimated       *int
+	searchLoading         bool
+	searchCompleted       bool
+	searchErr             error
+	searchReturn          view
+	nextSearchRequest     uint64
+	activeSearchRequest   uint64
 
 	// Active sprint of the current board (0 = none; used by create + "a")
 	sprintID int
@@ -1145,6 +1148,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		request, lock, target, staged := msg.requestID, msg.lock, msg.target, msg.staged
 		return m, func() tea.Msg { return runUpdatePlace(request, lock, target, staged) }
 
+	case updateRelaunchMsg:
+		// The process was not replaced (exec failed); the old binary keeps
+		// running, so the honest toast is the fallback. Never retried.
+		return m.relaunchDeclined(), nil
+
 	case updateInstalledMsg:
 		if !m.updateUpgrading || msg.requestID == 0 || msg.requestID != m.activeUpdateRequest {
 			return m, nil
@@ -1554,6 +1562,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// S6/S7: while the update prompt is open it owns every key, on top of
 		// whichever view is behind it.
+		if m.updateRelaunchOffered {
+			return m.updateRelaunch(msg)
+		}
 		if m.updatePromptOpen {
 			return m.updateUpdatePrompt(msg)
 		}
@@ -4390,7 +4401,7 @@ func (m Model) View() tea.View {
 	}
 
 	content := b.String()
-	if m.updatePromptOpen {
+	if m.updateRelaunchOffered || m.updatePromptOpen {
 		content = m.composeOverlay(content, m.renderUpdatePrompt())
 	}
 	if m.view == viewTransition && m.width > 0 && m.contentHeight() > 0 {
@@ -4683,10 +4694,43 @@ func updateReleaseURL(version string) string {
 	return "https://github.com/yepizrene-devoost/gojira/releases/tag/" + version
 }
 
+// updateRelaunch routes the keys of the post-install relaunch modal (issue
+// #52): r (or enter) restarts into the new binary now; l (or esc) declines
+// and keeps today's honest manual-restart toast. The offer never survives a
+// decision, and a failed replacement falls back to the same toast.
+func (m Model) updateRelaunch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "r", "enter":
+		m.updateRelaunchOffered = false
+		return m, func() tea.Msg { return updateRelaunchMsg{err: relaunchSeam()} }
+	case "l", "esc":
+		return m.relaunchDeclined(), nil
+	}
+	return m, nil
+}
+
+// relaunchDeclined closes the offer with the manual-restart honesty: the
+// session keeps the old binary until the user restarts it themselves.
+func (m Model) relaunchDeclined() Model {
+	m.updateRelaunchOffered = false
+	m.toast = fmt.Sprintf("Installed gojira %s → %s — restart the TUI to start using it (this session keeps %s)", m.version, m.updatePromptLatest, m.version)
+	return m
+}
+
+// updateRelaunchMsg closes the relaunch decision: success never arrives as a
+// message (the process image was replaced), so a delivered message is always
+// a failure and falls back to the manual-restart toast.
+type updateRelaunchMsg struct{ err error }
+
 // renderUpdatePrompt builds the S7 prompt content — installed → latest, the
 // release URL and the three options — framed by the shared modal style so it
 // inherits the established frame, centring and wrapping (S6).
 func (m Model) renderUpdatePrompt() string {
+	if m.updateRelaunchOffered {
+		return m.renderRelaunchModal()
+	}
 	var b strings.Builder
 	b.WriteString("⬆ Update available\n")
 	fmt.Fprintf(&b, "gojira %s → %s\n\n", m.version, m.updatePromptLatest)
@@ -4708,6 +4752,18 @@ func (m Model) renderUpdatePrompt() string {
 		b.WriteString(marker + option + "\n")
 	}
 	return m.renderModal(b.String(), "[↑↓] Move  [Enter] Confirm  [esc] Keep  [u/v/c] Shortcuts", 0)
+}
+
+// renderRelaunchModal builds the final post-install step (issue #52): the
+// install succeeded and the binary on disk is the new one, so gojira offers
+// to restart itself now with a visible Later option.
+func (m Model) renderRelaunchModal() string {
+	var b strings.Builder
+	b.WriteString("✓ Update installed\n")
+	fmt.Fprintf(&b, "gojira %s → %s\n\n", m.version, m.updatePromptLatest)
+	b.WriteString("The new version is on disk. This session still runs " + m.version + ".\n\n")
+	b.WriteString("→ Restart gojira now\n  Later\n")
+	return m.renderModal(b.String(), "[r] Restart now  [l/esc] Later", 0)
 }
 
 // updateUpdatePrompt routes every key while the prompt is open (S7): arrows
@@ -4782,6 +4838,9 @@ var (
 	upgradeFetcher      = func() *upgrade.Fetcher { return upgrade.NewFetcher(nil) }
 	upgradeBaseURL      = ""
 	upgradeArtifactName = upgrade.CurrentArtifactName
+	// relaunchSeam replaces the running process with the new binary; swappable
+	// so tests never exec anything.
+	relaunchSeam = relaunchExec
 )
 
 // Progress stages the busy modal reports while the install pipeline runs.
@@ -4925,9 +4984,10 @@ func (m Model) failUpdate(err error) Model {
 }
 
 // finishUpdate reports a completed install: the S10 status line resolves, the
-// version is persisted through the config recorder so S5 holds, and the modal
-// closes. The binary on disk changed but this session still runs the old one,
-// so the toast says plainly that a restart is needed.
+// version is persisted through the config recorder so S5 holds, the modal
+// closes and a final relaunch step opens (issue #52): the binary on disk is
+// the new one, so gojira offers to restart itself instead of only telling the
+// user to do it. The offer carries the new version and a Later option.
 func (m Model) finishUpdate() Model {
 	m.updateUpgrading = false
 	m.updateStage = ""
@@ -4935,8 +4995,23 @@ func (m Model) finishUpdate() Model {
 	m.updatePromptOpen = false
 	m = m.dismissUpdatePrompt()
 	m.updateAvailable = ""
-	m.toast = fmt.Sprintf("Installed gojira %s → %s — restart the TUI to start using it (this session keeps %s)", m.version, m.updatePromptLatest, m.version)
+	m.updateRelaunchOffered = true
 	return m
+}
+
+// relaunchExec replaces the running process with a fresh image of the same
+// executable and argv, so the TUI comes back on the new binary. It never
+// returns on success; on any platform where the replacement is unsupported
+// the caller falls back to the manual-restart toast.
+func relaunchExec() error {
+	path, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	argv0 := path
+	argv := os.Args
+	env := os.Environ()
+	return syscall.Exec(argv0, argv, env)
 }
 
 // viewUpdateChanges opens the release URL in the browser through the shared
