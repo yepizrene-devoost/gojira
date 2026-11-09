@@ -30,25 +30,25 @@ func TestUpdateCheckIsEnabledUnlessDisabled(t *testing.T) {
 func TestUpdateCheckDueThrottlesByInterval(t *testing.T) {
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name string
-		last string
-		want bool
+		name     string
+		last     string
+		interval time.Duration
+		want     bool
 	}{
-		{name: "never checked", last: "", want: true},
-		{name: "checked an hour ago", last: now.Add(-time.Hour).Format(time.RFC3339), want: false},
-		{name: "checked 25 hours ago", last: now.Add(-25 * time.Hour).Format(time.RFC3339), want: true},
-		{name: "unparseable timestamp", last: "yesterday", want: true},
+		{name: "never checked", last: "", interval: 24 * time.Hour, want: true},
+		{name: "checked an hour ago, 24h", last: now.Add(-time.Hour).Format(time.RFC3339), interval: 24 * time.Hour, want: false},
+		{name: "checked 25 hours ago, 24h", last: now.Add(-25 * time.Hour).Format(time.RFC3339), interval: 24 * time.Hour, want: true},
+		{name: "checked an hour ago, zero interval checks every start", last: now.Add(-time.Hour).Format(time.RFC3339), interval: 0, want: true},
+		{name: "checked a minute ago, zero interval checks every start", last: now.Add(-time.Minute).Format(time.RFC3339), interval: 0, want: true},
+		{name: "unparseable timestamp", last: "yesterday", interval: 24 * time.Hour, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{UpdateLastCheck: tc.last}
-			if got := cfg.UpdateCheckDue(now, UpdateCheckInterval); got != tc.want {
+			if got := cfg.UpdateCheckDue(now, tc.interval); got != tc.want {
 				t.Fatalf("UpdateCheckDue() = %v, want %v", got, tc.want)
 			}
 		})
-	}
-	if UpdateCheckInterval != 24*time.Hour {
-		t.Fatalf("UpdateCheckInterval = %v, want 24h", UpdateCheckInterval)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestRecordUpdateCheckSurvivesSaveAndLoad(t *testing.T) {
 	if !loaded.UpdateCheckEnabled() {
 		t.Fatal("UpdateCheckEnabled() = false after a recorded check, want the default true")
 	}
-	if loaded.UpdateCheckDue(checkedAt.Add(time.Hour), UpdateCheckInterval) {
+	if loaded.UpdateCheckDue(checkedAt.Add(time.Hour), 24*time.Hour) {
 		t.Fatal("UpdateCheckDue() = true an hour after a check, want it throttled")
 	}
 }

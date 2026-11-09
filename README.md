@@ -290,14 +290,17 @@ The TUI checks for a newer release on every start: one background check runs at
 startup and never blocks or disturbs it, staying completely silent when you are
 offline or when the running binary is a development build. The check sends the
 stored `ETag` as `If-None-Match`, so an unchanged release answers `304` and does
-not consume GitHub's rate limit; `update_check_interval` (a duration, `0` means
-every start) spaces checks out when wanted, and `update_check false` disables
-them entirely. When a newer release exists, a centred modal offers **Update now**,
+not consume GitHub's rate limit. The check runs on every start by default —
+including fresh installs; `update_check_interval` (a duration; absent or `0`
+means every start, an invalid or negative value behaves like `0`) spaces checks
+out when wanted, and `update_check false` disables them entirely. When a newer release exists, a centred modal offers **Update now**,
 **View changes** and **Keep current version** (cursor starts on Keep; `u`, `v` and
 `c` are shortcuts). `Update now` runs the same verified installer the CLI uses —
 ownership first, checksum-verified download, atomic placement — shows progress
-and every refusal inside the modal, and needs a TUI restart to run the new
-version. View changes opens the release notes in the browser. A dismissed or
+and every refusal inside the modal. When the install succeeds, a final modal
+offers to restart gojira right away (`r`) or continue with the current session
+(`Later`); the fresh binary only runs after that restart, and a failed relaunch
+falls back to the manual-restart notice. View changes opens the release notes in the browser. A dismissed or
 viewed version never re-prompts, and a status line in the boards header stays
 until the running version is current.
 

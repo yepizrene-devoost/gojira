@@ -57,7 +57,7 @@ func runTUI() error {
 	// simply leaves it off and never disturbs the TUI.
 	cfg, cfgErr := config.Load()
 	m := tui.New(client, domain).WithVersion(version)
-	if cfgErr == nil && cfg.UpdateCheckEnabled() && cfg.UpdateCheckDue(time.Now(), config.UpdateCheckInterval) {
+	if cfgErr == nil && updateCheckDueForTUI(cfg, time.Now()) {
 		m = m.WithUpdateCheck(
 			func(ctx context.Context) (string, error) {
 				release, err := upgrade.NewClient("", &http.Client{Timeout: 4 * time.Second}).LatestRelease(ctx)
@@ -71,6 +71,14 @@ func runTUI() error {
 	p := tea.NewProgram(m)
 	_, err = p.Run()
 	return err
+}
+
+// updateCheckDueForTUI decides whether the TUI checks for a release at now:
+// the check must be enabled, and the interval is the one the user configured
+// (absent, zero or unparsable means every start), never a hardcoded constant
+// (issue #52). A fresh install records nothing, so it checks on every start.
+func updateCheckDueForTUI(cfg *config.Config, now time.Time) bool {
+	return cfg.UpdateCheckEnabled() && cfg.UpdateCheckDue(now, cfg.UpdateCheckIntervalDuration())
 }
 
 // recordUpdateCheck stores the result of a release check through the

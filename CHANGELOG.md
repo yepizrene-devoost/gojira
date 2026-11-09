@@ -4,6 +4,23 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.8.2 – Update-flow fixes
+
+### Update-flow fixes
+
+- The update check truly runs on every TUI start by default, as documented. The
+  launch wiring consulted a hardcoded 24-hour constant and never read the
+  configured `update_check_interval`, so the key existed but did nothing: the
+  interval now comes from the configuration (absent, `0`, unparsable or
+  negative means every start — never "don't check"), and a fresh install checks
+  on every start too, because nothing was recorded yet.
+- After a successful install, a final modal offers to restart gojira right away
+  (`r`): the process is replaced in place with the verified new binary, so the
+  TUI comes back already updated. `Later` (or `esc`) keeps the previous
+  manual-restart notice, and a failed replacement falls back to that notice
+  without retrying. A refused or failed install never offers the restart, and
+  an install in flight still cannot be cancelled.
+
 ## 📦 v0.8.1 – Comment management
 
 ### Comment management
