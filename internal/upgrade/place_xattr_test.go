@@ -88,24 +88,20 @@ func TestPlaceToleratesClearingFailure(t *testing.T) {
 	}
 }
 
-// Outside macOS the clearing must not run at all.
-func TestPlaceSkipsClearingOutsideMacOS(t *testing.T) {
-	goos := runtime.GOOS
-	if goos == "darwin" {
+// Outside macOS the clearing must be an observable no-op: clearMacOSLaunchBlockers
+// returns nil without touching the file (the platform gate lives inside it, so
+// the contract is asserted on the real function, not on fake call counts).
+func TestClearLaunchBlockersNoOpOutsideMacOS(t *testing.T) {
+	if runtime.GOOS == "darwin" {
 		t.Skip("this test asserts the no-op on non-macOS platforms")
 	}
-	installDir := t.TempDir()
-	destination := filepath.Join(installDir, "gojira")
-	writeFile(t, destination, "old")
-	staged := filepath.Join(installDir, ".gojira.new.123")
-	writeFile(t, staged, "new")
-
-	fake := &fakeSystem{goos: goos, clearCalls: new(int)}
-	placement, err := NewInstaller(fake.system()).Place(Target{Path: destination, Dir: installDir}, staged)
-	if err != nil || placement.Outcome != OutcomeApplied {
-		t.Fatalf("Place = %+v, %v", placement, err)
+	dir := t.TempDir()
+	staged := filepath.Join(dir, "bin")
+	writeFile(t, staged, "x")
+	if err := clearMacOSLaunchBlockers(staged); err != nil {
+		t.Fatalf("clearMacOSLaunchBlockers returned an error outside macOS: %v", err)
 	}
-	if *fake.clearCalls != 0 {
-		t.Fatalf("clear ran %d times outside macOS", *fake.clearCalls)
+	if got := readFile(t, staged); got != "x" {
+		t.Fatalf("file content changed outside macOS: %q", got)
 	}
 }
