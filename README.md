@@ -300,7 +300,10 @@ ownership first, checksum-verified download, atomic placement — shows progress
 and every refusal inside the modal. When the install succeeds, a final modal
 offers to restart gojira right away (`r`) or continue with the current session
 (`Later`); the fresh binary only runs after that restart, and a failed relaunch
-falls back to the manual-restart notice. View changes opens the release notes in the browser. A dismissed or
+falls back to the manual-restart notice. The installer clears the macOS
+quarantine attribute before placing the updated binary, so Gatekeeper does not
+kill a binary a non-notarized gojira downloaded (the provenance attribute is
+immutable on macOS 26 but harmless on its own); outside macOS this is a no-op. View changes opens the release notes in the browser. A dismissed or
 viewed version never re-prompts, and a status line in the boards header stays
 until the running version is current.
 
