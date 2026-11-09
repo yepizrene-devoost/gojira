@@ -1157,7 +1157,8 @@ Release notes are curated; generated history is only reference material.
 |---|---|
 | `make changelog` | Writes a heading-free, grouped commit draft to `CHANGELOG.draft.md`; `docs(odd)` bookkeeping is omitted. |
 | `make release-notes VERSION=vX.Y.Z` | Extracts the body of the newest matching package section from `CHANGELOG.md` into ignored `RELEASE_NOTES.md`. |
-| `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, and publishes or replaces the GitHub release through GoReleaser. |
+| `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, publishes or replaces the GitHub release through GoReleaser, and then warms the public Go module proxy for that tag. |
+| `make warm-module-proxy VERSION=vX.Y.Z` | Requests the tagged version from `proxy.golang.org` so `go install …@latest` and `pkg.go.dev` can resolve it. `make release` already runs it; this is the recovery path after a failed publish. |
 
 `make release` is the repository's only publisher and is an explicit local
 publishing command, not a dry run. GitHub Actions validates more than the

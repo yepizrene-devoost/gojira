@@ -11,7 +11,9 @@ Every merge, tag, push, and publication remains a separate maintainer decision.
 3. On an up-to-date, clean `main`, create the local signed `vX.Y.Z` tag.
 4. Extract and inspect the curated notes with `make release-notes`.
 5. Push the tag only after separately confirming that external action.
-6. Publish with `make release` only after a separate explicit approval.
+6. Publish with `make release` only after a separate explicit approval. It
+   publishes through GoReleaser and then warms the public Go module proxy for
+   the same tag.
 7. Verify the published release, fast-forward `develop` to the released merge commit, and delete the release branch.
 
 ## Prerequisites
@@ -149,6 +151,11 @@ publishing action: it creates or replaces the GitHub release and its assets.
   `main` commit: `git ls-remote --tags origin vX.Y.Z`.
 - Verify downloaded archives against `checksums.txt`.
 - Run `gojira version --json` from an archive and confirm the release version.
+- Confirm the public Go module proxy resolves the tag, which is what makes the
+  version installable and visible to `pkg.go.dev`:
+  `make warm-module-proxy VERSION=vX.Y.Z`. `make release` already runs it; this
+  rerun is for recovery after a failed or interrupted publish. `pkg.go.dev`
+  indexing is asynchronous and can lag behind a resolvable tag.
 
 ## 4. Sync develop and delete the release branch
 
