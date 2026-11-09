@@ -74,9 +74,6 @@ repeating the comment id with --confirm.`,
 		if commentID == "" && (newText != "" || deleteComment) {
 			return commandError(cmd, "validation_error", "--text and --delete require --id", issueKey, jira.MutationNotApplied, fmt.Errorf("--text and --delete require --id"))
 		}
-		if commentID == "" && (newText != "" || deleteComment) {
-			return commandError(cmd, "validation_error", "--text and --delete require --id", issueKey, jira.MutationNotApplied, fmt.Errorf("--text and --delete require --id"))
-		}
 		if commentID != "" && (text != "" || len(mentions) > 0) {
 			return commandError(cmd, "validation_error", "--id cannot be combined with an inline comment text or --mention", issueKey, jira.MutationNotApplied, fmt.Errorf("--id cannot be combined with an inline comment text or --mention"))
 		}
