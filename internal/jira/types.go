@@ -204,16 +204,23 @@ type FixVersionField struct {
 type DescriptionField = ADFDoc
 
 type Comment struct {
+	ID     string `json:"id,omitempty"`
 	Author struct {
 		DisplayName string `json:"displayName"`
 	} `json:"author"`
 	Body    ADFDoc `json:"body"`
 	Comment string `json:"comment,omitempty"`
 	Created string `json:"created"`
+	Updated string `json:"updated,omitempty"`
 }
 
+// CommentField mirrors the documented paginated comment page. The pagination
+// fields stay optional so embedded issue reads that omit them still decode.
 type CommentField struct {
-	Comments []Comment `json:"comments"`
+	StartAt    *int      `json:"startAt,omitempty"`
+	MaxResults *int      `json:"maxResults,omitempty"`
+	Total      *int      `json:"total,omitempty"`
+	Comments   []Comment `json:"comments"`
 }
 
 // IssueHierarchyRef contains only the nested fields supplied by the issue GET.
@@ -438,6 +445,7 @@ func hierarchyJSON(ref IssueHierarchyRef) HierarchyJSON {
 }
 
 type CommentJSON struct {
+	ID      string `json:"id,omitempty"`
 	Author  string `json:"author"`
 	Body    string `json:"body"`
 	Created string `json:"created"`
@@ -606,6 +614,7 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 		for i, c := range iss.Fields.Comment.Comments {
 			t.Comments[i] = CommentJSON{
 				Author:  c.Author.DisplayName,
+				ID:      c.ID,
 				Body:    c.Body.Flatten(),
 				Created: normalizeDate(c.Created),
 			}
