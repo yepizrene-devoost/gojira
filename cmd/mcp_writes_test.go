@@ -52,7 +52,7 @@ func TestMCPWrites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list.Tools) != 23 {
+			if len(list.Tools) != 26 {
 				t.Fatalf("tools=%d", len(list.Tools))
 			}
 			for _, tool := range list.Tools {
@@ -66,6 +66,7 @@ func TestMCPWrites(t *testing.T) {
 			}{
 				{"create", map[string]any{"project": "DEMO", "issueType": "Task", "summary": "Example"}},
 				{"comment", map[string]any{"key": "DEMO-1", "body": "Example"}},
+				{"update_comment", map[string]any{"key": "DEMO-1", "commentId": "10001", "text": "Example"}},
 				{"log_work", map[string]any{"key": "DEMO-1", "timeSpent": "2h"}},
 				{"assign", map[string]any{"key": "DEMO-1", "accountId": "id"}},
 				{"move", map[string]any{"key": "DEMO-1", "status": "Done"}},

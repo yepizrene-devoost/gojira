@@ -82,7 +82,7 @@ var kanbanHelp = []helpEntry{
 	{keys: "←/→ or h/l", action: "Move between columns"},
 	{keys: "↑/↓ or k/j", action: "Move within a column"},
 	{keys: "Enter", action: "Open ticket detail"},
-	{keys: "m (detail)", action: "Add comment; Ctrl+S submits, Enter adds a line"},
+	{keys: "m (detail)", action: "Add comment; C lists/edits/deletes them"},
 	{keys: "U (detail)", action: "Edit summary, priority and labels; Ctrl+S saves"},
 	{keys: "f (detail)", action: "Attach a file by path; Enter uploads"},
 	{keys: "/", action: "Filter loaded tickets; Enter searches Jira"},
@@ -179,6 +179,9 @@ const (
 	viewWorklogList
 	viewWorklogEdit
 	viewWorklogDelete
+	viewCommentList
+	viewCommentEdit
+	viewCommentDelete
 	viewCreate
 	viewSearch
 	viewUserSearch
@@ -305,6 +308,18 @@ type Model struct {
 	nextWorklogMutationRequest    uint64
 	activeWorklogMutationRequest  uint64
 	worklogMutationWarning        error
+	commentIssue                  string
+	commentList                   []jira.Comment
+	commentCur                    int
+	commentTarget                 jira.Comment
+	nextCommentListRequest        uint64
+	activeCommentListRequest      uint64
+	commentListLoading            bool
+	commentEditInput              textarea.Model
+	commentMutationBusy           bool
+	nextCommentMutationRequest    uint64
+	activeCommentMutationRequest  uint64
+	commentMutationWarning        error
 	attachInput                   textinput.Model
 	attachIssue                   string
 	nextAttachRequest             uint64
@@ -317,20 +332,20 @@ type Model struct {
 	descriptionErr                error
 	nextDescriptionRequest        uint64
 	activeDescriptionRequest      uint64
-	boardPointsField string
-	fieldInputs [5]textinput.Model // date, components, versions, points, field ID
-	fieldOriginal [5]string
-	fieldTouched [5]bool
-	fieldCur int
-	fieldLoading bool
-	fieldSelected bool
-	fieldSelectedID string
-	fieldLastID string
-	fieldSubmitting bool
-	fieldApplied bool
-	fieldErr error
-	nextFieldRequest uint64
-	activeFieldRequest uint64
+	boardPointsField              string
+	fieldInputs                   [5]textinput.Model // date, components, versions, points, field ID
+	fieldOriginal                 [5]string
+	fieldTouched                  [5]bool
+	fieldCur                      int
+	fieldLoading                  bool
+	fieldSelected                 bool
+	fieldSelectedID               string
+	fieldLastID                   string
+	fieldSubmitting               bool
+	fieldApplied                  bool
+	fieldErr                      error
+	nextFieldRequest              uint64
+	activeFieldRequest            uint64
 
 	filterInput  textinput.Model
 	filterActive bool
@@ -384,7 +399,7 @@ type Model struct {
 	createDesc         textinput.Model
 	createParent       textinput.Model
 	createTypeSelected bool
-	createErr     string
+	createErr          string
 
 	// Issue key to select after the next board reload
 	focusIssue string
@@ -414,13 +429,13 @@ type exportClipboardMsg struct {
 }
 type boardsMsg struct{ boards []jira.Board }
 type boardLoadMsg struct {
-	requestID  uint64
-	boardID    int
-	columns    []column
-	sprintName string
-	sprintID   int
+	requestID   uint64
+	boardID     int
+	columns     []column
+	sprintName  string
+	sprintID    int
 	pointsField string
-	err        error
+	err         error
 }
 type detailMsg struct {
 	issue         *jira.Issue
@@ -508,6 +523,25 @@ type worklogListMsg struct {
 	err      error
 }
 
+// commentListMsg carries one collection read of the comment list.
+type commentListMsg struct {
+	request  uint64
+	issueKey string
+	comments []jira.Comment
+	err      error
+}
+
+// commentMutationDoneMsg carries one comment edit or delete result.
+type commentMutationDoneMsg struct {
+	request   uint64
+	issueKey  string
+	commentID string
+	action    string
+	err       error
+	// warning carries the ADF replacement notice when the edit succeeded.
+	warning error
+}
+
 type worklogMutationDoneMsg struct {
 	request   uint64
 	issueKey  string
@@ -532,22 +566,22 @@ type descriptionUpdatedMsg struct {
 	err       error
 }
 type fieldLoadedMsg struct {
-	requestID uint64
-	fieldID string
-	issueKey string
-	boardRequest uint64
+	requestID     uint64
+	fieldID       string
+	issueKey      string
+	boardRequest  uint64
 	searchRequest uint64
-	issue *jira.Issue
-	err error
+	issue         *jira.Issue
+	err           error
 }
 type fieldUpdatedMsg struct {
-	requestID uint64
-	issueKey string
-	boardRequest uint64
+	requestID     uint64
+	issueKey      string
+	boardRequest  uint64
 	searchRequest uint64
-	issue *jira.Issue
-	applied bool
-	err error
+	issue         *jira.Issue
+	applied       bool
+	err           error
 }
 type createTypesMsg struct {
 	types []string
@@ -1191,6 +1225,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worklogCur = 0
 		return m, nil
 
+	case commentListMsg:
+		if m.view != viewCommentList || msg.request == 0 || msg.request != m.activeCommentListRequest ||
+			msg.issueKey == "" || msg.issueKey != m.commentIssue {
+			return m, nil
+		}
+		m.activeCommentListRequest = 0
+		m.commentListLoading = false
+		m.commentList = nil
+		m.err = nil
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.commentList = msg.comments // Jira's order is authoritative; no sorting.
+		m.commentCur = 0
+		return m, nil
+
 	case worklogDoneMsg:
 		if m.view != viewWorklog || msg.requestID == 0 || msg.requestID != m.activeWorklogRequest ||
 			msg.issueKey == "" || msg.issueKey != m.worklogIssue || m.detail == nil || msg.issueKey != m.detail.Key {
@@ -1230,6 +1281,38 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		refreshed, refresh := m.reloadDetail()
 		return refreshed, tea.Batch(refresh, clearToastAfter(3*time.Second))
+
+	case commentMutationDoneMsg:
+		if m.view != viewCommentEdit && m.view != viewCommentDelete {
+			return m, nil
+		}
+		if msg.request == 0 || msg.request != m.activeCommentMutationRequest ||
+			m.detail == nil || msg.issueKey == "" || msg.issueKey != m.detail.Key {
+			return m, nil
+		}
+		m.activeCommentMutationRequest = 0
+		m.commentMutationBusy = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.err = msg.warning
+		m.commentMutationWarning = msg.warning
+		m.view = viewCommentList
+		if msg.action == "delete" {
+			m.toast = "Comment deleted"
+		} else {
+			m.toast = "Comment updated"
+		}
+		// The list shows stale content after a mutation; reload it and the
+		// detail modal together so both reflect Jira's state.
+		m, refresh := m.reloadDetail()
+		refreshedCommentList, refreshCommentList := m.startCommentListLoad(m.commentIssue)
+		// The load resets mutation state; re-attach the ADF replacement notice
+		// so it survives into the refreshed list.
+		refreshedCommentList.commentMutationWarning = msg.warning
+		refreshedCommentList.err = msg.warning
+		return refreshedCommentList, tea.Batch(refreshCommentList, refresh, clearToastAfter(3*time.Second))
 
 	case attachDoneMsg:
 		if m.view != viewAttach || msg.requestID == 0 || msg.requestID != m.activeAttachRequest ||
@@ -1272,13 +1355,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = msg.err
-			if m.commentEntry && msg.applied { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied); detail refresh failed: %w", msg.err) }
+			if m.commentEntry && msg.applied {
+				m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied); detail refresh failed: %w", msg.err)
+			}
 			return m, nil
 		}
 		if msg.issue == nil || msg.issue.Key != msg.issueKey {
 			m.descriptionApplied = msg.applied
 			m.descriptionErr = fmt.Errorf("description was updated, but Jira returned no refreshed ticket")
-			if m.commentEntry { m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied), but Jira returned no refreshed ticket") }
+			if m.commentEntry {
+				m.descriptionErr = fmt.Errorf("comment applied (mutation state: applied), but Jira returned no refreshed ticket")
+			}
 			return m, nil
 		}
 		m.descriptionApplied = false
@@ -1289,14 +1376,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.descriptionInput.Blur()
 		m.view = viewDetail
 		m.toast = "Description updated"
-		if m.commentEntry { m.toast = "Comment added" }
+		if m.commentEntry {
+			m.toast = "Comment added"
+		}
 		return m, clearToastAfter(3 * time.Second)
 
 	case fieldLoadedMsg:
-		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldLoading || msg.fieldID != m.fieldInputs[4].Value() { return m, nil }
+		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldLoading || msg.fieldID != m.fieldInputs[4].Value() {
+			return m, nil
+		}
 		m.fieldLoading = false
 		m.activeFieldRequest = 0
-		if msg.err != nil { m.fieldErr = msg.err; return m, nil }
+		if msg.err != nil {
+			m.fieldErr = msg.err
+			return m, nil
+		}
 		if msg.issue == nil || msg.issue.Key != msg.issueKey || msg.issue.StoryPoints == nil {
 			m.fieldErr = fmt.Errorf("selected story points data is missing or belongs to another issue")
 			return m, nil
@@ -1316,10 +1410,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case fieldUpdatedMsg:
-		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldSubmitting { return m, nil }
+		if !m.matchFieldRequest(msg.requestID, msg.issueKey, msg.boardRequest, msg.searchRequest) || !m.fieldSubmitting {
+			return m, nil
+		}
 		m.fieldSubmitting = false
 		m.activeFieldRequest = 0
-		if msg.err != nil { m.fieldApplied = msg.applied; m.fieldErr = msg.err; return m, nil }
+		if msg.err != nil {
+			m.fieldApplied = msg.applied
+			m.fieldErr = msg.err
+			return m, nil
+		}
 		if msg.issue == nil || msg.issue.Key != msg.issueKey || (m.fieldInputs[4].Value() != "" && msg.issue.StoryPoints == nil) {
 			m.fieldApplied = msg.applied
 			m.fieldErr = fmt.Errorf("update applied, but refreshed ticket data is missing or invalid")
@@ -1331,7 +1431,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailScroll = 0
 		m.view = viewDetail
 		m.toast = "Ticket fields updated"
-		return m, clearToastAfter(3*time.Second)
+		return m, clearToastAfter(3 * time.Second)
 
 	case createTypesMsg:
 		// The form already defaults to "Task"; richer types are a bonus.
@@ -1371,25 +1471,40 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case basicsUpdatedMsg:
 		return m.basicsUpdated(msg)
 	case lifecycleDoneMsg:
-		if msg.request != m.lifecycleRequest || msg.board != m.loadedBoardRequest || msg.search != m.activeSearchRequest || m.activeBoardRequest != 0 || m.view == viewBoards || !m.lifecycleBusy { return m, nil }
+		if msg.request != m.lifecycleRequest || msg.board != m.loadedBoardRequest || msg.search != m.activeSearchRequest || m.activeBoardRequest != 0 || m.view == viewBoards || !m.lifecycleBusy {
+			return m, nil
+		}
 		m.lifecycleBusy = false
-		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		if msg.err != nil {
+			m.err = sprintMovementError(msg.err)
+			return m, nil
+		}
 		m.view = viewKanban
 		m.detail = nil
 		m.toast = "Jira accepted the request for " + m.lifecycleKey + " (mutation state: applied)"
 		return m.startBoardLoad(m.boards[m.boardCur])
 
 	case sprintChoiceMsg:
-		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveLoading { return m, nil }
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveLoading {
+			return m, nil
+		}
 		m.sprintMoveLoading = false
-		if msg.err != nil { m.err = sprintMovementError(&jira.MutationError{State:jira.MutationNotApplied, Err:msg.err}); return m, nil }
+		if msg.err != nil {
+			m.err = sprintMovementError(&jira.MutationError{State: jira.MutationNotApplied, Err: msg.err})
+			return m, nil
+		}
 		m.sprintChoices = msg.sprints
 		return m, nil
 
 	case sprintMovementMsg:
-		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveSubmitting { return m, nil }
+		if !m.matchSprintMove(msg.request, msg.board, msg.search) || !m.sprintMoveSubmitting {
+			return m, nil
+		}
 		m.sprintMoveSubmitting = false
-		if msg.err != nil { m.err = sprintMovementError(msg.err); return m, nil }
+		if msg.err != nil {
+			m.err = sprintMovementError(msg.err)
+			return m, nil
+		}
 		m.view = viewKanban
 		m.toast = "Jira accepted the request for " + m.sprintMoveKey
 		m.focusIssue = m.sprintMoveKey
@@ -1660,6 +1775,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWorklogEdit(msg)
 		case viewWorklogDelete:
 			return m.updateWorklogDelete(msg)
+		case viewCommentList:
+			return m.updateCommentList(msg)
+		case viewCommentEdit:
+			return m.updateCommentEdit(msg)
+		case viewCommentDelete:
+			return m.updateCommentDelete(msg)
 		case viewAttach:
 			return m.updateAttach(msg)
 		case viewCreate:
@@ -1734,7 +1855,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case viewBasicsEdit:
 			return m.pasteBasics(msg)
 		case viewAssign:
-			if m.assignment.busy || m.assignment.finished { return m, nil }
+			if m.assignment.busy || m.assignment.finished {
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.assignment.input, cmd = m.assignment.input.Update(msg)
 			return m, cmd
@@ -1780,7 +1903,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.fieldInputs[m.fieldCur], cmd = m.fieldInputs[m.fieldCur].Update(msg)
 				m.fieldTouched[m.fieldCur] = true
-				if m.fieldCur == 4 { m = m.syncFieldSelector() }
+				if m.fieldCur == 4 {
+					m = m.syncFieldSelector()
+				}
 				return m, cmd
 			}
 		case viewDescriptionEdit:
@@ -2062,7 +2187,9 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		return m.enterCreate()
 	case "A":
-		if len(cols) > m.colCur && m.colCur >= 0 && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) { return m.startAssignment(cols[m.colCur].issues[m.rowCur]) }
+		if len(cols) > m.colCur && m.colCur >= 0 && m.rowCur >= 0 && m.rowCur < len(cols[m.colCur].issues) {
+			return m.startAssignment(cols[m.colCur].issues[m.rowCur])
+		}
 	case "a":
 		if m.colCur >= len(cols) {
 			return m, nil
@@ -2088,11 +2215,13 @@ func (m Model) updateKanban(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 type lifecycleDoneMsg struct {
 	request, board, search uint64
-	err error
+	err                    error
 }
 
 func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.Cmd) {
-	if (m.lifecycleBusy && m.lifecycleBoard == m.loadedBoardRequest && m.lifecycleSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	if (m.lifecycleBusy && m.lifecycleBoard == m.loadedBoardRequest && m.lifecycleSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) {
+		return m, nil
+	}
 	m.lifecycleRequest++
 	m.lifecycleBoard, m.lifecycleSearch = m.loadedBoardRequest, m.activeSearchRequest
 	m.lifecycleKey, m.lifecycleReturn = issue.Key, m.view
@@ -2114,11 +2243,15 @@ func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.C
 	request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
 	return m, func() tea.Msg {
 		transitions, err := client.GetTransitions(key)
-		if err != nil { return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:err}} }
+		if err != nil {
+			return lifecycleDoneMsg{request, board, search, &jira.MutationError{State: jira.MutationNotApplied, Err: err}}
+		}
 		var candidates []jira.Transition
 		var labels []string
 		for _, tr := range transitions {
-			if tr.To == nil || tr.To.Category == nil { continue }
+			if tr.To == nil || tr.To.Category == nil {
+				continue
+			}
 			category := tr.To.Category.Key
 			if (!reopen && category == "done") || (reopen && (category == "new" || category == "indeterminate")) {
 				candidates = append(candidates, tr)
@@ -2126,7 +2259,7 @@ func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.C
 			}
 		}
 		if len(candidates) != 1 {
-			return lifecycleDoneMsg{request, board, search, &jira.MutationError{State:jira.MutationNotApplied, Err:fmt.Errorf("validation_error: expected one candidate, got %d: [%s]; use t", len(candidates), strings.Join(labels, "; "))}}
+			return lifecycleDoneMsg{request, board, search, &jira.MutationError{State: jira.MutationNotApplied, Err: fmt.Errorf("validation_error: expected one candidate, got %d: [%s]; use t", len(candidates), strings.Join(labels, "; "))}}
 		}
 		return lifecycleDoneMsg{request, board, search, client.TransitionIssue(key, candidates[0].ID)}
 	}
@@ -2134,36 +2267,48 @@ func (m Model) startLifecycle(issue jira.Issue, deleting bool) (tea.Model, tea.C
 
 func (m Model) updateDeleteConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c": return m, tea.Quit
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc":
 		// A submitted write cannot be cancelled or retried from this dialog.
-		if !m.lifecycleBusy { m.view = m.lifecycleReturn; m.err = nil }
+		if !m.lifecycleBusy {
+			m.view = m.lifecycleReturn
+			m.err = nil
+		}
 		return m, nil
 	case "enter":
-		if m.lifecycleBusy || m.err != nil || m.deleteInput.Value() != m.lifecycleKey { return m, nil }
+		if m.lifecycleBusy || m.err != nil || m.deleteInput.Value() != m.lifecycleKey {
+			return m, nil
+		}
 		m.lifecycleBusy = true
 		client, key := m.client, m.lifecycleKey
 		request, board, search := m.lifecycleRequest, m.lifecycleBoard, m.lifecycleSearch
 		return m, func() tea.Msg { return lifecycleDoneMsg{request, board, search, client.DeleteIssue(key)} }
 	}
-	if !m.lifecycleBusy { var cmd tea.Cmd; m.deleteInput, cmd = m.deleteInput.Update(msg); return m, cmd }
+	if !m.lifecycleBusy {
+		var cmd tea.Cmd
+		m.deleteInput, cmd = m.deleteInput.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
 type sprintChoiceMsg struct {
 	request, board, search uint64
-	sprints []jira.Sprint
-	err error
+	sprints                []jira.Sprint
+	err                    error
 }
 
 type sprintMovementMsg struct {
 	request, board, search uint64
-	err error
+	err                    error
 }
 
 func sprintMovementError(err error) error {
 	code, _ := jira.ClassifyAPIError(err)
-	if code == "" { code = "request_failed" }
+	if code == "" {
+		code = "request_failed"
+	}
 	return fmt.Errorf("%s (mutation state: %s): %w", code, jira.MutationStateOf(err), err)
 }
 
@@ -2173,13 +2318,17 @@ func (m Model) matchSprintMove(request, board, search uint64) bool {
 }
 
 func (m Model) startSprintMovement(key string, backlog bool) (tea.Model, tea.Cmd) {
-	if (m.sprintMoveSubmitting && m.sprintMoveBoard == m.loadedBoardRequest && m.sprintMoveSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) { return m, nil }
+	if (m.sprintMoveSubmitting && m.sprintMoveBoard == m.loadedBoardRequest && m.sprintMoveSearch == m.activeSearchRequest) || m.activeBoardRequest != 0 || m.loadedBoardRequest == 0 || m.boardCur < 0 || m.boardCur >= len(m.boards) {
+		return m, nil
+	}
 	m.sprintMoveRequest++
 	m.sprintMoveKey = key
 	m.sprintMoveBoard, m.sprintMoveSearch = m.loadedBoardRequest, m.activeSearchRequest
 	m.sprintMoveReturn = m.view
 	m.err = nil
-	if backlog { return m.submitSprintMovement(0) }
+	if backlog {
+		return m.submitSprintMovement(0)
+	}
 	m.view = viewSprintChoose
 	m.sprintChoiceCur = 0
 	m.sprintChoices = nil
@@ -2188,7 +2337,7 @@ func (m Model) startSprintMovement(key string, backlog bool) (tea.Model, tea.Cmd
 	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
 	return m, func() tea.Msg {
 		sprints, err := client.GetSprintsByState(boardID, "active,future")
-		return sprintChoiceMsg{request:request, board:board, search:search, sprints:sprints, err:err}
+		return sprintChoiceMsg{request: request, board: board, search: search, sprints: sprints, err: err}
 	}
 }
 
@@ -2198,23 +2347,28 @@ func (m Model) submitSprintMovement(id int) (tea.Model, tea.Cmd) {
 	request, board, search := m.sprintMoveRequest, m.sprintMoveBoard, m.sprintMoveSearch
 	return m, func() tea.Msg {
 		var err error
-		if id == 0 { err = client.MoveIssueToBacklog(key) } else { err = client.AddIssuesToSprint(id, []string{key}) }
-		return sprintMovementMsg{request:request, board:board, search:search, err:err}
+		if id == 0 {
+			err = client.MoveIssueToBacklog(key)
+		} else {
+			err = client.AddIssuesToSprint(id, []string{key})
+		}
+		return sprintMovementMsg{request: request, board: board, search: search, err: err}
 	}
 }
 
 func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c": return m, tea.Quit
+	case "ctrl+c":
+		return m, tea.Quit
 	case "esc", "q":
 		m.sprintMoveRequest++
 		m.sprintMoveSubmitting = false
 		m.sprintMoveLoading = false
 		m.view = m.sprintMoveReturn
 	case "down", "j":
-		m.sprintChoiceCur = min(m.sprintChoiceCur+1, max(0,len(m.sprintChoices)-1))
+		m.sprintChoiceCur = min(m.sprintChoiceCur+1, max(0, len(m.sprintChoices)-1))
 	case "up", "k":
-		m.sprintChoiceCur = max(m.sprintChoiceCur-1,0)
+		m.sprintChoiceCur = max(m.sprintChoiceCur-1, 0)
 	case "enter":
 		if !m.sprintMoveLoading && !m.sprintMoveSubmitting && m.sprintChoiceCur < len(m.sprintChoices) && m.err == nil {
 			return m.submitSprintMovement(m.sprintChoices[m.sprintChoiceCur].ID)
@@ -2226,11 +2380,17 @@ func (m Model) updateSprintChoose(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "A":
-		if m.detail != nil && !m.detailLoading { return m.startAssignment(*m.detail) }
+		if m.detail != nil && !m.detailLoading {
+			return m.startAssignment(*m.detail)
+		}
 	case "X", "D":
-		if m.detail != nil && !m.detailLoading { return m.startLifecycle(*m.detail, msg.String() == "D") }
+		if m.detail != nil && !m.detailLoading {
+			return m.startLifecycle(*m.detail, msg.String() == "D")
+		}
 	case "S", "b":
-		if m.detail != nil && !m.detailLoading { return m.startSprintMovement(m.detail.Key, msg.String() == "b") }
+		if m.detail != nil && !m.detailLoading {
+			return m.startSprintMovement(m.detail.Key, msg.String() == "b")
+		}
 	case "down", "j":
 		m = m.scrollDetail(1)
 	case "up", "k":
@@ -2307,6 +2467,10 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return worklogListMsg{request: request, issueKey: key, worklogs: worklogs, err: err}
 			}
 		}
+	case "C":
+		if m.detail != nil {
+			return m.startCommentListLoad(m.detail.Key)
+		}
 	case "f":
 		if m.detail != nil && !m.detailLoading {
 			ti := textinput.New()
@@ -2320,9 +2484,13 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 	case "E":
-		if m.detail != nil { return m.openFieldsEdit() }
+		if m.detail != nil {
+			return m.openFieldsEdit()
+		}
 	case "U":
-		if m.detail != nil && !m.detailLoading { return m.startBasicsEdit(*m.detail) }
+		if m.detail != nil && !m.detailLoading {
+			return m.startBasicsEdit(*m.detail)
+		}
 	case "e", "m":
 		if m.detail != nil {
 			m.commentEntry = msg.String() == "m"
@@ -2330,7 +2498,9 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			input.Placeholder = "Ticket description (plain text)"
 			input.ShowLineNumbers = false
 			description := ""
-			if m.commentEntry { input.Placeholder = "Comment (plain text; no mentions)" }
+			if m.commentEntry {
+				input.Placeholder = "Comment (plain text; no mentions)"
+			}
 			if !m.commentEntry && m.detail.Fields.Description != nil {
 				description = m.detail.Fields.Description.Flatten()
 				input.SetValue(description)
@@ -2355,8 +2525,12 @@ var fieldKeys = [4]string{"duedate", "components", "fixVersions", ""}
 var decimalPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
 
 func (m Model) matchFieldRequest(id uint64, key string, board, search uint64) bool {
-	if m.view != viewFieldsEdit || m.detail == nil || id == 0 || id != m.activeFieldRequest || key == "" || key != m.detail.Key { return false }
-	if m.detailReturn == viewSearch { return search != 0 && search == m.detailSearchRequest && search == m.activeSearchRequest }
+	if m.view != viewFieldsEdit || m.detail == nil || id == 0 || id != m.activeFieldRequest || key == "" || key != m.detail.Key {
+		return false
+	}
+	if m.detailReturn == viewSearch {
+		return search != 0 && search == m.detailSearchRequest && search == m.activeSearchRequest
+	}
 	return board != 0 && board == m.detailBoardRequest && board == m.loadedBoardRequest
 }
 
@@ -2371,11 +2545,25 @@ func (m Model) openFieldsEdit() (tea.Model, tea.Cmd) {
 	m.fieldSelectedID = ""
 	m.fieldTouched = [5]bool{}
 	values := [5]string{}
-	if m.detail.Fields.DueDate != nil { values[0] = *m.detail.Fields.DueDate }
-	for _, c := range m.detail.Fields.Components { if values[1] != "" { values[1] += "," }; values[1] += c.Name }
-	for _, v := range m.detail.Fields.FixVersions { if values[2] != "" { values[2] += "," }; values[2] += v.Name }
+	if m.detail.Fields.DueDate != nil {
+		values[0] = *m.detail.Fields.DueDate
+	}
+	for _, c := range m.detail.Fields.Components {
+		if values[1] != "" {
+			values[1] += ","
+		}
+		values[1] += c.Name
+	}
+	for _, v := range m.detail.Fields.FixVersions {
+		if values[2] != "" {
+			values[2] += ","
+		}
+		values[2] += v.Name
+	}
 	fieldID := ""
-	if m.detailReturn != viewSearch { fieldID = m.boardPointsField }
+	if m.detailReturn != viewSearch {
+		fieldID = m.boardPointsField
+	}
 	values[4] = fieldID
 	m.fieldLastID = fieldID
 	m.fieldOriginal = values
@@ -2387,7 +2575,9 @@ func (m Model) openFieldsEdit() (tea.Model, tea.Cmd) {
 		m.fieldInputs[i] = input
 	}
 	m.fieldInputs[0].Focus()
-	if fieldID == "" { return m, textinput.Blink }
+	if fieldID == "" {
+		return m, textinput.Blink
+	}
 	return m.loadSelectedField(fieldID)
 }
 
@@ -2404,13 +2594,15 @@ func (m Model) loadSelectedField(fieldID string) (tea.Model, tea.Cmd) {
 	client := m.client
 	return m, func() tea.Msg {
 		issue, err := client.GetIssueFullWithStoryPoints(key, fieldID)
-		return fieldLoadedMsg{requestID:id, fieldID:fieldID, issueKey:key, boardRequest:board, searchRequest:search, issue:issue, err:err}
+		return fieldLoadedMsg{requestID: id, fieldID: fieldID, issueKey: key, boardRequest: board, searchRequest: search, issue: issue, err: err}
 	}
 }
 
 func (m Model) syncFieldSelector() Model {
 	id := m.fieldInputs[4].Value()
-	if id == m.fieldLastID { return m }
+	if id == m.fieldLastID {
+		return m
+	}
 	m.fieldLastID = id
 	m.fieldSelected = false
 	m.fieldSelectedID = ""
@@ -2422,12 +2614,16 @@ func (m Model) syncFieldSelector() Model {
 }
 
 func parseFieldNames(value string) ([]string, error) {
-	if value == "" { return []string{}, nil }
+	if value == "" {
+		return []string{}, nil
+	}
 	parts := strings.Split(value, ",")
 	seen := map[string]bool{}
 	for i, p := range parts {
 		name := strings.TrimSpace(p)
-		if name == "" || seen[strings.ToLower(name)] { return nil, fmt.Errorf("list has an empty or duplicate name") }
+		if name == "" || seen[strings.ToLower(name)] {
+			return nil, fmt.Errorf("list has an empty or duplicate name")
+		}
 		seen[strings.ToLower(name)] = true
 		parts[i] = name
 	}
@@ -2439,22 +2635,45 @@ func (m Model) fieldChanges() (map[string]interface{}, map[string][]string, erro
 	lists := map[string][]string{}
 	for i := 0; i < 4; i++ {
 		value := m.fieldInputs[i].Value()
-		if value == m.fieldOriginal[i] && (!m.fieldTouched[i] || value != "") { continue }
+		if value == m.fieldOriginal[i] && (!m.fieldTouched[i] || value != "") {
+			continue
+		}
 		switch i {
 		case 0:
-			if value != "" { d, err := time.Parse("2006-01-02", value); if err != nil || d.Format("2006-01-02") != value { return nil, nil, fmt.Errorf("due date must be a real YYYY-MM-DD date") }; fields["duedate"] = value } else { fields["duedate"] = nil }
+			if value != "" {
+				d, err := time.Parse("2006-01-02", value)
+				if err != nil || d.Format("2006-01-02") != value {
+					return nil, nil, fmt.Errorf("due date must be a real YYYY-MM-DD date")
+				}
+				fields["duedate"] = value
+			} else {
+				fields["duedate"] = nil
+			}
 		case 1, 2:
-			names, err := parseFieldNames(value); if err != nil { return nil,nil,fmt.Errorf("%s: %w", fieldLabels[i], err) }
+			names, err := parseFieldNames(value)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", fieldLabels[i], err)
+			}
 			items := make([]map[string]string, len(names))
-			for j, name := range names { items[j] = map[string]string{"name": name} }
+			for j, name := range names {
+				items[j] = map[string]string{"name": name}
+			}
 			fields[fieldKeys[i]] = items
 			lists[fieldKeys[i]] = names
 		case 3:
 			id := m.fieldInputs[4].Value()
-			if err := jira.ValidateCustomFieldID(id); err != nil { return nil,nil,fmt.Errorf("story points require a valid customfield_N field ID: %w", err) }
-			if value == "" { fields[id] = nil } else {
-				if !decimalPattern.MatchString(value) { return nil,nil,fmt.Errorf("story points must be a finite decimal") }
-				if _, ok := new(big.Rat).SetString(value); !ok { return nil,nil,fmt.Errorf("story points must be a finite decimal") }
+			if err := jira.ValidateCustomFieldID(id); err != nil {
+				return nil, nil, fmt.Errorf("story points require a valid customfield_N field ID: %w", err)
+			}
+			if value == "" {
+				fields[id] = nil
+			} else {
+				if !decimalPattern.MatchString(value) {
+					return nil, nil, fmt.Errorf("story points must be a finite decimal")
+				}
+				if _, ok := new(big.Rat).SetString(value); !ok {
+					return nil, nil, fmt.Errorf("story points must be a finite decimal")
+				}
 				fields[id] = json.Number(value)
 			}
 		}
@@ -2463,28 +2682,54 @@ func (m Model) fieldChanges() (map[string]interface{}, map[string][]string, erro
 }
 
 func validateFieldMeta(meta *jira.EditMeta, fields map[string]interface{}, lists map[string][]string) error {
-	if meta == nil { return fmt.Errorf("jira returned no edit metadata") }
+	if meta == nil {
+		return fmt.Errorf("jira returned no edit metadata")
+	}
 	for key := range fields {
 		f, ok := meta.Fields[key]
-		if !ok { return fmt.Errorf("%s is not editable for this issue", key) }
+		if !ok {
+			return fmt.Errorf("%s is not editable for this issue", key)
+		}
 		switch key {
 		case "duedate":
-			if f.Schema.Type != "date" { return fmt.Errorf("%s has invalid date schema", key) }
+			if f.Schema.Type != "date" {
+				return fmt.Errorf("%s has invalid date schema", key)
+			}
 		case "components", "fixVersions":
 			want := "component"
-			if key == "fixVersions" { want = "version" }
-			if f.Schema.Type != "array" || f.Schema.Items != want { return fmt.Errorf("%s has invalid list schema", key) }
+			if key == "fixVersions" {
+				want = "version"
+			}
+			if f.Schema.Type != "array" || f.Schema.Items != want {
+				return fmt.Errorf("%s has invalid list schema", key)
+			}
 		default:
-			if f.Schema.Type != "number" { return fmt.Errorf("%s is not numeric", key) }
+			if f.Schema.Type != "number" {
+				return fmt.Errorf("%s is not numeric", key)
+			}
 		}
 		set := false
-		for _, op := range f.Operations { if op == "set" { set = true } }
-		if !set { return fmt.Errorf("%s does not support set", key) }
-		if names, ok := lists[key]; ok && len(names)>0 {
-			if f.AllowedValues == nil { return fmt.Errorf("%s has no allowed values", key) }
+		for _, op := range f.Operations {
+			if op == "set" {
+				set = true
+			}
+		}
+		if !set {
+			return fmt.Errorf("%s does not support set", key)
+		}
+		if names, ok := lists[key]; ok && len(names) > 0 {
+			if f.AllowedValues == nil {
+				return fmt.Errorf("%s has no allowed values", key)
+			}
 			allowed := map[string]bool{}
-			for _, v := range *f.AllowedValues { allowed[v.Name] = true }
-			for _, name := range names { if !allowed[name] { return fmt.Errorf("%q is not allowed for %s", name, key) } }
+			for _, v := range *f.AllowedValues {
+				allowed[v.Name] = true
+			}
+			for _, name := range names {
+				if !allowed[name] {
+					return fmt.Errorf("%q is not allowed for %s", name, key)
+				}
+			}
 		}
 	}
 	return nil
@@ -2507,8 +2752,15 @@ func (m Model) startFieldSave(refreshOnly bool) (tea.Model, tea.Cmd) {
 	if !refreshOnly {
 		var err error
 		fields, lists, err = m.fieldChanges()
-		if err != nil { m.fieldErr = err; return m,nil }
-		if len(fields) == 0 { m.view = viewDetail; m.fieldErr = nil; return m,nil }
+		if err != nil {
+			m.fieldErr = err
+			return m, nil
+		}
+		if len(fields) == 0 {
+			m.view = viewDetail
+			m.fieldErr = nil
+			return m, nil
+		}
 	}
 	m.fieldErr = nil
 	m.fieldSubmitting = true
@@ -2517,68 +2769,123 @@ func (m Model) startFieldSave(refreshOnly bool) (tea.Model, tea.Cmd) {
 	m.activeFieldRequest = id
 	client := m.client
 	return m, func() tea.Msg {
-		result := fieldUpdatedMsg{requestID:id, issueKey:key, boardRequest:board, searchRequest:search, applied:refreshOnly}
+		result := fieldUpdatedMsg{requestID: id, issueKey: key, boardRequest: board, searchRequest: search, applied: refreshOnly}
 		if !refreshOnly {
 			meta, err := client.GetIssueEditMeta(key)
-			if err == nil { err = validateFieldMeta(meta, fields, lists) }
-			if err != nil { result.err = err; return result }
-			if err = client.UpdateIssue(key, fields); err != nil { result.err = err; return result }
+			if err == nil {
+				err = validateFieldMeta(meta, fields, lists)
+			}
+			if err != nil {
+				result.err = err
+				return result
+			}
+			if err = client.UpdateIssue(key, fields); err != nil {
+				result.err = err
+				return result
+			}
 			result.applied = true
 		}
-		if fieldID != "" { result.issue, result.err = client.GetIssueFullWithStoryPoints(key, fieldID) } else { result.issue, result.err = client.GetIssueFull(key) }
+		if fieldID != "" {
+			result.issue, result.err = client.GetIssueFullWithStoryPoints(key, fieldID)
+		} else {
+			result.issue, result.err = client.GetIssueFull(key)
+		}
 		return result
 	}
 }
 
 func (m Model) updateFieldsEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-	if key == "ctrl+c" { return m, tea.Quit }
-	if m.fieldSubmitting || m.fieldLoading { if key == "esc" && m.fieldLoading { m.fieldLoading = false; m.activeFieldRequest = 0; m.view = viewDetail }; return m,nil }
-	if key == "esc" { m.activeFieldRequest = 0; m.view = viewDetail; if m.fieldApplied { m.toast = "Update applied; detail refresh failed" }; return m,nil }
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if m.fieldSubmitting || m.fieldLoading {
+		if key == "esc" && m.fieldLoading {
+			m.fieldLoading = false
+			m.activeFieldRequest = 0
+			m.view = viewDetail
+		}
+		return m, nil
+	}
+	if key == "esc" {
+		m.activeFieldRequest = 0
+		m.view = viewDetail
+		if m.fieldApplied {
+			m.toast = "Update applied; detail refresh failed"
+		}
+		return m, nil
+	}
 	if key == "ctrl+s" {
 		m = m.syncFieldSelector()
-		if m.fieldApplied { return m.startFieldSave(true) }
+		if m.fieldApplied {
+			return m.startFieldSave(true)
+		}
 		return m.startFieldSave(false)
 	}
-	if m.fieldApplied { return m,nil }
+	if m.fieldApplied {
+		return m, nil
+	}
 	if key == "tab" || key == "shift+tab" {
 		previous := m.fieldCur
 		m.fieldInputs[m.fieldCur].Blur()
-		if key == "tab" { m.fieldCur = (m.fieldCur+1)%5 } else { m.fieldCur = (m.fieldCur+4)%5 }
+		if key == "tab" {
+			m.fieldCur = (m.fieldCur + 1) % 5
+		} else {
+			m.fieldCur = (m.fieldCur + 4) % 5
+		}
 		focus := m.fieldInputs[m.fieldCur].Focus()
 		if previous == 4 {
 			m = m.syncFieldSelector()
 			id := m.fieldInputs[4].Value()
-			if id != "" && (!m.fieldSelected || m.fieldSelectedID != id) { return m.loadSelectedField(id) }
+			if id != "" && (!m.fieldSelected || m.fieldSelectedID != id) {
+				return m.loadSelectedField(id)
+			}
 		}
 		return m, focus
 	}
 	if key == "ctrl+d" {
 		m.fieldInputs[m.fieldCur].SetValue("")
 		m.fieldTouched[m.fieldCur] = true
-		if m.fieldCur == 4 { m = m.syncFieldSelector() }
-		return m,nil
+		if m.fieldCur == 4 {
+			m = m.syncFieldSelector()
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.fieldInputs[m.fieldCur], cmd = m.fieldInputs[m.fieldCur].Update(msg)
 	m.fieldTouched[m.fieldCur] = true
-	if m.fieldCur == 4 { m = m.syncFieldSelector() }
-	return m,cmd
+	if m.fieldCur == 4 {
+		m = m.syncFieldSelector()
+	}
+	return m, cmd
 }
 
 func (m Model) renderFieldsEdit() string {
 	var b strings.Builder
-	b.WriteString(keyStyle.Render("✎ Edit fields · " + m.detail.Key) + "\n\n")
+	b.WriteString(keyStyle.Render("✎ Edit fields · "+m.detail.Key) + "\n\n")
 	for i, label := range fieldLabels {
-		marker := "  "; if i == m.fieldCur { marker = "→ " }
+		marker := "  "
+		if i == m.fieldCur {
+			marker = "→ "
+		}
 		b.WriteString(marker + label + ": " + m.fieldInputs[i].View() + "\n")
 	}
 	b.WriteString("\nComma-separated exact component/version names; empty clears. Date YYYY-MM-DD; points decimal.\n")
-	if m.fieldLoading { b.WriteString("Loading selected story points... Save is disabled until selection completes.\n") }
-	if m.fieldInputs[4].Value() != "" && !m.fieldSelected && !m.fieldLoading { b.WriteString("Select a valid field ID, then press Tab or Ctrl+S to load its current value before saving.\n") }
-	if m.fieldSubmitting { b.WriteString("Updating or refreshing ticket...\n") }
-	if m.fieldApplied { b.WriteString("Update applied; retry refresh only with Ctrl+S.\n") }
-	if m.fieldErr != nil { b.WriteString(errStyle.Render("Error: " + m.fieldErr.Error()) + "\n") }
+	if m.fieldLoading {
+		b.WriteString("Loading selected story points... Save is disabled until selection completes.\n")
+	}
+	if m.fieldInputs[4].Value() != "" && !m.fieldSelected && !m.fieldLoading {
+		b.WriteString("Select a valid field ID, then press Tab or Ctrl+S to load its current value before saving.\n")
+	}
+	if m.fieldSubmitting {
+		b.WriteString("Updating or refreshing ticket...\n")
+	}
+	if m.fieldApplied {
+		b.WriteString("Update applied; retry refresh only with Ctrl+S.\n")
+	}
+	if m.fieldErr != nil {
+		b.WriteString(errStyle.Render("Error: "+m.fieldErr.Error()) + "\n")
+	}
 	b.WriteString("[tab] Next  [ctrl+d] Clear  [ctrl+s] Save  [esc] Cancel")
 	return m.modalStyle().Render(b.String())
 }
@@ -2618,7 +2925,9 @@ func (m Model) updateDescriptionEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.descriptionApplied {
 			m.descriptionApplied = false
 			m.toast = "Description updated; detail was not refreshed"
-			if m.commentEntry { m.toast = "Comment applied; detail was not refreshed" }
+			if m.commentEntry {
+				m.toast = "Comment applied; detail was not refreshed"
+			}
 			return m, clearToastAfter(4 * time.Second)
 		}
 		return m, nil
@@ -2666,9 +2975,15 @@ func (m Model) startDescriptionUpdate() (tea.Model, tea.Cmd) {
 	comment := m.commentEntry
 	return m, func() tea.Msg {
 		var writeErr error
-		if comment { writeErr = client.AddComment(issueKey, jira.TextToADF(text)) } else { writeErr = client.UpdateIssue(issueKey, map[string]interface{}{"description": description}) }
+		if comment {
+			writeErr = client.AddComment(issueKey, jira.TextToADF(text))
+		} else {
+			writeErr = client.UpdateIssue(issueKey, map[string]interface{}{"description": description})
+		}
 		if err := writeErr; err != nil {
-			if comment { err = sprintMovementError(err) }
+			if comment {
+				err = sprintMovementError(err)
+			}
 			return descriptionUpdatedMsg{requestID: requestID, issueKey: issueKey, err: err}
 		}
 		issue, err := client.GetIssueFull(issueKey)
@@ -2992,6 +3307,152 @@ func (m Model) updateWorklogDelete(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			err := client.DeleteWorklog(key, worklogID)
 			return worklogMutationDoneMsg{request: request, issueKey: key, worklogID: worklogID, action: "delete", err: err}
+		}
+	}
+	return m, nil
+}
+
+// startCommentListLoad opens the comment manage view and reads the full
+// comment collection, the same way `W` reads worklogs: from the dedicated
+// endpoint, never from the embedded page of the ticket read.
+func (m Model) startCommentListLoad(issueKey string) (Model, tea.Cmd) {
+	m.commentList = nil
+	m.commentCur = 0
+	m.commentMutationBusy = false
+	m.activeCommentMutationRequest = 0
+	m.commentMutationWarning = nil
+	m.commentIssue = issueKey
+	m.err = nil
+	m.commentListLoading = true
+	m.nextCommentListRequest++
+	request := m.nextCommentListRequest
+	m.activeCommentListRequest = request
+	client := m.client
+	m.view = viewCommentList
+	return m, func() tea.Msg {
+		comments, _, err := client.ListComments(issueKey)
+		return commentListMsg{request: request, issueKey: issueKey, comments: comments, err: err}
+	}
+}
+
+// updateCommentList selects one of the issue's comments to edit or delete.
+func (m Model) updateCommentList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.activeCommentListRequest = 0
+		m.commentListLoading = false
+		m.err = nil
+		m.view = viewDetail
+		return m, nil
+	case "up", "k":
+		if m.commentCur > 0 {
+			m.commentCur--
+		}
+		return m, nil
+	case "down", "j":
+		if m.commentCur < len(m.commentList)-1 {
+			m.commentCur++
+		}
+		return m, nil
+	case "e":
+		if m.commentCur < 0 || m.commentCur >= len(m.commentList) {
+			return m, nil
+		}
+		m.commentTarget = m.commentList[m.commentCur]
+		input := textarea.New()
+		input.Placeholder = "Comment body (plain text)"
+		input.ShowLineNumbers = false
+		input.SetValue(m.commentTarget.Body.Flatten())
+		input.Focus()
+		m.commentEditInput = input
+		m.commentMutationBusy = false
+		m.activeCommentMutationRequest = 0
+		m.err = nil
+		m.view = viewCommentEdit
+		return m, textinput.Blink
+	case "d":
+		if m.commentCur < 0 || m.commentCur >= len(m.commentList) {
+			return m, nil
+		}
+		m.commentTarget = m.commentList[m.commentCur]
+		m.commentMutationBusy = false
+		m.activeCommentMutationRequest = 0
+		m.err = nil
+		m.view = viewCommentDelete
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateCommentEdit rewrites one comment body. Ctrl+S submits once; a blank
+// body never reaches Jira. Editing replaces the whole body with plain text as
+// ADF; the resulting warning surfaces through commentMutationDoneMsg.
+func (m Model) updateCommentEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.activeCommentMutationRequest = 0
+		m.commentMutationBusy = false
+		m.err = nil
+		m.view = viewCommentList
+		return m, nil
+	case "ctrl+s":
+		if m.commentMutationBusy {
+			return m, nil
+		}
+		text := strings.TrimSpace(m.commentEditInput.Value())
+		if text == "" {
+			m.err = errors.New("comment text is required")
+			return m, nil
+		}
+		key, commentID := m.commentIssue, m.commentTarget.ID
+		m.commentMutationBusy = true
+		m.nextCommentMutationRequest++
+		request := m.nextCommentMutationRequest
+		m.activeCommentMutationRequest = request
+		client := m.client
+		return m, func() tea.Msg {
+			err := client.UpdateComment(key, commentID, text)
+			var warning error
+			if err == nil {
+				warning = errors.New("editing replaces the whole comment body with plain text as ADF; rich formatting, mentions and visibility restrictions of the previous body were lost")
+			}
+			return commentMutationDoneMsg{request: request, issueKey: key, commentID: commentID, action: "update", err: err, warning: warning}
+		}
+	default:
+		var cmd tea.Cmd
+		m.commentEditInput, cmd = m.commentEditInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// updateCommentDelete removes one comment only after an explicit `y`.
+func (m Model) updateCommentDelete(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.activeCommentMutationRequest = 0
+		m.commentMutationBusy = false
+		m.err = nil
+		m.view = viewCommentList
+		return m, nil
+	case "y":
+		if m.commentMutationBusy {
+			return m, nil
+		}
+		key, commentID := m.commentIssue, m.commentTarget.ID
+		m.commentMutationBusy = true
+		m.nextCommentMutationRequest++
+		request := m.nextCommentMutationRequest
+		m.activeCommentMutationRequest = request
+		client := m.client
+		return m, func() tea.Msg {
+			err := client.DeleteComment(key, commentID)
+			return commentMutationDoneMsg{request: request, issueKey: key, commentID: commentID, action: "delete", err: err}
 		}
 	}
 	return m, nil
@@ -3593,19 +4054,31 @@ func (m Model) View() tea.View {
 		b.WriteString(titleStyle.Render("Permanently delete " + m.lifecycleKey))
 		b.WriteString("\nThis cannot be undone. Type the exact issue key, then Enter. Esc cancels.\n")
 		b.WriteString(m.deleteInput.View())
-		if m.lifecycleBusy { b.WriteString("\nSubmitting once; awaiting Jira...") }
-		if m.err != nil { b.WriteString("\n" + errStyle.Render(m.err.Error())) }
+		if m.lifecycleBusy {
+			b.WriteString("\nSubmitting once; awaiting Jira...")
+		}
+		if m.err != nil {
+			b.WriteString("\n" + errStyle.Render(m.err.Error()))
+		}
 	case viewSprintChoose:
 		b.WriteString(titleStyle.Render("Choose sprint: " + m.sprintMoveKey))
 		b.WriteString("\n\n")
-		if m.sprintMoveLoading { b.WriteString("Loading sprints...\n") }
-		if !m.sprintMoveLoading && len(m.sprintChoices) == 0 { b.WriteString("No future or active sprints\n") }
+		if m.sprintMoveLoading {
+			b.WriteString("Loading sprints...\n")
+		}
+		if !m.sprintMoveLoading && len(m.sprintChoices) == 0 {
+			b.WriteString("No future or active sprints\n")
+		}
 		for i, sprint := range m.sprintChoices {
 			prefix := "  "
-			if i == m.sprintChoiceCur { prefix = "→ " }
+			if i == m.sprintChoiceCur {
+				prefix = "→ "
+			}
 			fmt.Fprintf(&b, "%s%s (%s)\n", prefix, sprint.Name, sprint.State)
 		}
-		if m.sprintMoveSubmitting { b.WriteString("Submitting once; awaiting Jira...\n") }
+		if m.sprintMoveSubmitting {
+			b.WriteString("Submitting once; awaiting Jira...\n")
+		}
 		b.WriteString("[↑↓] Select  [Enter] Move  [Esc] Cancel")
 
 	case viewTransition:
@@ -3747,6 +4220,71 @@ func (m Model) View() tea.View {
 			b.WriteString(subStyle.Render("[y] Delete  [esc] Cancel"))
 		}
 
+	case viewCommentList:
+		b.WriteString(titleStyle.Render("💬 Comments: " + m.commentIssue))
+		b.WriteString("\n\n")
+		switch {
+		case m.err != nil:
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		case m.commentListLoading:
+			b.WriteString(subStyle.Render("Loading comments..."))
+			b.WriteString("\n\n")
+		case len(m.commentList) == 0:
+			b.WriteString(subStyle.Render("No comments to manage"))
+			b.WriteString("\n\n")
+		default:
+			for i, comment := range m.commentList {
+				marker := "  "
+				if i == m.commentCur {
+					marker = "→ "
+				}
+				line := fmt.Sprintf("[%s]  %s", comment.ID, comment.Author.DisplayName)
+				if body := comment.Body.Flatten(); body != "" {
+					line += "  " + strings.ReplaceAll(body, "\n", " ")
+				}
+				b.WriteString(marker + line)
+				b.WriteString("\n")
+			}
+			b.WriteString(subStyle.Render(fmt.Sprintf("%d comments", len(m.commentList))))
+			b.WriteString("\n\n")
+		}
+		b.WriteString(subStyle.Render("[↑↓] Select  [e] Edit  [d] Delete  [esc] Back"))
+
+	case viewCommentEdit:
+		b.WriteString(titleStyle.Render(fmt.Sprintf("✎ Comment: %s [%s]", m.commentIssue, m.commentTarget.ID)))
+		b.WriteString("\n\n")
+		b.WriteString(subStyle.Render("Editing replaces the whole body with plain text as ADF; rich formatting, mentions and visibility restrictions of the previous body are lost."))
+		b.WriteString("\n\n")
+		b.WriteString(m.commentEditInput.View())
+		b.WriteString("\n\n")
+		if m.err != nil {
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		}
+		if m.commentMutationBusy {
+			b.WriteString(subStyle.Render("Saving once; awaiting Jira..."))
+		} else {
+			b.WriteString(subStyle.Render("[ctrl+s] Save  [esc] Cancel"))
+		}
+
+	case viewCommentDelete:
+		b.WriteString(titleStyle.Render(fmt.Sprintf("🗑 Delete comment [%s] on %s", m.commentTarget.ID, m.commentIssue)))
+		b.WriteString("\n\n")
+		if body := m.commentTarget.Body.Flatten(); body != "" {
+			b.WriteString(strings.ReplaceAll(body, "\n", " ") + "\n")
+		}
+		b.WriteString("\n")
+		if m.err != nil {
+			b.WriteString(errStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n\n")
+		}
+		if m.commentMutationBusy {
+			b.WriteString(subStyle.Render("Deleting once; awaiting Jira..."))
+		} else {
+			b.WriteString(subStyle.Render("[y] Delete  [esc] Cancel"))
+		}
+
 	case viewCreate:
 		b.WriteString(titleStyle.Render("✚ New Issue · " + m.createProject))
 		b.WriteString("\n\n")
@@ -3831,12 +4369,16 @@ func (m Model) View() tea.View {
 
 	case viewFieldsEdit:
 		background := m.renderKanban()
-		if m.detailReturn == viewSearch { background = m.renderSearch() }
+		if m.detailReturn == viewSearch {
+			background = m.renderSearch()
+		}
 		b.WriteString(m.composeOverlay(background, m.renderFieldsEdit()))
 
 	case viewBasicsEdit:
 		background := m.renderKanban()
-		if m.detailReturn == viewSearch { background = m.renderSearch() }
+		if m.detailReturn == viewSearch {
+			background = m.renderSearch()
+		}
 		b.WriteString(m.composeOverlay(background, m.renderBasicsEdit()))
 
 	case viewDescriptionEdit:
@@ -4796,13 +5338,19 @@ func (m Model) renderDescriptionEdit() string {
 	}
 	var b strings.Builder
 	title := "✎ Edit description · "
-	if m.commentEntry { title = "Add comment · " }
+	if m.commentEntry {
+		title = "Add comment · "
+	}
 	b.WriteString(keyStyle.Render(title + key))
 	b.WriteString("\n\n")
 	b.WriteString(m.descriptionInput.View())
 	if m.descriptionApplied {
 		b.WriteString("\n")
-		if m.commentEntry { b.WriteString(subStyle.Render("The comment was applied in Jira; only the detail refresh failed.")) } else { b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed.")) }
+		if m.commentEntry {
+			b.WriteString(subStyle.Render("The comment was applied in Jira; only the detail refresh failed."))
+		} else {
+			b.WriteString(subStyle.Render("The description was updated in Jira; only the detail refresh failed."))
+		}
 	}
 	if m.descriptionErr != nil {
 		b.WriteString("\n")
@@ -4813,7 +5361,11 @@ func (m Model) renderDescriptionEdit() string {
 		if m.descriptionApplied {
 			b.WriteString(subStyle.Render("Refreshing ticket detail...  [ctrl+c] Quit"))
 		} else {
-			if m.commentEntry { b.WriteString(subStyle.Render("Adding comment...  [ctrl+c] Quit")) } else { b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit")) }
+			if m.commentEntry {
+				b.WriteString(subStyle.Render("Adding comment...  [ctrl+c] Quit"))
+			} else {
+				b.WriteString(subStyle.Render("Updating description...  [ctrl+c] Quit"))
+			}
 		}
 	} else if m.descriptionApplied {
 		b.WriteString(subStyle.Render("[ctrl+s] Retry refresh only  [esc] Close (update remains applied)"))
@@ -4824,7 +5376,9 @@ func (m Model) renderDescriptionEdit() string {
 }
 
 func readableDetailDate(value string) string {
-	if parsed, err := time.Parse(time.RFC3339, value); err == nil { return parsed.Format("2006-01-02 15:04") }
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.Format("2006-01-02 15:04")
+	}
 	return value
 }
 
@@ -4888,12 +5442,16 @@ func (m Model) detailContent() (string, string) {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n── Worklogs ──\n")
-	if len(ticket.Worklogs) == 0 { b.WriteString("No worklogs available\n") }
+	if len(ticket.Worklogs) == 0 {
+		b.WriteString("No worklogs available\n")
+	}
 	for _, w := range ticket.Worklogs {
 		_, _ = fmt.Fprintf(&b, "%s · %s · %s\n%s\n", w.Author, readableDetailDate(w.Started), w.TimeSpent, w.Comment)
 	}
 	b.WriteString("\n── Comments ──\n")
-	if len(ticket.Comments) == 0 { b.WriteString("No comments\n") }
+	if len(ticket.Comments) == 0 {
+		b.WriteString("No comments\n")
+	}
 	for _, c := range ticket.Comments {
 		_, _ = fmt.Fprintf(&b, "%s · %s\n%s\n", c.Author, readableDetailDate(c.Created), c.Body)
 	}
@@ -4908,5 +5466,5 @@ func (m Model) detailContent() (string, string) {
 			}
 		}
 	}
-	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[W] Manage  [A] Assign  [U] Summary, priority, labels  [f] Attach"
+	return b.String(), "[↑↓] Scroll  [c] JSON  [e] Desc  [m] Comment  [E] Fields  [w] Log  [o] Open  [esc] Close\n[W] Manage  [C] Comments  [A] Assign  [U] Summary, priority, labels  [f] Attach"
 }

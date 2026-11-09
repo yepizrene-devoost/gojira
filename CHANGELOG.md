@@ -4,6 +4,35 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.8.1 – Comment management
+
+### Comment management
+
+- Comments can now be managed, not only created, from every surface. The CLI
+  lists the complete paginated comment history (`gojira comment KEY --list`,
+  `--json` with `total`), reads one comment by its stable id (`--id ID`), edits
+  its body (`--id ID --text "..."`) and deletes it with the echoed id
+  (`--id ID --delete --confirm ID`). The existing add-comment behavior is
+  unchanged.
+- Editing replaces the whole comment body with plain text as ADF: rich
+  formatting, mentions and visibility restrictions of the previous body are
+  lost. Every surface states this before the replacement — the CLI prints a
+  `warning:` on stderr (never on `--json` stdout), the TUI editor states it in
+  its header and the MCP tool description documents it.
+- MCP agents get a complete comment history read (`gojira_comments`, unlike
+  the partial embedded comments of `gojira_get`) and two write tools:
+  `update_comment` and `delete_comment`. Deleting stays a two-step, single-use
+  token flow bound to `action:key:commentId`; a worklog token cannot delete a
+  comment. Outcomes keep the applied / not_applied / unknown reporting and
+  never retry automatically.
+- The TUI gains a comment management view from the ticket detail (`C`): the
+  full collection loads from the comment endpoint (not the embedded page),
+  `↑`/`↓` select, `e` opens a prefilled editor saved once with `Ctrl+S`, and
+  `d` + `y` deletes with a visible preview. A success reloads the list and
+  refetches the ticket; the ADF replacement warning stays visible.
+- Comment ids are additive in the TicketJSON `comments` array, matching the
+  worklog `id` precedent; no existing field changed.
+
 ## 📦 v0.8.0 – Update prompt
 
 ### Update prompt

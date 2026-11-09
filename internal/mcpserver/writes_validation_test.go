@@ -33,6 +33,17 @@ func TestWriteConfirmationConcurrent(t *testing.T) {
 		t.Fatalf("redemptions=%d", wins.Load())
 	}
 }
+
+// writeToolByAction returns the write tool entry with the given action.
+func writeToolByAction(action string) writeTool {
+	for _, entry := range writeTools() {
+		if entry.action == action {
+			return entry
+		}
+	}
+	panic("write tool not found: " + action)
+}
+
 func TestWriteValidation(t *testing.T) {
 	for _, entry := range writeTools() {
 		for _, raw := range []string{`null`, `[]`, `{"extra":true}`, `{"key":null}`, `{"key":12}`} {
@@ -41,7 +52,7 @@ func TestWriteValidation(t *testing.T) {
 			}
 		}
 	}
-	update := writeTools()[5]
+	update := writeToolByAction("update")
 	for _, raw := range []string{`{"key":"ABC-1","fields":{"description":42}}`, `{"key":"ABC-1","fields":{"description":null}}`, `{"key":"ABC-1","fields":{"description":"text","unknown":"value"}}`, `{"key":"ABC-1","fields":{"summary":null}}`, `{"key":"ABC-1","fields":{}}`} {
 		if _, message := validateWrite(update, json.RawMessage(raw)); message == "" {
 			t.Fatalf("accepted %s", raw)
@@ -54,7 +65,7 @@ func TestWriteCancelled(t *testing.T) {
 	// A nil writer must not be reached, and no preview token may be issued.
 	a := adapter{}
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "gojira_delete", Arguments: json.RawMessage(`{"key":"ABC-1"}`)}}
-	res, err := a.writeCall(writeTools()[6], nil)(ctx, req)
+	res, err := a.writeCall(writeToolByAction("delete"), nil)(ctx, req)
 	if err != nil || !res.IsError {
 		t.Fatalf("%v %v", res, err)
 	}
