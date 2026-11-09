@@ -4,6 +4,20 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 Unreleased – Update-flow fixes
+
+### Update-flow fixes
+
+- The update check now truly runs on every TUI start by default. The interval
+  is read from the configured `update_check_interval` (absent, `0`, unparsable
+  or negative means every start); a fresh install checks on every start too,
+  because nothing was recorded yet. Previously the launch wiring passed a
+  hardcoded 24-hour constant and the configured value was never consulted.
+- After a successful install, a final modal offers to restart gojira right away
+  (`r`) — the process is replaced with the new binary in place — or `Later`,
+  which keeps the previous manual-restart notice. A failed replacement falls
+  back to that notice and is never retried.
+
 ## 📦 v0.8.1 – Comment management
 
 ### Comment management
