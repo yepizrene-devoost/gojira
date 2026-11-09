@@ -4,6 +4,60 @@ GoJira release notes are curated from changes merged into the project. The
 heading of the newest package section is also the source for local release
 publishing.
 
+## 📦 v0.7.0 – Worklog management
+
+### Worklog management
+
+- Worklogs can be corrected and removed instead of only created:
+  `gojira log KEY --id ID` updates the duration and the comment, `--clear-comment`
+  removes the comment, and `--delete --confirm ID` removes the entry after the id
+  is repeated. Every worklog now carries Jira's `id`, in `log --show --json` and
+  in the ticket `worklogs` array.
+- Agents get the same reach through the MCP tools `update_worklog` and
+  `delete_worklog`. Deletion reuses the single-use confirmation token, expires
+  after two minutes, and is bound to that exact worklog so a token issued for one
+  target cannot redeem on another.
+- The TUI lists worklogs with `W`, reading the complete collection from Jira
+  instead of the shorter page embedded in the ticket read. `e` reopens an entry
+  prefilled and saves it once with `Ctrl+S`; `d` deletes only after `y`.
+
+### Worklog comments
+
+- Creating or updating a worklog with a comment now succeeds: the comment travels
+  as an ADF document, which is what Jira requires. It previously carried an empty
+  plain string and Jira rejected the whole worklog with HTTP 400.
+- Saving an emptied comment removes it, and a duration change in the same save
+  travels in one request, so a failure cannot leave the entry half-edited.
+- The comment is plain text converted to ADF, so it cannot reproduce richer
+  formatting.
+
+### Post-write verification
+
+- After an update the entry is re-read. When Jira kept a duration other than the
+  requested one, the CLI prints a warning on stderr without changing its exit
+  status, the TUI shows it beside the success toast, and the MCP result carries it
+  in `hint` while the state stays applied.
+- This exists because an entry owned by another app can accept the write and keep
+  its own value in that app's views.
+
+### Release tooling
+
+- `make release` now requests the published tag from the public Go module proxy
+  after GoReleaser, so `go install …@latest` and `pkg.go.dev` can resolve it
+  without waiting for an unrelated request. `make warm-module-proxy VERSION=vX.Y.Z`
+  is the recovery path, and a failed warm-up reports that the release may already
+  exist instead of claiming the publish failed.
+
+### Notes
+
+- Clearing a comment sends a null comment: the shape is covered by the release
+  tests, but it was not verified against a live Jira site when this version was
+  prepared.
+- Worklogs owned by Tempo keep their own records, so editing them through Jira
+  does not update Tempo's views.
+- `log KEY --show --id ID` is rejected on purpose: reading the history and
+  updating a single entry are separate actions.
+
 ## 📦 v0.6.0 – Safe self-upgrade
 
 ### Upgrade command
