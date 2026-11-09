@@ -83,7 +83,7 @@ release:
 	head_commit=$$(git rev-parse --verify HEAD 2>/dev/null) || { echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; }; \
 	if [ "$$tag_commit" != "$$head_commit" ]; then echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; fi; \
 	$(MAKE) --no-print-directory release-notes VERSION="$(VERSION)" CHANGELOG="$(CHANGELOG)" RELEASE_NOTES="$(RELEASE_NOTES)" || exit 1; \
-	goreleaser release --clean --release-notes="$(RELEASE_NOTES)"; \
+	goreleaser release --clean --release-notes="$(RELEASE_NOTES)" || exit 1; \
 	$(MAKE) --no-print-directory warm-module-proxy VERSION="$(VERSION)" || { echo "release published, but the public Go module proxy did not resolve $(VERSION): retry with make warm-module-proxy VERSION=$(VERSION)" >&2; exit 1; }
 
 # 🌐 Warm the public Go module proxy for the published tag, so pkg.go.dev and

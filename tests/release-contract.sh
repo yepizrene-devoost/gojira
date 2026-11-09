@@ -84,6 +84,10 @@ assert_notes_rejected empty-section v1.2.3
 cat >"$tmp_root/bin/goreleaser" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >"$FAKE_GORELEASER_LOG"
+if [ "${FAKE_GORELEASER_FAIL:-0}" = 1 ]; then
+  exit 1
+fi
+exit 0
 EOF
 chmod +x "$tmp_root/bin/goreleaser"
 cat >"$tmp_root/bin/curl" <<'EOF'
@@ -167,6 +171,15 @@ fi
 unset FAKE_CURL_FAIL
 test -e "$FAKE_GORELEASER_LOG" || fail "proxy failure case did not reach goreleaser"
 grep -q 'make warm-module-proxy' "$tmp_root/warm-failure.out" || fail "proxy failure did not name the retry command"
+
+rm -f "$FAKE_GORELEASER_LOG" "$FAKE_CURL_LOG"
+FAKE_GORELEASER_FAIL=1
+export FAKE_GORELEASER_FAIL
+if run_make release >"$tmp_root/goreleaser-failure.out" 2>&1; then
+  fail "release reported success while goreleaser failed"
+fi
+unset FAKE_GORELEASER_FAIL
+test ! -e "$FAKE_CURL_LOG" || fail "goreleaser failure still ran the proxy warm-up"
 if grep -R 'fixture-token' "$tmp_root" --exclude=.env >/dev/null 2>&1; then
   fail "token was printed or copied"
 fi
