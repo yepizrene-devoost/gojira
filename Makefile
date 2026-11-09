@@ -83,7 +83,23 @@ release:
 	head_commit=$$(git rev-parse --verify HEAD 2>/dev/null) || { echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; }; \
 	if [ "$$tag_commit" != "$$head_commit" ]; then echo "release version $(VERSION) must be an exact local tag on HEAD" >&2; exit 1; fi; \
 	$(MAKE) --no-print-directory release-notes VERSION="$(VERSION)" CHANGELOG="$(CHANGELOG)" RELEASE_NOTES="$(RELEASE_NOTES)" || exit 1; \
-	goreleaser release --clean --release-notes="$(RELEASE_NOTES)"
+	goreleaser release --clean --release-notes="$(RELEASE_NOTES)" || exit 1; \
+	$(MAKE) --no-print-directory warm-module-proxy VERSION="$(VERSION)" || { echo "release published, but the public Go module proxy did not resolve $(VERSION): retry with make warm-module-proxy VERSION=$(VERSION)" >&2; exit 1; }
+
+# 🌐 Warm the public Go module proxy for the published tag, so pkg.go.dev and
+# `go install …@latest` can resolve it without waiting for an unrelated request
+# to arrive first. The request deliberately bypasses the local module cache: a
+# successful response proves the proxy resolved the tag.
+.PHONY: warm-module-proxy
+warm-module-proxy:
+	@set -eu; \
+	fail() { echo "$$1" >&2; exit 1; }; \
+	[ "$(VERSION)" != dev ] || fail "warm-module-proxy needs an explicit release tag: retry with VERSION=vX.Y.Z"; \
+	command -v curl >/dev/null 2>&1 || fail "curl not installed"; \
+	url="https://proxy.golang.org/github.com/yepizrene-devoost/gojira/@v/$(VERSION).info"; \
+	echo "Warming public Go module proxy: $$url"; \
+	curl --fail --silent --show-error --retry 4 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 30 "$$url" || fail "public Go module proxy did not resolve $(VERSION)"; \
+	echo "Public Go module proxy resolved $(VERSION)."
 
 .PHONY: vet
 vet:

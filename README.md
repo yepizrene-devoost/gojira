@@ -8,6 +8,8 @@
   <em>Agentic TUI &amp; CLI for Jira boards</em><br/><br/>
   <img src="https://img.shields.io/badge/Go-1.26.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"/>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"/>
+  <a href="https://pkg.go.dev/github.com/yepizrene-devoost/gojira"><img src="https://pkg.go.dev/badge/github.com/yepizrene-devoost/gojira.svg" alt="Go reference"/></a>
+  <a href="https://github.com/yepizrene-devoost/gojira/releases"><img src="https://img.shields.io/github/v/release/yepizrene-devoost/gojira?sort=semver" alt="Latest release"/></a>
 </p>
 
 <p align="center">
@@ -39,10 +41,12 @@
 
 GoJira publishes release archives for Linux, macOS, and Windows on amd64 and
 arm64, with a `checksums.txt` and installer scripts, on the
-[releases page](https://github.com/yepizrene-devoost/gojira/releases). The first
-public release is `v0.1.0`. No Go toolchain or repository checkout is needed.
+[releases page](https://github.com/yepizrene-devoost/gojira/releases). No Go
+toolchain or repository checkout is needed.
 
-Linux and macOS users can install with:
+### 1. One-line installer
+
+Linux and macOS:
 
 ```bash
 curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh | sh
@@ -50,33 +54,92 @@ curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/
 
 The default destination is `$HOME/.local/bin`. The installer does not modify
 `PATH`; if that directory is absent from `PATH`, it prints the shell-profile
-entry to add. Put overrides on the `sh` side of the pipeline to pin a release or
-choose another destination:
+entry to add.
 
-```bash
-curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
-  | GOJIRA_VERSION=v0.1.0 GOJIRA_INSTALL_DIR="$HOME/bin" sh
-```
-
-Windows users can run this in PowerShell:
+Windows, in PowerShell:
 
 ```powershell
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
 ```
 
 The Windows installer defaults to `%LOCALAPPDATA%\Programs\gojira` and adds that
-directory to the user `PATH`; open a new terminal afterward. Set overrides in
-the same PowerShell session before running the one-liner:
+directory to the user `PATH`; open a new terminal afterward.
+
+#### Installer options
+
+| Variable | Installer | Effect |
+| --- | --- | --- |
+| `GOJIRA_VERSION` | both | Release to install instead of the latest one. Both `0.6.0` and `v0.6.0` are accepted. |
+| `GOJIRA_INSTALL_DIR` | both | Destination directory. Defaults to `$HOME/.local/bin` on Linux and macOS, `%LOCALAPPDATA%\Programs\gojira` on Windows. |
+| `GOJIRA_SKIP_PATH_UPDATE` | Windows | Set to `1` to leave the user `PATH` untouched. |
+
+Put overrides on the `sh` side of the pipeline, or set them in the same
+PowerShell session before running the one-liner:
+
+```bash
+curl -fsSL https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.sh \
+  | GOJIRA_VERSION=v0.6.0 GOJIRA_INSTALL_DIR="$HOME/bin" sh
+```
 
 ```powershell
-$env:GOJIRA_VERSION = 'v0.1.0'
+$env:GOJIRA_VERSION = 'v0.6.0'
 $env:GOJIRA_INSTALL_DIR = "$HOME\bin"
 $env:GOJIRA_SKIP_PATH_UPDATE = '1'
 irm https://github.com/yepizrene-devoost/gojira/releases/latest/download/install.ps1 | iex
 ```
 
 Omit `GOJIRA_VERSION` to select the latest published release. Remove the override
-environment variables afterward if you do not want them to affect later runs.
+environment variables afterward if you do not want them to affect later runs. The
+shell installer prints its own usage with `install.sh --help`.
+
+### 2. Manual download
+
+Each archive is published under its release tag and listed in that release's
+`checksums.txt`:
+
+| Platform | Asset |
+| --- | --- |
+| Linux amd64 | `gojira_Linux_x86_64.tar.gz` |
+| Linux arm64 | `gojira_Linux_arm64.tar.gz` |
+| macOS Intel | `gojira_Darwin_x86_64.tar.gz` |
+| macOS Apple Silicon | `gojira_Darwin_arm64.tar.gz` |
+| Windows amd64 | `gojira_Windows_x86_64.zip` |
+| Windows arm64 | `gojira_Windows_arm64.zip` |
+
+Replace `latest` with a tag such as `v0.6.0` to fetch a specific release:
+
+```bash
+curl -LO https://github.com/yepizrene-devoost/gojira/releases/latest/download/gojira_Darwin_arm64.tar.gz
+tar -xzf gojira_Darwin_arm64.tar.gz
+install -m 755 gojira "$HOME/.local/bin/"
+```
+
+### 3. Build from source
+
+Requires the Go toolchain:
+
+```bash
+go install github.com/yepizrene-devoost/gojira@latest
+```
+
+A plain `go install` produces a `dev` version marker, and `gojira upgrade`
+refuses to replace a development build. To self-upgrade, install a published
+release with the installer scripts. A checkout of this repository can inject the
+tag locally instead:
+
+```bash
+make build VERSION=v0.6.0
+```
+
+### Versions and tags
+
+Releases are annotated, signed tags named `vMAJOR.MINOR.PATCH`; the badge at the
+top of this file and the releases page always show the current one, so the
+versions in the examples above are snapshots of the tag format rather than a
+requirement. `gojira version` prints the marker and the commit the binary was
+built from, `gojira version --json` returns `version`, `revision` and `dirty`
+for automation, and `gojira upgrade --check` reports the latest published tag
+without installing anything.
 
 ### Installer trust and integrity
 
@@ -172,7 +235,7 @@ setup wizard, or connect to Jira.
 | `gojira sprint list --board N` | List sprints (default `--state active,future`; also accepts `closed`); `--json` returns an array of `{id,name,state}`, empty `[]` |
 | `gojira sprint move KEY --to ID` | Ask Jira to move one issue into a sprint; `--json` re-fetches TicketJSON v1 |
 | `gojira backlog <KEY>` | Ask Jira to move one issue from future and active sprints to the backlog (`--json`) |
-| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment`, `--show` for history) |
+| `gojira log <KEY> --time 2h` | Add worklog (`--json`, `--comment` converted to ADF on create and update, `--show` for history); `--id <ID>` updates that worklog with `--time` and/or `--comment` (still `--json`-capable), or deletes it with `--delete --confirm <ID>`; `--clear-comment` with `--id` removes the comment (alone, or in one request with `--time`); `--comment` does not apply to `--delete`; `--show` cannot be combined with `--id` |
 | `gojira create` | Create an issue (`--json`, `--project`, `--type`, `--summary`, `--description-file`, `--parent` for a sub-task, `--board` for active sprint placement) |
 | `gojira comment <KEY> <text>` | Comment with `--json` and optional `--mention email` (resolves to @mention) |
 | `gojira assign <KEY> <email>` | Assign by email (`--json`; resolves to accountId) |
@@ -352,8 +415,11 @@ search and export field sets are unchanged. The embedded `fields.worklog` shape
 and `fields.timetracking.timeSpent` were **not confirmed** in the official
 Atlassian v3 worklog/comment pages consulted: only supplied values are exposed,
 with no inferred total or pagination requests. Those pages document ADF worklog
-comments; `log --show --json` continues to emit flattened string comments and
-also accepts legacy strings or missing comments. No live Jira verification was
+comments; every worklog written by `log`, the MCP `log_work` tool or the TUI
+sends its comment as ADF for that reason. `log --show --json` continues to emit
+flattened string comments and also accepts legacy strings or missing comments.
+Each entry carries Jira's worklog id as an optional `id` string field; the field
+is additive and is omitted when Jira supplies no id. No live Jira verification was
 performed (local tests only).
 
 ### TicketJSON v1 contract
@@ -387,7 +453,7 @@ date formats are preserved verbatim.
 | `created` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `updated` | string | Always; RFC3339 when recognized, empty when unavailable, otherwise the original Jira value. |
 | `timeLogged` | string | Optional `fields.timetracking.timeSpent` from full issue reads (`get` and mutation re-fetch); omitted when absent or empty, never calculated from entries. |
-| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
+| `worklogs` | array of objects | Omitted when empty; embedded entries in Jira order with optional `id` (additive; omitted when Jira supplies none), string `author`, `timeSpent`, RFC3339-normalized `started` (original on parse failure), and flattened string `comment`. No additional reads. |
 | `worklogsTotal` | integer | Only included when Jira supplies `fields.worklog.total`, including zero. Entries may be truncated; absence is not zero. |
 | `comments` | array of objects | Omitted when empty; comments in Jira order. Each object always has string `author`, flattened string `body`, and string `created` with the same date rules. |
 | `parent` | object | Omitted when absent or null; `get` parent with string `key`, `summary`, `status`, and optional `statusCategory` key as supplied by Jira. |
@@ -522,6 +588,7 @@ including the MCP server and per-option gaps, is in
 | Add comment | `comment` | `m` |
 | Attach a file | `attach` | `f` |
 | Log work / show worklog | `log` (`--show`) | `w` |
+| Update / delete a worklog | `log --id` (`--delete --confirm`) | `W`, then `e` or `d` |
 | Transition by name | `move` | `t` |
 | Close / reopen by status category | `close`, `reopen` | `X` |
 | Delete permanently (typed confirmation) | `delete --confirm KEY` | `D` |
@@ -597,7 +664,31 @@ summary also remains available in the scrollable body. The current column
 and ticket remain selected after closing them. Overlay keys are isolated from
 the board: detail navigation scrolls its content without moving the board cursor.
 Transition, issue creation, and worklog entry remain full-screen flows. The
-transition flow shows bounded progress while loading choices and submitting a
+worklog form collects the time spent and an optional comment: `Tab` moves
+between the two fields and `Enter` submits from either one. The comment is sent
+as an ADF document, because Jira rejects a worklog whose comment is not valid
+ADF; a blank comment is omitted from the request instead of being sent empty.
+After an update, gojira re-reads that worklog and reports a duration Jira did not
+keep, because an entry owned by another app can accept the write and still keep
+the old value: the CLI prints `warning:` on stderr and keeps its success status,
+the TUI shows the warning in the detail modal next to its success toast, and the
+MCP result carries it in `hint` while staying applied.
+Worklog management lives in the `W` list, which reads the complete worklog
+collection from the worklog endpoint (not the page embedded in the ticket read),
+shows `Loading worklogs...` while it fetches, reports a read error inside the
+list, and appends `first 1000 of possibly more` when the bound is reached. `↑`/`↓`
+select an entry, `e` opens an
+edit form prefilled with the current duration and comment and saved once with
+`Ctrl+S`, and `d` opens a deletion that only executes after `y` (`Esc` cancels
+without writing). Saving the comment empty is an explicit removal: the worklog is
+written with a JSON null comment in the same request as the duration, because an
+empty string is not a worklog body Jira accepts. `--clear-comment` is the CLI
+equivalent. Success returns to the detail modal, refetches the issue, and
+toasts the result.
+Editor's note: clearing a comment sends `"comment": null`; the wire payload is
+pinned by tests, but that removal path has not been verified against a live Jira
+site from this repository.
+The transition flow shows bounded progress while loading choices and submitting a
 move; repeated keys cannot start duplicate requests. `Esc` explicitly dismisses
 pending transition UI and ignores its late reply, but cannot cancel an HTTP
 mutation already in flight, which may still complete in Jira. If a same-board
@@ -653,7 +744,8 @@ falls back to a one-line title on very small terminals.
 | `m` | Add a comment in ticket detail; `Enter` adds a line, `Ctrl+S` submits once, `Esc` cancels |
 | `f` | Attach a file: type a local path (a leading `~/` is expanded), `Enter` uploads it; `Esc` cancels before submission, not during an upload |
 | `E` (Shift+E) | Edit due date, components, fix versions, and story points in one bounded form |
-| `w` | Add worklog (cancel or success returns to this detail modal) |
+| `w` | Add worklog: type the time spent, `Tab` moves to an optional comment, `Enter` submits; cancel or success returns to this detail modal |
+| `W` (Shift+W) | Manage worklogs: `↑/↓` select an entry (`k/j` also work), `e` edits it prefilled and saves with `Ctrl+S`, `d` opens a deletion that requires `y`, `Esc` goes back |
 | `A` (Shift+A) | Assign this ticket by email (same form as on the board) |
 | `U` (Shift+U) | Edit summary, priority and labels in one bounded form: `Tab`/`Shift+Tab` move, `Ctrl+S` saves, `Esc` cancels |
 | `o` | Open in browser |
@@ -828,6 +920,8 @@ all existing read-only tools, instructions and results remain unchanged.
 | `gojira_comment` | `key`, `body` |
 | `gojira_attach` | `key`, `path`. Uploads a local file to the issue. It accepts any path the server process can read, with no allowlist, so a prompt-injected agent could upload sensitive files such as `.env`; only regular files are accepted |
 | `gojira_log_work` | `key`, `timeSpent`, optional `comment` |
+| `gojira_update_worklog` | `key`, `worklogId`, one of `timeSpent` or `comment` (both are allowed; omitting both is rejected before any request) |
+| `gojira_delete_worklog` | `key`, `worklogId`, optional `confirmationToken`: without a token the call returns a preview plus a single-use token that expires after two minutes and performs no request |
 | `gojira_assign` | `key`, and exactly one of `accountId` or `email` (non-empty and trimmed) |
 | `gojira_move` | `key`, exact unambiguous `status` |
 | `gojira_update` | `key`, `fields` with any of `summary`, `description`, `priority`, `labels`, `dueDate`, `components`, `fixVersions`, `storyPoints` (sent with `storyPointsField`) |
@@ -868,7 +962,8 @@ rejected value returns a `validation_error` naming the field with
 `mutationState:not_applied`. Replacing a description sends plain text converted
 to ADF and may discard rich ADF formatting that plain text cannot represent;
 prefer appending a comment when formatting matters. Create,
-comment and log_work are non-idempotent. No write is automatically retried.
+comment, log_work, and update_worklog are non-idempotent. No write is
+automatically retried.
 Results report `schemaVersion:v1`, `action`, optional `issueKey`, and
 `mutationState` (`applied`, `not_applied`, `unknown`), with optional `data` or
 sanitized `code`, `message`, and `hint`. Verify unknown outcomes in Jira before
@@ -876,7 +971,9 @@ retrying; a failed response does not prove that a mutation failed.
 
 Delete first returns a preview containing only action and normalized issue key,
 plus an opaque confirmation token in `data.confirmationToken`. Send the same key
-and token to execute. Tokens live only in server memory, expire after two minutes,
+and token to execute. `gojira_delete_worklog` follows the same two-step flow;
+its preview additionally reveals `worklogId`, and its token is bound to that
+worklog id, so a preview cannot redeem against another worklog or tool. Tokens live only in server memory, expire after two minutes,
 and are consumed atomically once (including a wrong-key attempt). Restarting the
 server invalidates them. No valid token means no deletion. Ticket text remains
 untrusted. The token forces a deliberate second call and prevents a single-call
@@ -1060,7 +1157,8 @@ Release notes are curated; generated history is only reference material.
 |---|---|
 | `make changelog` | Writes a heading-free, grouped commit draft to `CHANGELOG.draft.md`; `docs(odd)` bookkeeping is omitted. |
 | `make release-notes VERSION=vX.Y.Z` | Extracts the body of the newest matching package section from `CHANGELOG.md` into ignored `RELEASE_NOTES.md`. |
-| `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, and publishes or replaces the GitHub release through GoReleaser. |
+| `make release` | Loads `GITHUB_TOKEN` from `.env`, requires an exact local version tag, regenerates the notes, publishes or replaces the GitHub release through GoReleaser, and then warms the public Go module proxy for that tag. |
+| `make warm-module-proxy VERSION=vX.Y.Z` | Requests the tagged version from `proxy.golang.org` so `go install …@latest` and `pkg.go.dev` can resolve it. `make release` already runs it; this is the recovery path after a failed publish. |
 
 `make release` is the repository's only publisher and is an explicit local
 publishing command, not a dry run. GitHub Actions validates more than the

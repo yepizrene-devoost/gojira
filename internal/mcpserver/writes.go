@@ -16,6 +16,10 @@ type Writer interface {
 	CreateIssue(string, string, string, *jira.ADFDoc) (string, error)
 	AddComment(string, jira.ADFDoc) error
 	AddWorklog(string, string, string) error
+	UpdateWorklog(string, string, string, string) error
+	ClearWorklogComment(string, string) error
+	UpdateWorklogAndClearComment(string, string, string) error
+	DeleteWorklog(string, string) error
 	AssignIssue(string, string) error
 	GetTransitions(string) ([]jira.Transition, error)
 	TransitionIssue(string, string) error
@@ -33,6 +37,10 @@ type writeTool struct {
 	integers []string
 }
 
+// writeBooleanArgs lists the optional JSON-boolean arguments per action; every
+// other argument is a string, except the integers listed on writeTool.
+var writeBooleanArgs = map[string][]string{"update_worklog": {"clearComment"}}
+
 func writeTools() []writeTool {
 	return []writeTool{
 		{"create", "Create an issue; optional boardId adds it to the board's active sprint. Optional parent requires a valid issue key and issueType Sub-task and cannot be combined with boardId. Non-idempotent; never retry automatically.", []string{"project", "issueType", "summary"}, []string{"description", "parent", "boardId"}, []string{"boardId"}},
@@ -47,6 +55,8 @@ func writeTools() []writeTool {
 		{"close", "Close an issue through the only available transition to a done-category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"reopen", "Reopen an issue through the only available transition to a new or in-progress category status. Fails without changing anything when none or several exist; then use gojira_move with an exact status name. Non-idempotent; never retry automatically.", []string{"key"}, nil, nil},
 		{"attach", "Upload the file at the given local path to one issue. Reads any local path the server process can read, with no allowlist, and sends its contents to Jira; non-regular files are refused. Non-idempotent; never retry automatically.", []string{"key", "path"}, nil, nil},
+		{"update_worklog", "Update one worklog by id; supply one of timeSpent (a Jira duration such as 2h 30m), comment (plain text converted to ADF) or clearComment true to remove the comment; timeSpent and clearComment combine into one request that changes both. clearComment with a non-empty comment and omitting all three are rejected. Non-idempotent; never retry automatically.", []string{"key", "worklogId"}, []string{"timeSpent", "comment", "clearComment"}, nil},
+		{"delete_worklog", "Delete one worklog by id only with a single-use confirmationToken from a preview; expires after two minutes. Preview reveals only action, key and worklogId. The token forces a deliberate second call and prevents a single-call accidental delete, but is not proof of human approval: the same agent receives and redeems it.", []string{"key", "worklogId"}, []string{"confirmationToken"}, nil},
 	}
 }
 func (a adapter) registerWrites(server *mcp.Server) {
@@ -59,6 +69,9 @@ func (a adapter) registerWrites(server *mcp.Server) {
 			if slices.Contains(entry.integers, name) {
 				properties[name] = map[string]any{"type": "integer", "minimum": 1}
 			}
+			if slices.Contains(writeBooleanArgs[entry.action], name) {
+				properties[name] = map[string]any{"type": "boolean"}
+			}
 		}
 		if entry.action == "update" {
 			properties["fields"] = updateFieldsSchema()
@@ -67,7 +80,7 @@ func (a adapter) registerWrites(server *mcp.Server) {
 		if entry.action == "assign" {
 			schema["oneOf"] = []any{map[string]any{"required": []string{"accountId"}}, map[string]any{"required": []string{"email"}}}
 		}
-		destructive := entry.action == "delete"
+		destructive := entry.action == "delete" || entry.action == "delete_worklog"
 		server.AddTool(&mcp.Tool{Name: "gojira_" + entry.action, Description: entry.description, InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: slices.Contains([]string{"assign", "update", "sprint_move", "backlog"}, entry.action)}}, a.writeCall(entry, confirmations))
 	}
 }
@@ -87,15 +100,26 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 		if entry.action == "attach" {
 			return a.attachFile(key, in.values["path"]), nil
 		}
-		if entry.action == "delete" {
+		if entry.action == "delete" || entry.action == "delete_worklog" {
+			// The store is shared by both destructive tools, so the action and,
+			// for a worklog, its id are bound into the token: a preview from one
+			// target cannot redeem on another.
+			binding := entry.action + ":" + key
+			if entry.action == "delete_worklog" {
+				binding += ":" + in.values["worklogId"]
+			}
 			if in.values["confirmationToken"] == "" {
-				token, err := confirmations.issue(key)
+				token, err := confirmations.issue(binding)
 				if err != nil {
 					return writeResult(entry.action, key, jira.MutationNotApplied, nil, "confirmation_failed", "Confirmation unavailable", "Try a new preview."), nil
 				}
-				return writeResult(entry.action, key, jira.MutationNotApplied, map[string]any{"preview": map[string]string{"action": "delete", "issueKey": key}, "confirmationToken": token}, "", "", ""), nil
+				preview := map[string]string{"action": entry.action, "issueKey": key}
+				if entry.action == "delete_worklog" {
+					preview["worklogId"] = in.values["worklogId"]
+				}
+				return writeResult(entry.action, key, jira.MutationNotApplied, map[string]any{"preview": preview, "confirmationToken": token}, "", "", ""), nil
 			}
-			if !confirmations.consume(in.values["confirmationToken"], key) {
+			if !confirmations.consume(in.values["confirmationToken"], binding) {
 				return writeResult(entry.action, key, jira.MutationNotApplied, nil, "invalid_confirmation", "Confirmation invalid or expired", "Request a new preview."), nil
 			}
 		}
@@ -136,6 +160,18 @@ func (a adapter) writeCall(entry writeTool, confirmations *writeConfirmations) m
 				hint = "Verify the issue in Jira before retrying; outcome unknown. Never retry automatically."
 			}
 			return writeResult(entry.action, key, state, nil, code, "Jira operation failed", hint, jira.MutationDiagnostics(err)), nil
+		}
+		// S12: once the update was accepted, re-read the entry so a duration
+		// Jira did not keep is reported through hint. The mutation stays
+		// applied, so this is not an error result and no new field appears.
+		if entry.action == "update_worklog" {
+			if verifier, ok := a.Writer.(interface {
+				VerifyWorklogUpdate(string, string, string) error
+			}); ok {
+				if verifyErr := verifier.VerifyWorklogUpdate(key, in.values["worklogId"], in.values["timeSpent"]); verifyErr != nil {
+					return writeResult(entry.action, key, jira.MutationApplied, nil, "", "", verifyErr.Error()), nil
+				}
+			}
 		}
 		if entry.action == "create" && in.values["boardId"] != "" {
 			if reader, ok := a.Writer.(interface {
@@ -193,6 +229,10 @@ func writeResult(action, key string, state jira.MutationState, data any, code, m
 		payload["code"] = code
 		payload["message"] = message
 		payload["hint"] = hint
+	} else if hint != "" {
+		// A post-write verification warning rides on an otherwise successful
+		// result: hint is an existing field, so no new one is invented.
+		payload["hint"] = hint
 	}
 	res := result(payload)
 	res.IsError = code != ""
@@ -223,6 +263,17 @@ func executeWrite(w Writer, action string, request *writeRequest) (string, error
 		return "", w.AddComment(key, jira.TextToADF(in["body"]))
 	case "log_work":
 		return "", w.AddWorklog(key, in["timeSpent"], in["comment"])
+	case "update_worklog":
+		// S14d: a requested clear travels in the same PUT as the duration, so a
+		// failure cannot leave the worklog half-edited and the duration is never
+		// dropped to make room for the clear.
+		if in["clearComment"] == "true" {
+			if in["timeSpent"] != "" {
+				return "", w.UpdateWorklogAndClearComment(key, in["worklogId"], in["timeSpent"])
+			}
+			return "", w.ClearWorklogComment(key, in["worklogId"])
+		}
+		return "", w.UpdateWorklog(key, in["worklogId"], in["timeSpent"], in["comment"])
 	case "assign":
 		return "", w.AssignIssue(key, in["accountId"])
 	case "move":
@@ -270,6 +321,8 @@ func executeWrite(w Writer, action string, request *writeRequest) (string, error
 		return "", w.MoveIssueToBacklog(key)
 	case "delete":
 		return "", w.DeleteIssue(key)
+	case "delete_worklog":
+		return "", w.DeleteWorklog(key, in["worklogId"])
 	}
 	return "", &validationError{"unsupported action"}
 }

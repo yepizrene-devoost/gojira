@@ -313,6 +313,7 @@ type Transition struct {
 }
 
 type Worklog struct {
+	ID     string `json:"id,omitempty"`
 	Author struct {
 		DisplayName string `json:"displayName"`
 	} `json:"author"`
@@ -352,6 +353,7 @@ func (w *Worklog) UnmarshalJSON(data []byte) error {
 }
 
 type WorklogJSON struct {
+	ID        string `json:"id,omitempty"`
 	Author    string `json:"author"`
 	TimeSpent string `json:"timeSpent"`
 	Started   string `json:"started"`
@@ -546,7 +548,7 @@ func IssueToTicketJSON(iss Issue, domain string) TicketJSON {
 	if iss.Fields.Worklog != nil {
 		t.WorklogsTotal = iss.Fields.Worklog.Total
 		for _, w := range iss.Fields.Worklog.Worklogs {
-			t.Worklogs = append(t.Worklogs, WorklogJSON{Author: w.Author.DisplayName, TimeSpent: w.TimeSpent, Started: normalizeDate(w.Started), Comment: w.Comment})
+			t.Worklogs = append(t.Worklogs, WorklogJSON{ID: w.ID, Author: w.Author.DisplayName, TimeSpent: w.TimeSpent, Started: normalizeDate(w.Started), Comment: w.Comment})
 		}
 	}
 	if iss.Fields.Status != nil {

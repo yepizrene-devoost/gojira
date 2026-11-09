@@ -42,7 +42,8 @@ func (s *writeConfirmations) issue(key string) (string, error) {
 }
 
 // consume atomically burns a presented token, including a wrong-key attempt.
-// This store is private to delete registration, so the action binding is implicit.
+// The caller passes the opaque binding issued by the preview (action, key and
+// target id), so a token redeemed on another target or tool never matches.
 func (s *writeConfirmations) consume(token, key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

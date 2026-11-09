@@ -343,3 +343,40 @@ func TestTicketLoggedTimeContract(t *testing.T) {
 		})
 	}
 }
+
+// S1 — the curated ticket contract must expose the worklog id so an agent can
+// address a single entry, without renaming or dropping existing fields.
+func TestTicketJSONWorklogsExposeID(t *testing.T) {
+	var issue Issue
+	raw := `{"key":"A-1","fields":{"worklog":{"total":1,"worklogs":[{"id":"123","author":{"displayName":"Ada"},"timeSpent":"1h","started":"2025-01-02T00:00:00.000+0000"}]}}}`
+	if err := json.Unmarshal([]byte(raw), &issue); err != nil {
+		t.Fatal(err)
+	}
+	ticket := IssueToTicketJSON(issue, "")
+	if len(ticket.Worklogs) != 1 || ticket.Worklogs[0].ID != "123" || ticket.Worklogs[0].TimeSpent != "1h" {
+		t.Fatalf("worklogs=%+v", ticket.Worklogs)
+	}
+	encoded, err := json.Marshal(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"worklogs":[{"id":"123","author":"Ada","timeSpent":"1h"`) {
+		t.Fatalf("json=%s", encoded)
+	}
+}
+
+// S1 — an entry without an id stays valid and emits no empty id field.
+func TestTicketJSONWorklogWithoutIDOmitsField(t *testing.T) {
+	var issue Issue
+	if err := json.Unmarshal([]byte(`{"key":"A-1","fields":{"worklog":{"worklogs":[{"timeSpent":"1h"}]}}}`), &issue); err != nil {
+		t.Fatal(err)
+	}
+	ticket := IssueToTicketJSON(issue, "")
+	encoded, err := json.Marshal(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"id":""`) {
+		t.Fatalf("json=%s", encoded)
+	}
+}
