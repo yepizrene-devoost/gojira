@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -56,19 +57,62 @@ type System struct {
 	Lstat      func(string) (os.FileInfo, error)
 	Rename     func(oldpath, newpath string) error
 	Remove     func(path string) error
+	// ClearLaunchBlockers removes the macOS quarantine-family extended
+	// attributes that make Gatekeeper kill the placed binary on launch. It is
+	// best-effort: failures are ignored by callers.
+	ClearLaunchBlockers func(path string) error
 }
 
 // OSSystem returns the real operating-system effects.
 func OSSystem() System {
 	return System{
-		GOOS:       runtime.GOOS,
-		Executable: os.Executable,
-		Getenv:     os.Getenv,
-		HomeDir:    os.UserHomeDir,
-		Lstat:      os.Lstat,
-		Rename:     os.Rename,
-		Remove:     os.Remove,
+		GOOS:                runtime.GOOS,
+		Executable:          os.Executable,
+		Getenv:              os.Getenv,
+		HomeDir:             os.UserHomeDir,
+		Lstat:               os.Lstat,
+		Rename:              os.Rename,
+		Remove:              os.Remove,
+		ClearLaunchBlockers: clearMacOSLaunchBlockers,
 	}
+}
+
+// removeXattr deletes one extended attribute using the xattr(1) utility,
+// which is the stable public interface macOS offers for this (the raw syscalls
+// are private). A missing attribute is success.
+func removeXattr(path, name string) error {
+	out, err := exec.Command("xattr", "-d", name, path).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 && len(out) > 0 && strings.Contains(string(out), "No such xattr") {
+		return nil
+	}
+	return fmt.Errorf("removing xattr %s from %s: %w: %s", name, path, err, out)
+}
+
+// macOSLaunchBlockers are the extended attributes macOS attaches to files a
+// non-notarized app downloads. Quarantine is removable by syscall and is the
+// arming half of the Gatekeeper SIGKILL (provenance + quarantine); provenance
+// is immutable on macOS 26 (removal reports success but persists) and is
+// harmless alone, so the removable half is what this installer clears
+// (issue #55).
+var macOSLaunchBlockers = []string{"com.apple.quarantine"}
+
+// clearMacOSLaunchBlockers removes the quarantine-family xattrs from path.
+// Best-effort: it returns the last failure for callers that only log it, and
+// a missing attribute is not a failure.
+func clearMacOSLaunchBlockers(path string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	var lastErr error
+	for _, name := range macOSLaunchBlockers {
+		if err := removeXattr(path, name); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 // Target is the resolved binary an upgrade would replace.
@@ -209,6 +253,14 @@ func (l *Lock) Release() error {
 func (i *Installer) Place(target Target, staged string) (Placement, error) {
 	if i.system.GOOS == "windows" {
 		return i.placeWindows(target, staged)
+	}
+	// Issue #55: macOS marks files a non-notarized app downloads with
+	// quarantine-family xattrs that make Gatekeeper kill the binary on launch.
+	// Clear them from the staged file before the rename, so the placed binary
+	// and any in-place relaunch inherit a launchable file. Best-effort: a
+	// failure or a missing effect never fails the install.
+	if i.system.ClearLaunchBlockers != nil {
+		_ = i.system.ClearLaunchBlockers(staged)
 	}
 	if err := i.system.Rename(staged, target.Path); err != nil {
 		return Placement{Outcome: OutcomeNotApplied, PendingPath: staged},

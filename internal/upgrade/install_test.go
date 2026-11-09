@@ -17,6 +17,8 @@ type fakeSystem struct {
 	renames    []string
 	renameErr  func(oldpath, newpath string) error
 	removeErr  func(path string) error
+	clearErr   func(path string) error
+	clearCalls *int
 }
 
 func (f *fakeSystem) system() System {
@@ -52,6 +54,16 @@ func (f *fakeSystem) system() System {
 				}
 			}
 			return os.Remove(path)
+		},
+		ClearLaunchBlockers: func(path string) error {
+			if f.clearCalls != nil {
+				*f.clearCalls++
+			}
+			if f.clearErr != nil {
+				return f.clearErr(path)
+			}
+			// Default: the real clearing, so xattr tests drive the real behavior.
+			return clearMacOSLaunchBlockers(path)
 		},
 	}
 }
