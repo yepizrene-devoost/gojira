@@ -205,7 +205,7 @@ func TestLogUpdateWarnsWhenJiraKeepsAnotherDuration(t *testing.T) {
 	if stdout != "✓ Updated worklog 77 on A-1\n" {
 		t.Fatalf("stdout=%q", stdout)
 	}
-	if stderr != "warning: Jira reports 15m for worklog 77 (requested 30m)\n" {
+	if stderr != "warning: jira reports 15m for worklog 77 (requested 30m)\n" {
 		t.Fatalf("stderr=%q, want the warning on stderr only", stderr)
 	}
 }
@@ -236,7 +236,7 @@ func TestLogUpdateJSONWarnsOnStderrOnly(t *testing.T) {
 	if result["schemaVersion"] != "v1" || result["key"] != "A-1" {
 		t.Fatalf("stdout is not the mutation JSON: %v", result)
 	}
-	if stderr != "warning: Jira reports 15m for worklog 77 (requested 30m)\n" {
+	if stderr != "warning: jira reports 15m for worklog 77 (requested 30m)\n" {
 		t.Fatalf("stderr=%q, want the warning on stderr only", stderr)
 	}
 }

@@ -41,7 +41,7 @@ Scope: read the worklog id, update and delete one worklog from `gojira log`, MCP
 **S11 — Docs.** README lists the new CLI flags, the TUI keys and flow, the MCP tools, and the `id` field in the `log --show --json` field table, in the same work unit as the behavior.
 
 **S12 — Post-write verification.** After a successful worklog update the client re-reads that worklog and reports when Jira did not keep the requested duration:
-- `(*jira.Client).VerifyWorklogUpdate(issueKey, worklogID, wantTimeSpent string) error` returns nil when the reported duration equals `wantTimeSpent`, or when `wantTimeSpent` is empty; otherwise the error reads `Jira reports 15m for worklog 123 (requested 30m)`.
+- `(*jira.Client).VerifyWorklogUpdate(issueKey, worklogID, wantTimeSpent string) error` returns nil when the reported duration equals `wantTimeSpent`, or when `wantTimeSpent` is empty; otherwise the error reads `jira reports 15m for worklog 123 (requested 30m)`.
 - It performs one read of the issue worklogs and never mutates anything.
 - CLI: a mismatch prints `warning: <error>` to stderr after the success line and keeps exit code 0, because the mutation itself was accepted.
 - TUI: a mismatch returns to the detail modal with the success toast and shows the warning as the modal error.

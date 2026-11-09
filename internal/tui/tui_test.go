@@ -3967,7 +3967,7 @@ func TestWorklogEditMismatchKeepsSuccessAndWarns(t *testing.T) {
 	if m.view != viewDetail || m.toast != "Worklog updated" {
 		t.Fatalf("mismatch lost the success flow: view=%v toast=%q", m.view, m.toast)
 	}
-	if m.err == nil || !strings.Contains(m.err.Error(), "Jira reports 15m for worklog 123 (requested 3h)") {
+	if m.err == nil || !strings.Contains(m.err.Error(), "jira reports 15m for worklog 123 (requested 3h)") {
 		t.Fatalf("warning not surfaced as modal error: err=%v", m.err)
 	}
 	// The detail refetch must not swallow the warning before it can be read.
@@ -3976,7 +3976,7 @@ func TestWorklogEditMismatchKeepsSuccessAndWarns(t *testing.T) {
 	if m.detail == nil || m.detailLoading {
 		t.Fatalf("detail refetch was not applied: detail=%v loading=%v", m.detail, m.detailLoading)
 	}
-	if m.err == nil || !strings.Contains(m.err.Error(), "Jira reports 15m") {
+	if m.err == nil || !strings.Contains(m.err.Error(), "jira reports 15m") {
 		t.Fatalf("warning lost after the refetch: err=%v", m.err)
 	}
 }

@@ -127,7 +127,7 @@ func TestUpdateWorklogVerifyReportsMismatchInHint(t *testing.T) {
 	if res["mutationState"] != "applied" {
 		t.Fatalf("mutationState=%v, the update was applied", res["mutationState"])
 	}
-	if res["hint"] != "Jira reports 15m for worklog 7 (requested 3h)" {
+	if res["hint"] != "jira reports 15m for worklog 7 (requested 3h)" {
 		t.Fatalf("hint=%v, want the verification warning", res["hint"])
 	}
 	want := []observedWriteRequest{

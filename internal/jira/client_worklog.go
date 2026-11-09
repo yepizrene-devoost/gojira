@@ -132,7 +132,7 @@ func (c *Client) VerifyWorklogUpdate(issueKey, worklogID, wantTimeSpent string) 
 		if worklog.TimeSpent == wantTimeSpent {
 			return nil
 		}
-		return fmt.Errorf("Jira reports %s for worklog %s (requested %s)", worklog.TimeSpent, worklogID, wantTimeSpent)
+		return fmt.Errorf("jira reports %s for worklog %s (requested %s)", worklog.TimeSpent, worklogID, wantTimeSpent)
 	}
 	return fmt.Errorf("worklog %s is not reported by Jira after the update", worklogID)
 }
